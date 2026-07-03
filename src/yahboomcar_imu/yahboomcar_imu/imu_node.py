@@ -4,13 +4,24 @@ import math
 from sensor_msgs.msg import Imu
 
 LSB_PER_DPS = 131.0  # approx for ±250 dps
+ANGULAR_VELOCITY_COVARIANCE = 6.9e-6
+LINEAR_ACCELERATION_COVARIANCE = 5.1e-4
+
+
+def set_imu_covariance(imu):
+    imu.orientation_covariance[0] = -1  # Orientation not provided
+
+    for index in (0, 4, 8):
+        imu.angular_velocity_covariance[index] = ANGULAR_VELOCITY_COVARIANCE
+        imu.linear_acceleration_covariance[index] = LINEAR_ACCELERATION_COVARIANCE
+
 
 class ImuPublisher:
     def __init__(self, node, muto, imu_link="imu_link"):
         self.node = node
         self.muto = muto
         self.imu_link = imu_link
-        self.publisher = node.create_publisher(Imu, "/imu/data_raw",100)
+        self.publisher = node.create_publisher(Imu, "/imu/data_raw", 100)
         self.publisher_1 = node.create_publisher(Imu, "/imu/data_processed", 100)
 
     def publish_imu_data(self):
@@ -28,7 +39,7 @@ class ImuPublisher:
         imu.angular_velocity.y = gy * 1.0
         imu.angular_velocity.z = gz * 1.0
 
-        imu.orientation_covariance[0] = -1  # Orientation not provided
+        set_imu_covariance(imu)
 
         self.publisher.publish(imu)
 
@@ -42,6 +53,6 @@ class ImuPublisher:
         imu2.angular_velocity.y = (gy +1.0) / LSB_PER_DPS * math.pi / 180.0
         imu2.angular_velocity.z = (gz +17.0) / LSB_PER_DPS * math.pi / 180.0
 
-        imu2.orientation_covariance[0] = -1  # Orientation not provided
+        set_imu_covariance(imu2)
 
         self.publisher_1.publish(imu2)

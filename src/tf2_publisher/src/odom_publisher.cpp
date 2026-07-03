@@ -15,7 +15,7 @@ class OdomBroadcaster : public rclcpp::Node
 {
 public:
   OdomBroadcaster()
-  : Node("imu_tf2_broadcaster")
+  : Node("odom_tf2_broadcaster")
   {
 
     this->declare_parameter<std::string>("odom_topic", "scan_odom");

@@ -4,6 +4,8 @@ log/
 .colcon*
 .ros/
 
-src/OrbbecSDK_ROS2/
-src/simple_vlm/
-src/Simple_2D_LiDAR_Odometry/
+src/OrbbecSDK_ROS2
+src/simple_vlm
+src/Simple_2D_LiDAR_Odometry
+
+.vscode/

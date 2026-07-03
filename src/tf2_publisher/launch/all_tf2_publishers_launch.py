@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -10,9 +11,15 @@ def generate_launch_description():
         default_value="scan_odom",
         description="Odometry topic used by odom_publisher.",
     )
+    publish_odom_tf_arg = DeclareLaunchArgument(
+        "publish_odom_tf",
+        default_value="false",
+        description="Start odom_publisher to broadcast odometry as TF.",
+    )
 
     return LaunchDescription([
         odom_topic_arg,
+        publish_odom_tf_arg,
         Node(
             package="tf2_publisher",
             executable="base_to_camera_publisher",
@@ -37,5 +44,6 @@ def generate_launch_description():
             name="odom_tf2_broadcaster",
             output="screen",
             parameters=[{"odom_topic": LaunchConfiguration("odom_topic")}],
+            condition=IfCondition(LaunchConfiguration("publish_odom_tf")),
         ),
     ])

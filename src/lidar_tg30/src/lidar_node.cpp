@@ -9,6 +9,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "builtin_interfaces/msg/time.hpp"
 #include <sensor_msgs/msg/point_field.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
@@ -19,12 +20,12 @@ using namespace std;
 using namespace std::chrono_literals;
 using namespace ydlidar;
 
-void LaserScanToMsg(const LaserScan &scan, sensor_msgs::msg::PointCloud2 &cloud){
-	builtin_interfaces::msg::Time ros_time;
-	ros_time.sec = static_cast<int32_t>(scan.stamp / 1000000000ULL);
-	ros_time.nanosec = static_cast<uint32_t>(scan.stamp % 1000000000ULL);
-
-	cloud.header.stamp = ros_time;
+void LaserScanToMsg(
+	const LaserScan &scan,
+	sensor_msgs::msg::PointCloud2 &cloud,
+	const builtin_interfaces::msg::Time &stamp)
+{
+	cloud.header.stamp = stamp;
 	cloud.header.frame_id = "lidar_frame";
 
 	cloud.height = 1;
@@ -87,9 +88,9 @@ void LaserScanToMsg(const LaserScan &scan, sensor_msgs::msg::PointCloud2 &cloud)
 class LidarNode : public rclcpp::Node
 {
 	public:
-		LidarNode() : Node("lidar_node"){
-		      publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lidar/PointCloud",2);
-		      timer_ = this->create_wall_timer(500ms, std::bind(&LidarNode::publish_lidar_info, this));
+	LidarNode() : Node("lidar_node"){
+		      publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lidar/PointCloud",5);
+		      timer_ = this->create_wall_timer(125ms, std::bind(&LidarNode::publish_lidar_info, this));
 		      
 		      ydlidar::os_init();
 
@@ -163,7 +164,7 @@ class LidarNode : public rclcpp::Node
 			  void publish_lidar_info(){
 				if((this->laser).doProcessSimple(this->scan)){
 					sensor_msgs::msg::PointCloud2 msg;
-					LaserScanToMsg(this->scan, msg);
+					LaserScanToMsg(this->scan, msg, this->get_clock()->now().to_msg());
 					publisher_->publish(msg);
 				}	  
 			  }

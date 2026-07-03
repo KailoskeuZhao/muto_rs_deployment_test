@@ -7,9 +7,13 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_eigen REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 add_executable(lidar_pointcloud_filter_node src/lidar_pointcloud_filter_node.cpp)
 
@@ -23,8 +27,12 @@ target_link_libraries(lidar_pointcloud_filter_node
 
 ament_target_dependencies(lidar_pointcloud_filter_node
   rclcpp
+  geometry_msgs
   sensor_msgs
   pcl_conversions
+  tf2
+  tf2_eigen
+  tf2_ros
 )
 
 install(TARGETS lidar_pointcloud_filter_node

@@ -4,14 +4,20 @@
 #include <string>
 #include <vector>
 
+#include <pcl/common/transforms.h>
 #include <pcl/filters/filter.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "tf2_eigen/tf2_eigen.hpp"
+#include "tf2/exceptions.h"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 
 class LidarPointCloudFilterNode : public rclcpp::Node
 {
@@ -21,6 +27,7 @@ public:
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "lidar/PointCloud");
     output_topic_ = declare_parameter<std::string>("output_topic", "lidar/PointCloudFiltered");
+    target_frame_ = declare_parameter<std::string>("target_frame", "base_frame");
 
     min_range_ = declare_parameter<double>("min_range", 0.05);
     max_range_ = declare_parameter<double>("max_range", 64.0);
@@ -34,6 +41,8 @@ public:
 
     voxel_leaf_size_ = declare_parameter<double>("voxel_leaf_size", 0.05);
     queue_size_ = declare_parameter<int>("queue_size", 5);
+    transform_timeout_ = rclcpp::Duration::from_seconds(
+      declare_parameter<double>("transform_timeout", 0.05));
     log_filter_stats_ = declare_parameter<bool>("log_filter_stats", false);
 
     if (queue_size_ < 1) {
@@ -52,6 +61,12 @@ public:
       RCLCPP_WARN(get_logger(), "voxel_leaf_size must be non-negative; using 0.0");
       voxel_leaf_size_ = 0.0;
     }
+    if (target_frame_.empty()) {
+      RCLCPP_WARN(get_logger(), "target_frame is empty; using input cloud frame");
+    }
+
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     const auto qos = rclcpp::QoS(rclcpp::KeepLast(queue_size_));
     publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, qos);
@@ -59,7 +74,10 @@ public:
       input_topic_, qos,
       std::bind(&LidarPointCloudFilterNode::pointCloudCallback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(get_logger(), "Filtering %s -> %s", input_topic_.c_str(), output_topic_.c_str());
+    RCLCPP_INFO(
+      get_logger(), "Filtering %s -> %s in target frame %s",
+      input_topic_.c_str(), output_topic_.c_str(),
+      target_frame_.empty() ? "<input frame>" : target_frame_.c_str());
     RCLCPP_INFO(
       get_logger(),
       "Range [%.3f, %.3f], ROI x[%.3f, %.3f] y[%.3f, %.3f] z[%.3f, %.3f], voxel %.3f",
@@ -76,13 +94,27 @@ private:
     std::vector<int> finite_indices;
     pcl::removeNaNFromPointCloud(input_cloud, finite_cloud, finite_indices);
 
+    const std::string output_frame = target_frame_.empty() ? msg->header.frame_id : target_frame_;
+    if (output_frame.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Input cloud has an empty frame_id and target_frame is empty; dropping cloud");
+      return;
+    }
+
+    pcl::PointCloud<pcl::PointXYZ> target_frame_cloud;
+    if (!transformCloudToTargetFrame(finite_cloud, msg->header.frame_id, output_frame, msg->header.stamp,
+        target_frame_cloud)) {
+      return;
+    }
+
     auto cropped_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
-    cropped_cloud->reserve(finite_cloud.size());
+    cropped_cloud->reserve(target_frame_cloud.size());
 
     const double min_range_sq = min_range_ * min_range_;
     const double max_range_sq = max_range_ * max_range_;
 
-    for (const auto & point : finite_cloud.points) {
+    for (const auto & point : target_frame_cloud.points) {
       if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
         continue;
       }
@@ -131,18 +163,56 @@ private:
     sensor_msgs::msg::PointCloud2 output_msg;
     pcl::toROSMsg(*output_cloud, output_msg);
     output_msg.header = msg->header;
+    output_msg.header.frame_id = output_frame;
     publisher_->publish(output_msg);
 
     if (log_filter_stats_) {
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Filtered cloud: input=%zu finite=%zu roi_range=%zu output=%zu",
-        input_cloud.size(), finite_cloud.size(), cropped_cloud->size(), output_cloud->size());
+        "Filtered cloud: input=%zu finite=%zu target=%zu roi_range=%zu output=%zu",
+        input_cloud.size(), finite_cloud.size(), target_frame_cloud.size(),
+        cropped_cloud->size(), output_cloud->size());
+    }
+  }
+
+  bool transformCloudToTargetFrame(
+    const pcl::PointCloud<pcl::PointXYZ> & input_cloud,
+    const std::string & source_frame,
+    const std::string & target_frame,
+    const builtin_interfaces::msg::Time & stamp,
+    pcl::PointCloud<pcl::PointXYZ> & output_cloud)
+  {
+    if (source_frame == target_frame) {
+      output_cloud = input_cloud;
+      return true;
+    }
+
+    if (source_frame.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Input cloud has an empty frame_id; dropping cloud");
+      return false;
+    }
+
+    try {
+      const geometry_msgs::msg::TransformStamped transform =
+        tf_buffer_->lookupTransform(target_frame, source_frame, stamp, transform_timeout_);
+      const Eigen::Matrix4f transform_matrix = tf2::transformToEigen(transform).matrix().cast<float>();
+      pcl::transformPointCloud(input_cloud, output_cloud, transform_matrix);
+      output_cloud.header = input_cloud.header;
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Failed to transform cloud from %s to %s: %s",
+        source_frame.c_str(), target_frame.c_str(), ex.what());
+      return false;
     }
   }
 
   std::string input_topic_;
   std::string output_topic_;
+  std::string target_frame_;
   double min_range_;
   double max_range_;
   double min_x_;
@@ -152,11 +222,14 @@ private:
   double min_z_;
   double max_z_;
   double voxel_leaf_size_;
+  rclcpp::Duration transform_timeout_{0, 0};
   int queue_size_;
   bool log_filter_stats_;
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscriber_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };
 
 int main(int argc, char ** argv)

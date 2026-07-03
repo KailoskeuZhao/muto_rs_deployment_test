@@ -21,6 +21,11 @@ def generate_launch_description():
         default_value="scan_odom",
         description="Odometry output topic.",
     )
+    queue_size_arg = DeclareLaunchArgument(
+        "queue_size",
+        default_value="5",
+        description="Point cloud and odometry queue size.",
+    )
     base_to_lidar_x_arg = DeclareLaunchArgument(
         "base_to_lidar_x",
         default_value="-0.02",
@@ -56,6 +61,7 @@ def generate_launch_description():
         input_topic_arg,
         filtered_topic_arg,
         odom_topic_arg,
+        queue_size_arg,
         base_to_lidar_x_arg,
         base_to_lidar_y_arg,
         base_to_lidar_z_arg,
@@ -80,6 +86,7 @@ def generate_launch_description():
             parameters=[{
                 "point_cloud_topic_name": LaunchConfiguration("filtered_topic"),
                 "odom_topic_name": LaunchConfiguration("odom_topic"),
+                "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
                 "base_to_lidar_x": ParameterValue(LaunchConfiguration("base_to_lidar_x"), value_type=float),
                 "base_to_lidar_y": ParameterValue(LaunchConfiguration("base_to_lidar_y"), value_type=float),
                 "base_to_lidar_z": ParameterValue(LaunchConfiguration("base_to_lidar_z"), value_type=float),

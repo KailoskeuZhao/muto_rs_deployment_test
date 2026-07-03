@@ -16,6 +16,25 @@ def set_imu_covariance(imu):
         imu.linear_acceleration_covariance[index] = LINEAR_ACCELERATION_COVARIANCE
 
 
+def read_imu_raw(node, muto):
+    data = muto.read_IMU_Raw()
+    if data is None:
+        node.get_logger().warn("IMU raw read returned no data", throttle_duration_sec=5.0)
+        return None
+    if len(data) < 6:
+        node.get_logger().warn(
+            f"IMU raw read returned {len(data)} values, expected at least 6",
+            throttle_duration_sec=5.0,
+        )
+        return None
+
+    try:
+        return tuple(float(value) for value in data[:6])
+    except (TypeError, ValueError) as exc:
+        node.get_logger().warn(f"Invalid IMU raw data: {exc}", throttle_duration_sec=5.0)
+        return None
+
+
 class ImuPublisher:
     def __init__(self, node, muto, imu_link="imu_link"):
         self.node = node
@@ -25,11 +44,15 @@ class ImuPublisher:
         self.publisher_1 = node.create_publisher(Imu, "/imu/data_processed", 100)
 
     def publish_imu_data(self):
-        imu = Imu()
-        ax, ay, az, gx, gy, gz, _, _, _ = self.muto.read_IMU_Raw()
+        raw = read_imu_raw(self.node, self.muto)
+        if raw is None:
+            return
+
+        ax, ay, az, gx, gy, gz = raw
 
         stamp = self.node.get_clock().now().to_msg()
-        
+
+        imu = Imu()
         imu.header.stamp = stamp
         imu.header.frame_id = "raw_imu_link"
         imu.linear_acceleration.x = ax * 1.0

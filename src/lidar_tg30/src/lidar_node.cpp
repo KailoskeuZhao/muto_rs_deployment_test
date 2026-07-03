@@ -6,6 +6,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -162,7 +163,9 @@ class LidarNode : public rclcpp::Node
 				if((this->laser).doProcessSimple(this->scan)){
 					sensor_msgs::msg::PointCloud2 msg;
 					LaserScanToMsg(this->scan, msg);
-					msg.header.stamp = this->get_clock()->now().to_msg();
+					const int64_t now_ns = this->get_clock()->now().nanoseconds();
+					msg.header.stamp.sec = static_cast<int32_t>(now_ns / 1000000000LL);
+					msg.header.stamp.nanosec = static_cast<uint32_t>(now_ns % 1000000000LL);
 					publisher_->publish(msg);
 				}	  
 			  }

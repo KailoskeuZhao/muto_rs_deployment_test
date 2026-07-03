@@ -9,7 +9,6 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "builtin_interfaces/msg/time.hpp"
 #include <sensor_msgs/msg/point_field.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
@@ -22,10 +21,8 @@ using namespace ydlidar;
 
 void LaserScanToMsg(
 	const LaserScan &scan,
-	sensor_msgs::msg::PointCloud2 &cloud,
-	const builtin_interfaces::msg::Time &stamp)
+	sensor_msgs::msg::PointCloud2 &cloud)
 {
-	cloud.header.stamp = stamp;
 	cloud.header.frame_id = "lidar_frame";
 
 	cloud.height = 1;
@@ -164,7 +161,8 @@ class LidarNode : public rclcpp::Node
 			  void publish_lidar_info(){
 				if((this->laser).doProcessSimple(this->scan)){
 					sensor_msgs::msg::PointCloud2 msg;
-					LaserScanToMsg(this->scan, msg, this->get_clock()->now().to_msg());
+					LaserScanToMsg(this->scan, msg);
+					msg.header.stamp = this->get_clock()->now().to_msg();
 					publisher_->publish(msg);
 				}	  
 			  }

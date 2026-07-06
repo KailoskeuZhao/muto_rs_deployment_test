@@ -13,7 +13,7 @@ def generate_launch_description():
     )
     output_topic_arg = DeclareLaunchArgument(
         "output_topic",
-        default_value="/camera/depth/scan",
+        default_value="/fused/laserscan",
         description="Output LaserScan topic.",
     )
     processing_frame_arg = DeclareLaunchArgument(
@@ -23,7 +23,7 @@ def generate_launch_description():
     )
     lidar_topic_arg = DeclareLaunchArgument(
         "lidar_topic",
-        default_value="lidar/PointCloud",
+        default_value="/lidar/PointCloud",
         description="Optional LiDAR PointCloud2 topic to merge into the scan.",
     )
     use_lidar_arg = DeclareLaunchArgument(

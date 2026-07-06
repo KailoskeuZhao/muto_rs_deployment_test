@@ -25,8 +25,8 @@ public:
   : Node("camera_pointcloud_to_laserscan_node")
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/camera/depth/points");
-    lidar_topic_ = declare_parameter<std::string>("lidar_topic", "lidar/PointCloud");
-    output_topic_ = declare_parameter<std::string>("output_topic", "/camera/depth/scan");
+    lidar_topic_ = declare_parameter<std::string>("lidar_topic", "/lidar/PointCloud");
+    output_topic_ = declare_parameter<std::string>("output_topic", "/fused/laserscan");
     processing_frame_ = declare_parameter<std::string>("processing_frame", "camera_link");
     use_lidar_ = declare_parameter<bool>("use_lidar", true);
 
@@ -125,6 +125,13 @@ private:
 
   void lidarPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
+    if (!received_lidar_cloud_) {
+      received_lidar_cloud_ = true;
+      RCLCPP_INFO(
+        get_logger(), "Received first lidar cloud on %s with frame_id '%s'",
+        lidar_topic_.c_str(), msg->header.frame_id.c_str());
+    }
+
     std::lock_guard<std::mutex> lock(latest_lidar_mutex_);
     latest_lidar_cloud_ = msg;
   }
@@ -346,6 +353,7 @@ private:
   double max_lidar_age_;
   rclcpp::Duration transform_timeout_{0, 0};
   bool log_filter_stats_;
+  bool received_lidar_cloud_{false};
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr camera_subscriber_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_subscriber_;

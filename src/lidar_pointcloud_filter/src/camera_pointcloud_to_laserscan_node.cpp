@@ -264,11 +264,22 @@ private:
       transform = tf2::transformToEigen(transform_msg);
       return true;
     } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Failed to transform %s cloud from %s to %s: %s",
-        cloud_name, msg.header.frame_id.c_str(), target_frame.c_str(), ex.what());
-      return false;
+      const std::string stamped_error = ex.what();
+      try {
+        const geometry_msgs::msg::TransformStamped transform_msg =
+          tf_buffer_->lookupTransform(
+          target_frame, msg.header.frame_id, rclcpp::Time(0, 0, get_clock()->get_clock_type()),
+          transform_timeout_);
+        transform = tf2::transformToEigen(transform_msg);
+        return true;
+      } catch (const tf2::TransformException & latest_ex) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Failed to transform %s cloud from %s to %s. stamped lookup: %s; latest lookup: %s",
+          cloud_name, msg.header.frame_id.c_str(), target_frame.c_str(), stamped_error.c_str(),
+          latest_ex.what());
+        return false;
+      }
     }
   }
 

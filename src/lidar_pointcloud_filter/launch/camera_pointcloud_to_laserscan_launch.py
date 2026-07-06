@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -21,10 +22,30 @@ def generate_launch_description():
         default_value="camera_link",
         description="Frame used for camera/LiDAR projection, z filtering, and scan output.",
     )
+    raw_lidar_topic_arg = DeclareLaunchArgument(
+        "raw_lidar_topic",
+        default_value="/lidar/PointCloud",
+        description="Raw LiDAR PointCloud2 topic consumed by the LiDAR filter.",
+    )
+    filtered_lidar_topic_arg = DeclareLaunchArgument(
+        "filtered_lidar_topic",
+        default_value="/lidar/PointCloudFiltered",
+        description="Filtered LiDAR PointCloud2 topic consumed by the scan synthesizer.",
+    )
     lidar_topic_arg = DeclareLaunchArgument(
         "lidar_topic",
-        default_value="/lidar/PointCloud",
-        description="Optional LiDAR PointCloud2 topic to merge into the scan.",
+        default_value=LaunchConfiguration("filtered_lidar_topic"),
+        description="LiDAR PointCloud2 topic to merge into the scan.",
+    )
+    launch_lidar_filter_arg = DeclareLaunchArgument(
+        "launch_lidar_filter",
+        default_value="true",
+        description="Whether to launch the LiDAR PointCloud2 filter before scan synthesis.",
+    )
+    lidar_filter_target_frame_arg = DeclareLaunchArgument(
+        "lidar_filter_target_frame",
+        default_value="base_frame",
+        description="Frame that filtered LiDAR point clouds are transformed into.",
     )
     use_lidar_arg = DeclareLaunchArgument(
         "use_lidar",
@@ -76,7 +97,11 @@ def generate_launch_description():
         input_topic_arg,
         output_topic_arg,
         processing_frame_arg,
+        raw_lidar_topic_arg,
+        filtered_lidar_topic_arg,
         lidar_topic_arg,
+        launch_lidar_filter_arg,
+        lidar_filter_target_frame_arg,
         use_lidar_arg,
         min_z_arg,
         max_z_arg,
@@ -86,6 +111,23 @@ def generate_launch_description():
         queue_size_arg,
         max_lidar_age_arg,
         transform_timeout_arg,
+        Node(
+            package="lidar_pointcloud_filter",
+            executable="lidar_pointcloud_filter_node",
+            name="lidar_pointcloud_filter_node",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("launch_lidar_filter")),
+            parameters=[{
+                "input_topic": LaunchConfiguration("raw_lidar_topic"),
+                "output_topic": LaunchConfiguration("filtered_lidar_topic"),
+                "target_frame": LaunchConfiguration("lidar_filter_target_frame"),
+                "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
+                "transform_timeout": ParameterValue(
+                    LaunchConfiguration("transform_timeout"),
+                    value_type=float,
+                ),
+            }],
+        ),
         Node(
             package="lidar_pointcloud_filter",
             executable="camera_pointcloud_to_laserscan_node",

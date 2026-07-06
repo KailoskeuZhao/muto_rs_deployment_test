@@ -178,6 +178,9 @@ private:
 
     FilterStats lidar_stats;
     const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
+    if (use_lidar_ && !lidar_used) {
+      return;
+    }
 
     publisher_->publish(scan);
 
@@ -209,19 +212,19 @@ private:
     if (!lidar_msg) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "No lidar cloud received yet on %s; publishing camera-only scan", lidar_topic_.c_str());
+        "No lidar cloud received yet on %s; waiting before publishing scan", lidar_topic_.c_str());
       return false;
     }
     if (lidar_msg->header.frame_id.empty()) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Latest lidar cloud has an empty frame_id; publishing camera-only scan");
+        "Latest lidar cloud has an empty frame_id; waiting before publishing scan");
       return false;
     }
     if (!hasField(*lidar_msg, "x") || !hasField(*lidar_msg, "y") || !hasField(*lidar_msg, "z")) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Latest lidar cloud is missing x/y/z fields; publishing camera-only scan");
+        "Latest lidar cloud is missing x/y/z fields; waiting before publishing scan");
       return false;
     }
 
@@ -231,7 +234,7 @@ private:
       if (age > max_lidar_age_) {
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "Latest lidar cloud is %.3f seconds from the camera cloud; publishing camera-only scan",
+          "Latest lidar cloud is %.3f seconds from the camera cloud; waiting before publishing scan",
           age);
         return false;
       }

@@ -69,13 +69,13 @@ def generate_launch_description():
     )
     angle_min_arg = DeclareLaunchArgument(
         "angle_min",
-        default_value="-0.5096361108",
-        description="Minimum scan angle in radians. Default is -29.2 degrees.",
+        default_value="-3.141592653589793",
+        description="Minimum scan angle in radians. Default is full-circle -pi.",
     )
     angle_max_arg = DeclareLaunchArgument(
         "angle_max",
-        default_value="0.5096361108",
-        description="Maximum scan angle in radians. Default is 29.2 degrees.",
+        default_value="3.141592653589793",
+        description="Maximum scan angle in radians. Default is full-circle pi.",
     )
     queue_size_arg = DeclareLaunchArgument(
         "queue_size",

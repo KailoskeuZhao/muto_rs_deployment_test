@@ -35,8 +35,8 @@ public:
     range_min_ = declare_parameter<double>("range_min", 0.05);
     range_max_ = declare_parameter<double>("range_max", 3.0);
 
-    angle_min_ = declare_parameter<double>("angle_min", -29.2 * M_PI / 180.0);
-    angle_max_ = declare_parameter<double>("angle_max", 29.2 * M_PI / 180.0);
+    angle_min_ = declare_parameter<double>("angle_min", -M_PI);
+    angle_max_ = declare_parameter<double>("angle_max", M_PI);
     angle_increment_ = declare_parameter<double>("angle_increment", M_PI / 720.0);
     scan_time_ = declare_parameter<double>("scan_time", 0.0);
     time_increment_ = declare_parameter<double>("time_increment", 0.0);

@@ -16,6 +16,11 @@ def generate_launch_description():
         default_value="/camera/depth/scan",
         description="Output LaserScan topic.",
     )
+    processing_frame_arg = DeclareLaunchArgument(
+        "processing_frame",
+        default_value="camera_link",
+        description="Frame used for camera/LiDAR projection, z filtering, and scan output.",
+    )
     lidar_topic_arg = DeclareLaunchArgument(
         "lidar_topic",
         default_value="lidar/PointCloud",
@@ -70,6 +75,7 @@ def generate_launch_description():
     return LaunchDescription([
         input_topic_arg,
         output_topic_arg,
+        processing_frame_arg,
         lidar_topic_arg,
         use_lidar_arg,
         min_z_arg,
@@ -89,6 +95,7 @@ def generate_launch_description():
                 "input_topic": LaunchConfiguration("input_topic"),
                 "lidar_topic": LaunchConfiguration("lidar_topic"),
                 "output_topic": LaunchConfiguration("output_topic"),
+                "processing_frame": LaunchConfiguration("processing_frame"),
                 "use_lidar": ParameterValue(LaunchConfiguration("use_lidar"), value_type=bool),
                 "min_z": ParameterValue(LaunchConfiguration("min_z"), value_type=float),
                 "max_z": ParameterValue(LaunchConfiguration("max_z"), value_type=float),

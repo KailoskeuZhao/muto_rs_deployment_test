@@ -27,6 +27,7 @@ public:
     input_topic_ = declare_parameter<std::string>("input_topic", "/camera/depth/points");
     lidar_topic_ = declare_parameter<std::string>("lidar_topic", "lidar/PointCloud");
     output_topic_ = declare_parameter<std::string>("output_topic", "/camera/depth/scan");
+    processing_frame_ = declare_parameter<std::string>("processing_frame", "camera_link");
     use_lidar_ = declare_parameter<bool>("use_lidar", true);
 
     min_z_ = declare_parameter<double>("min_z", -0.4);
@@ -66,11 +67,13 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Converting %s -> %s in original cloud frame, z[%.3f, %.3f], range[%.3f, %.3f]",
-      input_topic_.c_str(), output_topic_.c_str(), min_z_, max_z_, range_min_, range_max_);
+      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], range[%.3f, %.3f]",
+      input_topic_.c_str(), output_topic_.c_str(),
+      processing_frame_.empty() ? "<input frame>" : processing_frame_.c_str(),
+      min_z_, max_z_, range_min_, range_max_);
     if (use_lidar_) {
       RCLCPP_INFO(
-        get_logger(), "Merging latest %s into each scan with TF into the camera cloud frame",
+        get_logger(), "Merging latest %s into each scan with TF into the processing frame",
         lidar_topic_.c_str());
     }
   }
@@ -115,6 +118,9 @@ private:
       RCLCPP_WARN(get_logger(), "max_lidar_age must be non-negative; using 0.0");
       max_lidar_age_ = 0.0;
     }
+    if (processing_frame_.empty()) {
+      RCLCPP_WARN(get_logger(), "processing_frame is empty; using each input cloud frame");
+    }
   }
 
   void lidarPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -141,8 +147,16 @@ private:
     const auto bin_count = static_cast<std::size_t>(
       std::floor((angle_max_ - angle_min_) / angle_increment_)) + 1U;
 
+    const std::string scan_frame =
+      processing_frame_.empty() ? msg->header.frame_id : processing_frame_;
+    Eigen::Isometry3d camera_to_scan_frame = Eigen::Isometry3d::Identity();
+    if (!lookupCloudTransform(*msg, scan_frame, camera_to_scan_frame, "camera")) {
+      return;
+    }
+
     sensor_msgs::msg::LaserScan scan;
     scan.header = msg->header;
+    scan.header.frame_id = scan_frame;
     scan.angle_min = static_cast<float>(angle_min_);
     scan.angle_max = static_cast<float>(angle_min_ + (bin_count - 1U) * angle_increment_);
     scan.angle_increment = static_cast<float>(angle_increment_);
@@ -153,7 +167,7 @@ private:
     scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
 
     FilterStats camera_stats;
-    addCloudToScan(*msg, Eigen::Isometry3d::Identity(), scan, camera_stats);
+    addCloudToScan(*msg, camera_to_scan_frame, scan, camera_stats);
 
     FilterStats lidar_stats;
     const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
@@ -217,24 +231,38 @@ private:
     }
 
     Eigen::Isometry3d lidar_to_scan_frame = Eigen::Isometry3d::Identity();
-    if (lidar_msg->header.frame_id != scan.header.frame_id) {
-      try {
-        const geometry_msgs::msg::TransformStamped transform =
-          tf_buffer_->lookupTransform(
-          scan.header.frame_id, lidar_msg->header.frame_id, lidar_msg->header.stamp,
-          transform_timeout_);
-        lidar_to_scan_frame = tf2::transformToEigen(transform);
-      } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "Failed to transform lidar cloud from %s to %s: %s; publishing camera-only scan",
-          lidar_msg->header.frame_id.c_str(), scan.header.frame_id.c_str(), ex.what());
-        return false;
-      }
+    if (!lookupCloudTransform(*lidar_msg, scan.header.frame_id, lidar_to_scan_frame, "lidar")) {
+      return false;
     }
 
     addCloudToScan(*lidar_msg, lidar_to_scan_frame, scan, stats);
     return true;
+  }
+
+  bool lookupCloudTransform(
+    const sensor_msgs::msg::PointCloud2 & msg,
+    const std::string & target_frame,
+    Eigen::Isometry3d & transform,
+    const char * cloud_name)
+  {
+    if (msg.header.frame_id == target_frame) {
+      transform = Eigen::Isometry3d::Identity();
+      return true;
+    }
+
+    try {
+      const geometry_msgs::msg::TransformStamped transform_msg =
+        tf_buffer_->lookupTransform(
+        target_frame, msg.header.frame_id, msg.header.stamp, transform_timeout_);
+      transform = tf2::transformToEigen(transform_msg);
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Failed to transform %s cloud from %s to %s: %s",
+        cloud_name, msg.header.frame_id.c_str(), target_frame.c_str(), ex.what());
+      return false;
+    }
   }
 
   void addCloudToScan(
@@ -303,6 +331,7 @@ private:
   std::string input_topic_;
   std::string lidar_topic_;
   std::string output_topic_;
+  std::string processing_frame_;
   bool use_lidar_;
   double min_z_;
   double max_z_;

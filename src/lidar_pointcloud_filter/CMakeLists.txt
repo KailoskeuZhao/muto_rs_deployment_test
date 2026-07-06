@@ -16,6 +16,7 @@ find_package(tf2_eigen REQUIRED)
 find_package(tf2_ros REQUIRED)
 
 add_executable(lidar_pointcloud_filter_node src/lidar_pointcloud_filter_node.cpp)
+add_executable(camera_pointcloud_to_laserscan_node src/camera_pointcloud_to_laserscan_node.cpp)
 
 target_include_directories(lidar_pointcloud_filter_node PUBLIC
   ${PCL_INCLUDE_DIRS}
@@ -35,7 +36,18 @@ ament_target_dependencies(lidar_pointcloud_filter_node
   tf2_ros
 )
 
-install(TARGETS lidar_pointcloud_filter_node
+ament_target_dependencies(camera_pointcloud_to_laserscan_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  tf2
+  tf2_eigen
+  tf2_ros
+)
+
+install(TARGETS
+  lidar_pointcloud_filter_node
+  camera_pointcloud_to_laserscan_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

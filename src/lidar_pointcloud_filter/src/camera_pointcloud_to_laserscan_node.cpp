@@ -35,6 +35,8 @@ public:
     max_z_ = declare_parameter<double>("max_z", 0.2);
     range_min_ = declare_parameter<double>("range_min", 0.05);
     range_max_ = declare_parameter<double>("range_max", 3.0);
+    lidar_range_min_ = declare_parameter<double>("lidar_range_min", range_min_);
+    lidar_range_max_ = declare_parameter<double>("lidar_range_max", 15.0);
 
     angle_min_ = declare_parameter<double>("angle_min", -M_PI);
     angle_max_ = declare_parameter<double>("angle_max", M_PI);
@@ -68,14 +70,15 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], range[%.3f, %.3f]",
+      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], camera range[%.3f, %.3f]",
       input_topic_.c_str(), output_topic_.c_str(),
       processing_frame_.empty() ? "<input frame>" : processing_frame_.c_str(),
       min_z_, max_z_, range_min_, range_max_);
     if (use_lidar_) {
       RCLCPP_INFO(
-        get_logger(), "Merging latest %s into each scan with TF into the processing frame",
-        lidar_topic_.c_str());
+        get_logger(),
+        "Merging latest %s into each scan with TF into the processing frame, lidar range[%.3f, %.3f]",
+        lidar_topic_.c_str(), lidar_range_min_, lidar_range_max_);
     }
   }
 
@@ -106,6 +109,15 @@ private:
     if (range_max_ < range_min_) {
       RCLCPP_WARN(get_logger(), "range_max is smaller than range_min; swapping them");
       std::swap(range_max_, range_min_);
+    }
+    if (lidar_range_min_ < 0.0) {
+      RCLCPP_WARN(get_logger(), "lidar_range_min must be non-negative; using 0.0");
+      lidar_range_min_ = 0.0;
+    }
+    if (lidar_range_max_ < lidar_range_min_) {
+      RCLCPP_WARN(
+        get_logger(), "lidar_range_max is smaller than lidar_range_min; swapping them");
+      std::swap(lidar_range_max_, lidar_range_min_);
     }
     if (angle_max_ < angle_min_) {
       RCLCPP_WARN(get_logger(), "angle_max is smaller than angle_min; swapping them");
@@ -170,12 +182,14 @@ private:
     scan.angle_increment = static_cast<float>(angle_increment_);
     scan.time_increment = static_cast<float>(time_increment_);
     scan.scan_time = static_cast<float>(scan_time_);
-    scan.range_min = static_cast<float>(range_min_);
-    scan.range_max = static_cast<float>(range_max_);
+    const double scan_range_min = use_lidar_ ? std::min(range_min_, lidar_range_min_) : range_min_;
+    const double scan_range_max = use_lidar_ ? std::max(range_max_, lidar_range_max_) : range_max_;
+    scan.range_min = static_cast<float>(scan_range_min);
+    scan.range_max = static_cast<float>(scan_range_max);
     scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
 
     FilterStats camera_stats;
-    addCloudToScan(*msg, camera_to_scan_frame, scan, camera_stats);
+    addCloudToScan(*msg, camera_to_scan_frame, scan, camera_stats, range_min_, range_max_);
 
     FilterStats lidar_stats;
     const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
@@ -246,7 +260,8 @@ private:
       return false;
     }
 
-    addCloudToScan(*lidar_msg, lidar_to_scan_frame, scan, stats);
+    addCloudToScan(
+      *lidar_msg, lidar_to_scan_frame, scan, stats, lidar_range_min_, lidar_range_max_);
     return true;
   }
 
@@ -291,7 +306,9 @@ private:
     const sensor_msgs::msg::PointCloud2 & msg,
     const Eigen::Isometry3d & transform,
     sensor_msgs::msg::LaserScan & scan,
-    FilterStats & stats)
+    FilterStats & stats,
+    const double range_min,
+    const double range_max)
   {
     sensor_msgs::PointCloud2ConstIterator<float> iter_x(msg, "x");
     sensor_msgs::PointCloud2ConstIterator<float> iter_y(msg, "y");
@@ -315,7 +332,7 @@ private:
       }
 
       const double range = std::hypot(x, y);
-      if (range < range_min_ || range > range_max_) {
+      if (range < range_min || range > range_max) {
         ++stats.range_filtered;
         continue;
       }
@@ -359,6 +376,8 @@ private:
   double max_z_;
   double range_min_;
   double range_max_;
+  double lidar_range_min_;
+  double lidar_range_max_;
   double angle_min_;
   double angle_max_;
   double angle_increment_;

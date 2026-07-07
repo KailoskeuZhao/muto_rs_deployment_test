@@ -75,7 +75,12 @@ def generate_launch_description():
     range_max_arg = DeclareLaunchArgument(
         "range_max",
         default_value="3.0",
-        description="Maximum scan range in meters.",
+        description="Maximum depth camera scan range in meters.",
+    )
+    lidar_range_max_arg = DeclareLaunchArgument(
+        "lidar_range_max",
+        default_value="15.0",
+        description="Maximum LiDAR scan range in meters.",
     )
     angle_min_arg = DeclareLaunchArgument(
         "angle_min",
@@ -118,6 +123,7 @@ def generate_launch_description():
         min_z_arg,
         max_z_arg,
         range_max_arg,
+        lidar_range_max_arg,
         angle_min_arg,
         angle_max_arg,
         queue_size_arg,
@@ -161,6 +167,10 @@ def generate_launch_description():
                 "min_z": ParameterValue(LaunchConfiguration("min_z"), value_type=float),
                 "max_z": ParameterValue(LaunchConfiguration("max_z"), value_type=float),
                 "range_max": ParameterValue(LaunchConfiguration("range_max"), value_type=float),
+                "lidar_range_max": ParameterValue(
+                    LaunchConfiguration("lidar_range_max"),
+                    value_type=float,
+                ),
                 "angle_min": ParameterValue(LaunchConfiguration("angle_min"), value_type=float),
                 "angle_max": ParameterValue(LaunchConfiguration("angle_max"), value_type=float),
                 "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),

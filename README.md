@@ -78,7 +78,7 @@ This launch does not start LiDAR filtering. It expects an existing LiDAR `PointC
 
 To consume a different existing LiDAR cloud, override `lidar_topic`.
 
-Run LiDAR PointCloud filtering, 2D LiDAR odometry, rough foot odometry, and the EKF:
+Run LiDAR PointCloud filtering, 2D LiDAR odometry, and the EKF:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
@@ -90,10 +90,10 @@ If `/scan_odom` is already being produced by another launch:
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_lidar_odometry:=false
 ```
 
-Rough gait/cmd_vel dead-reckoned odometry is launched by default and is fused into the EKF as a low-trust planar velocity source on `/foot_odom`. To disable it:
+Rough gait/cmd_vel dead-reckoned odometry is disabled by default. To launch it and fuse `/foot_odom` into the EKF as a low-trust planar velocity source:
 
 ```bash
-ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
+ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=true
 ```
 
 Run online async SLAM Toolbox mapping plus fused LaserScan conversion:
@@ -123,7 +123,7 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | `/fused/laserscan` | Synthetic/fused `LaserScan` generated from camera depth points and LiDAR points. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
-| `/foot_odom` | Rough command/gait odometry from `cmd_vel` and motor-angle activity. Fused into the EKF as low-trust planar velocity. |
+| `/foot_odom` | Rough command/gait odometry from `cmd_vel` and motor-angle activity. Optional EKF input when `launch_foot_odometry:=true`. |
 
 ## Fused LaserScan Notes
 

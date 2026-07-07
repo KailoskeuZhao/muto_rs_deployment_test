@@ -3,7 +3,7 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -13,6 +13,11 @@ def generate_launch_description():
         get_package_share_directory("yahboomcar_bringup"),
         "config",
         "ekf_lidar_imu.yaml"
+    )
+    ekf_with_foot_config = os.path.join(
+        get_package_share_directory("yahboomcar_bringup"),
+        "config",
+        "ekf_lidar_imu_with_foot.yaml"
     )
     lidar_odometry_launch = os.path.join(
         get_package_share_directory("lidar_pointcloud_filter"),
@@ -27,8 +32,8 @@ def generate_launch_description():
     )
     launch_foot_odometry_arg = DeclareLaunchArgument(
         "launch_foot_odometry",
-        default_value="true",
-        description="Whether to launch rough Muto gait/cmd_vel foot odometry for EKF input on /foot_odom.",
+        default_value="false",
+        description="Whether to launch rough Muto gait/cmd_vel foot odometry and fuse /foot_odom into the EKF.",
     )
 
     return LaunchDescription([
@@ -56,6 +61,15 @@ def generate_launch_description():
             executable='ekf_node',
             name='ekf_filter_node',
             output='screen',
+            condition=UnlessCondition(LaunchConfiguration("launch_foot_odometry")),
             parameters=[ekf_config],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node',
+            output='screen',
+            condition=IfCondition(LaunchConfiguration("launch_foot_odometry")),
+            parameters=[ekf_with_foot_config],
         ),
     ])

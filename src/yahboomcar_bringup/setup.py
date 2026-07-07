@@ -40,6 +40,7 @@ setup(
         'patrol_4ROS_R2 = yahboomcar_bringup.patrol_4ROS_R2:main',
         'patrol_a1_R2 = yahboomcar_bringup.patrol_a1_R2:main',   
         'muto_driver = yahboomcar_bringup.muto_driver:main', 
+        'foot_odometry_node = yahboomcar_bringup.foot_odometry_node:main',
         ],
     },
 )

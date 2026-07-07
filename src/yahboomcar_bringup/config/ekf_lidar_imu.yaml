@@ -27,6 +27,21 @@ ekf_filter_node:
     odom0_relative: false
     odom0_pose_rejection_threshold: 5.0
 
+    odom1: /foot_odom
+    # Rough gait odometry is command/dead-reckoned, so only use its body-frame
+    # planar velocity estimate. Leave pose/yaw to LiDAR odometry and yaw rate
+    # to the IMU.
+    odom1_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_nodelay: false
+    odom1_differential: false
+    odom1_relative: false
+    odom1_twist_rejection_threshold: 1.0
+
     imu0: /imu/data_processed
     imu0_config: [false, false, false,
                   false, false, false,

@@ -42,7 +42,27 @@ source install/setup.bash
 
 If your robot workspace lives somewhere else, run the same commands from that workspace root.
 
+## Practical Pipeline Notes
+
+For the current LiDAR filtering, fused LaserScan generation, and SLAM Toolbox mapping path, see:
+
+```text
+docs/lidar_fusion_slam_pipeline_notes.md
+```
+
 ## Common Launches
+
+Start the TG30 LiDAR, Orbbec depth camera, and Muto base driver:
+
+```bash
+ros2 launch yahboomcar_bringup muto_hardware_launch.py
+```
+
+This launch starts:
+
+- `lidar_tg30/lidar_node`
+- `orbbec_camera/astra_pro_plus.launch.py`
+- `yahboomcar_bringup/muto_driver`
 
 Start the sensor TF publishers:
 
@@ -60,6 +80,12 @@ Convert camera depth points plus LiDAR points into a fused `LaserScan`:
 
 ```bash
 ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py
+```
+
+By default this launch also starts `lidar_pointcloud_filter_node`. If the LiDAR filter is already running somewhere else:
+
+```bash
+ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py launch_lidar_filter:=false
 ```
 
 Run the IMU + LiDAR odometry EKF:
@@ -81,11 +107,35 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | Topic | Purpose |
 | --- | --- |
 | `/lidar/PointCloud` | Raw LiDAR `PointCloud2`. |
-| `/lidar/PointCloudFiltered` | Filtered LiDAR `PointCloud2`, usually produced by `lidar_pointcloud_filter_node`. |
+| `/lidar/PointCloudFiltered` | Filtered and voxel-downsampled LiDAR `PointCloud2`, currently using `voxel_leaf_size:=0.02` by default. This is the odometry-friendly output. |
+| `/lidar/PointCloudFilteredNoDownsample` | Filtered LiDAR `PointCloud2` before voxel downsampling. This is the default LiDAR input for fused LaserScan generation. |
 | `/camera/depth/points` | Depth camera `PointCloud2`. |
 | `/fused/laserscan` | Synthetic/fused `LaserScan` generated from camera depth points and LiDAR points. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
+
+## Fused LaserScan Notes
+
+`camera_pointcloud_to_laserscan_launch.py` currently builds `/fused/laserscan` from:
+
+- `/camera/depth/points`
+- `/lidar/PointCloudFilteredNoDownsample`
+
+The no-downsample LiDAR topic is used so the final scan has enough angular samples. The downsampled `/lidar/PointCloudFiltered` topic still exists for workflows that want a lighter cloud, such as LiDAR odometry.
+
+Current defaults:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `output_topic` | `/fused/laserscan` | Final synthetic scan. |
+| `processing_frame` | `camera_link` | Camera and LiDAR clouds are transformed here before scan projection. |
+| `angle_min` / `angle_max` | `-pi` / `pi` | Full-circle scan output. |
+| `range_max` | `3.0` | Depth camera points are capped at 3 m. |
+| `lidar_range_max` | `15.0` | LiDAR points are capped at 15 m. |
+| `min_z` / `max_z` | `-0.4` / `0.2` | Z slice applied in `processing_frame`. |
+| `voxel_leaf_size` | `0.02` | Applies to `/lidar/PointCloudFiltered`; the scan path uses the no-downsample output. |
+
+When `use_lidar:=true`, the scan node waits until a valid LiDAR cloud is available instead of publishing camera-only scans during startup.
 
 ## Frame Notes
 

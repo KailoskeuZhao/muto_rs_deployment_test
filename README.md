@@ -42,14 +42,6 @@ source install/setup.bash
 
 If your robot workspace lives somewhere else, run the same commands from that workspace root.
 
-## Practical Pipeline Notes
-
-For the current LiDAR filtering, fused LaserScan generation, and SLAM Toolbox mapping path, see:
-
-```text
-docs/lidar_fusion_slam_pipeline_notes.md
-```
-
 ## Common Launches
 
 Start the TG30 LiDAR, Orbbec depth camera, and Muto base driver:
@@ -82,22 +74,34 @@ Convert camera depth points plus LiDAR points into a fused `LaserScan`:
 ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py
 ```
 
-By default this launch also starts `lidar_pointcloud_filter_node`. If the LiDAR filter is already running somewhere else:
+This launch does not start LiDAR filtering. It expects an existing LiDAR `PointCloud2` topic, defaulting to `/lidar/PointCloudFilteredNoDownsample`. Start `filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py` first if that topic is not already running.
 
-```bash
-ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py launch_lidar_filter:=false
-```
+To consume a different existing LiDAR cloud, override `lidar_topic`.
 
-Run the IMU + LiDAR odometry EKF:
+Run LiDAR PointCloud filtering, 2D LiDAR odometry, and the IMU + LiDAR odometry EKF:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
 ```
 
-Run online async SLAM Toolbox mapping:
+If `/scan_odom` is already being produced by another launch:
+
+```bash
+ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_lidar_odometry:=false
+```
+
+Run online async SLAM Toolbox mapping plus fused LaserScan conversion:
 
 ```bash
 ros2 launch muto_slam_mapping online_async_mapping_launch.py
+```
+
+This launch assumes the upstream LiDAR filtered cloud already exists, usually `/lidar/PointCloudFilteredNoDownsample` from `filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py`. It does not start LiDAR filtering.
+
+It launches fused LaserScan generation by default because `mapper_params_online_async.yaml` uses `/fused/laserscan` as `scan_topic`. If `/fused/laserscan` is already running:
+
+```bash
+ros2 launch muto_slam_mapping online_async_mapping_launch.py launch_fused_laserscan:=false
 ```
 
 YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` are parameter files, not launch files. Launch the matching `.py` file and let it load the YAML.
@@ -133,7 +137,7 @@ Current defaults:
 | `range_max` | `3.0` | Depth camera points are capped at 3 m. |
 | `lidar_range_max` | `15.0` | LiDAR points are capped at 15 m. |
 | `min_z` / `max_z` | `-0.4` / `0.2` | Z slice applied in `processing_frame`. |
-| `voxel_leaf_size` | `0.02` | Applies to `/lidar/PointCloudFiltered`; the scan path uses the no-downsample output. |
+| `lidar_topic` | `/lidar/PointCloudFilteredNoDownsample` | Existing LiDAR cloud consumed by the scan converter. |
 
 When `use_lidar:=true`, the scan node waits until a valid LiDAR cloud is available instead of publishing camera-only scans during startup.
 

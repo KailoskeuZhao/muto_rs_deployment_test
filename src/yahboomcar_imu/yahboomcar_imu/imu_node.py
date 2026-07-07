@@ -8,6 +8,8 @@ DEFAULT_GYRO_LSB_PER_DPS = 65.5
 LSB_PER_DPS = DEFAULT_GYRO_LSB_PER_DPS
 GRAVITY_MPS2 = 9.80665
 DEFAULT_ACCEL_COUNTS_PER_G = 8500.0
+DEFAULT_CALIBRATION_SAMPLE_COUNT = 500
+DEFAULT_CALIBRATION_MAX_READS = 1500
 ANGULAR_VELOCITY_COVARIANCE = 6.9e-6
 LINEAR_ACCELERATION_COVARIANCE = 5.1e-4
 MAGNETIC_FIELD_COVARIANCE = 3.0e-4
@@ -89,10 +91,14 @@ class ImuPublisher:
             node.declare_parameter("imu_calibrate_on_startup", True).value
         )
         self.calibration_sample_count = int(
-            node.declare_parameter("imu_calibration_sample_count", 100).value
+            node.declare_parameter(
+                "imu_calibration_sample_count", DEFAULT_CALIBRATION_SAMPLE_COUNT
+            ).value
         )
         self.calibration_max_reads = int(
-            node.declare_parameter("imu_calibration_max_reads", 300).value
+            node.declare_parameter(
+                "imu_calibration_max_reads", DEFAULT_CALIBRATION_MAX_READS
+            ).value
         )
         self.calibration_read_interval = float(
             node.declare_parameter("imu_calibration_read_interval", 0.005).value

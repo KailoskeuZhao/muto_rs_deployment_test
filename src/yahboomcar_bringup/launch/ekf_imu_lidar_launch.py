@@ -3,9 +3,9 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 def generate_launch_description():
@@ -13,6 +13,11 @@ def generate_launch_description():
         get_package_share_directory("yahboomcar_bringup"),
         "config",
         "ekf_lidar_imu.yaml"
+    )
+    ekf_imu_only_config = os.path.join(
+        get_package_share_directory("yahboomcar_bringup"),
+        "config",
+        "ekf_imu_only.yaml"
     )
     ekf_with_foot_config = os.path.join(
         get_package_share_directory("yahboomcar_bringup"),
@@ -35,20 +40,43 @@ def generate_launch_description():
         default_value="false",
         description="Whether to launch rough Muto gait/cmd_vel foot odometry and fuse /foot_odom into the EKF.",
     )
+    imu_only_arg = DeclareLaunchArgument(
+        "imu_only",
+        default_value="false",
+        description="Run an IMU-only EKF test using /imu/data_processed and no LiDAR or foot odometry.",
+    )
+
+    use_lidar_odometry = PythonExpression([
+        "'", LaunchConfiguration("launch_lidar_odometry"), "' == 'true' and '",
+        LaunchConfiguration("imu_only"), "' == 'false'",
+    ])
+    use_foot_odometry = PythonExpression([
+        "'", LaunchConfiguration("launch_foot_odometry"), "' == 'true' and '",
+        LaunchConfiguration("imu_only"), "' == 'false'",
+    ])
+    use_lidar_imu_ekf = PythonExpression([
+        "'", LaunchConfiguration("launch_foot_odometry"), "' == 'false' and '",
+        LaunchConfiguration("imu_only"), "' == 'false'",
+    ])
+    use_foot_ekf = PythonExpression([
+        "'", LaunchConfiguration("launch_foot_odometry"), "' == 'true' and '",
+        LaunchConfiguration("imu_only"), "' == 'false'",
+    ])
 
     return LaunchDescription([
         launch_lidar_odometry_arg,
         launch_foot_odometry_arg,
+        imu_only_arg,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(lidar_odometry_launch),
-            condition=IfCondition(LaunchConfiguration("launch_lidar_odometry")),
+            condition=IfCondition(use_lidar_odometry),
         ),
         Node(
             package='yahboomcar_bringup',
             executable='foot_odometry_node',
             name='foot_odometry_node',
             output='screen',
-            condition=IfCondition(LaunchConfiguration("launch_foot_odometry")),
+            condition=IfCondition(use_foot_odometry),
             parameters=[{
                 'odom_topic': '/foot_odom',
                 'frame_id': 'odom',
@@ -61,7 +89,7 @@ def generate_launch_description():
             executable='ekf_node',
             name='ekf_filter_node',
             output='screen',
-            condition=UnlessCondition(LaunchConfiguration("launch_foot_odometry")),
+            condition=IfCondition(use_lidar_imu_ekf),
             parameters=[ekf_config],
         ),
         Node(
@@ -69,7 +97,15 @@ def generate_launch_description():
             executable='ekf_node',
             name='ekf_filter_node',
             output='screen',
-            condition=IfCondition(LaunchConfiguration("launch_foot_odometry")),
+            condition=IfCondition(use_foot_ekf),
             parameters=[ekf_with_foot_config],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node',
+            output='screen',
+            condition=IfCondition(LaunchConfiguration("imu_only")),
+            parameters=[ekf_imu_only_config],
         ),
     ])

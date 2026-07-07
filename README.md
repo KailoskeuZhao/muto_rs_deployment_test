@@ -96,6 +96,12 @@ Rough gait/cmd_vel dead-reckoned odometry is disabled by default. To launch it a
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=true
 ```
 
+To test the EKF with only `/imu/data_processed` and no LiDAR or foot odometry:
+
+```bash
+ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py imu_only:=true
+```
+
 Run online async SLAM Toolbox mapping plus fused LaserScan conversion:
 
 ```bash

@@ -30,11 +30,16 @@ def generate_launch_description():
     filtered_lidar_topic_arg = DeclareLaunchArgument(
         "filtered_lidar_topic",
         default_value="/lidar/PointCloudFiltered",
-        description="Filtered LiDAR PointCloud2 topic consumed by the scan synthesizer.",
+        description="Downsampled filtered LiDAR PointCloud2 topic.",
+    )
+    filtered_lidar_no_downsample_topic_arg = DeclareLaunchArgument(
+        "filtered_lidar_no_downsample_topic",
+        default_value="/lidar/PointCloudFilteredNoDownsample",
+        description="Filtered LiDAR PointCloud2 topic before voxel downsampling.",
     )
     lidar_topic_arg = DeclareLaunchArgument(
         "lidar_topic",
-        default_value=LaunchConfiguration("filtered_lidar_topic"),
+        default_value=LaunchConfiguration("filtered_lidar_no_downsample_topic"),
         description="LiDAR PointCloud2 topic to merge into the scan.",
     )
     launch_lidar_filter_arg = DeclareLaunchArgument(
@@ -104,6 +109,7 @@ def generate_launch_description():
         processing_frame_arg,
         raw_lidar_topic_arg,
         filtered_lidar_topic_arg,
+        filtered_lidar_no_downsample_topic_arg,
         lidar_topic_arg,
         launch_lidar_filter_arg,
         lidar_filter_target_frame_arg,
@@ -126,6 +132,9 @@ def generate_launch_description():
             parameters=[{
                 "input_topic": LaunchConfiguration("raw_lidar_topic"),
                 "output_topic": LaunchConfiguration("filtered_lidar_topic"),
+                "no_downsample_output_topic": LaunchConfiguration(
+                    "filtered_lidar_no_downsample_topic"
+                ),
                 "target_frame": LaunchConfiguration("lidar_filter_target_frame"),
                 "voxel_leaf_size": ParameterValue(
                     LaunchConfiguration("voxel_leaf_size"),

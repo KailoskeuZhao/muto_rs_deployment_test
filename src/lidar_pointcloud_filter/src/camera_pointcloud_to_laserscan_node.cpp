@@ -25,7 +25,8 @@ public:
   : Node("camera_pointcloud_to_laserscan_node")
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/camera/depth/points");
-    lidar_topic_ = declare_parameter<std::string>("lidar_topic", "/lidar/PointCloud");
+    lidar_topic_ = declare_parameter<std::string>(
+      "lidar_topic", "/lidar/PointCloudFilteredNoDownsample");
     output_topic_ = declare_parameter<std::string>("output_topic", "/fused/laserscan");
     processing_frame_ = declare_parameter<std::string>("processing_frame", "camera_link");
     use_lidar_ = declare_parameter<bool>("use_lidar", true);

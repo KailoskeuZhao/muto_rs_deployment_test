@@ -27,6 +27,8 @@ public:
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "lidar/PointCloud");
     output_topic_ = declare_parameter<std::string>("output_topic", "lidar/PointCloudFiltered");
+    no_downsample_output_topic_ = declare_parameter<std::string>(
+      "no_downsample_output_topic", "lidar/PointCloudFilteredNoDownsample");
     target_frame_ = declare_parameter<std::string>("target_frame", "base_frame");
 
     min_range_ = declare_parameter<double>("min_range", 0.05);
@@ -70,6 +72,10 @@ public:
 
     const auto qos = rclcpp::QoS(rclcpp::KeepLast(queue_size_));
     publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, qos);
+    if (!no_downsample_output_topic_.empty()) {
+      no_downsample_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+        no_downsample_output_topic_, qos);
+    }
     subscriber_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_, qos,
       std::bind(&LidarPointCloudFilterNode::pointCloudCallback, this, std::placeholders::_1));
@@ -78,6 +84,11 @@ public:
       get_logger(), "Filtering %s -> %s in target frame %s",
       input_topic_.c_str(), output_topic_.c_str(),
       target_frame_.empty() ? "<input frame>" : target_frame_.c_str());
+    if (no_downsample_publisher_) {
+      RCLCPP_INFO(
+        get_logger(), "Publishing no-downsample filtered cloud to %s",
+        no_downsample_output_topic_.c_str());
+    }
     RCLCPP_INFO(
       get_logger(),
       "Range [%.3f, %.3f], ROI x[%.3f, %.3f] y[%.3f, %.3f] z[%.3f, %.3f], voxel %.3f",
@@ -144,6 +155,10 @@ private:
     cropped_cloud->width = static_cast<std::uint32_t>(cropped_cloud->size());
     cropped_cloud->is_dense = true;
 
+    if (no_downsample_publisher_) {
+      publishCloud(*cropped_cloud, *msg, output_frame, no_downsample_publisher_);
+    }
+
     auto output_cloud = cropped_cloud;
     if (voxel_leaf_size_ > 0.0 && !cropped_cloud->empty()) {
       auto downsampled_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
@@ -160,11 +175,7 @@ private:
       output_cloud = downsampled_cloud;
     }
 
-    sensor_msgs::msg::PointCloud2 output_msg;
-    pcl::toROSMsg(*output_cloud, output_msg);
-    output_msg.header = msg->header;
-    output_msg.header.frame_id = output_frame;
-    publisher_->publish(output_msg);
+    publishCloud(*output_cloud, *msg, output_frame, publisher_);
 
     if (log_filter_stats_) {
       RCLCPP_INFO_THROTTLE(
@@ -173,6 +184,19 @@ private:
         input_cloud.size(), finite_cloud.size(), target_frame_cloud.size(),
         cropped_cloud->size(), output_cloud->size());
     }
+  }
+
+  void publishCloud(
+    const pcl::PointCloud<pcl::PointXYZ> & cloud,
+    const sensor_msgs::msg::PointCloud2 & input_msg,
+    const std::string & output_frame,
+    const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & publisher)
+  {
+    sensor_msgs::msg::PointCloud2 output_msg;
+    pcl::toROSMsg(cloud, output_msg);
+    output_msg.header = input_msg.header;
+    output_msg.header.frame_id = output_frame;
+    publisher->publish(output_msg);
   }
 
   bool transformCloudToTargetFrame(
@@ -212,6 +236,7 @@ private:
 
   std::string input_topic_;
   std::string output_topic_;
+  std::string no_downsample_output_topic_;
   std::string target_frame_;
   double min_range_;
   double max_range_;
@@ -228,6 +253,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscriber_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_downsample_publisher_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };

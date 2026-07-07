@@ -4,7 +4,7 @@ import time
 
 from sensor_msgs.msg import Imu, MagneticField
 
-LSB_PER_DPS = 16.4 #2000dps?
+LSB_PER_DPS = 65.5 #what dps?
 GRAVITY_MPS2 = 9.80665
 DEFAULT_ACCEL_COUNTS_PER_G = 8500.0
 ANGULAR_VELOCITY_COVARIANCE = 6.9e-6

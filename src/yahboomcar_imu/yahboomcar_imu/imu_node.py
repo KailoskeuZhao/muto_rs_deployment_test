@@ -4,7 +4,8 @@ import time
 
 from sensor_msgs.msg import Imu, MagneticField
 
-LSB_PER_DPS = 65.5 #what dps?
+DEFAULT_GYRO_LSB_PER_DPS = 65.5
+LSB_PER_DPS = DEFAULT_GYRO_LSB_PER_DPS
 GRAVITY_MPS2 = 9.80665
 DEFAULT_ACCEL_COUNTS_PER_G = 8500.0
 ANGULAR_VELOCITY_COVARIANCE = 6.9e-6
@@ -78,6 +79,9 @@ class ImuPublisher:
         self.accel_counts_per_g = float(
             node.declare_parameter("imu_accel_counts_per_g", DEFAULT_ACCEL_COUNTS_PER_G).value
         )
+        self.gyro_lsb_per_dps = float(
+            node.declare_parameter("imu_gyro_lsb_per_dps", DEFAULT_GYRO_LSB_PER_DPS).value
+        )
         self.gyro_bias_x = float(node.declare_parameter("imu_gyro_bias_x", 0.0).value)
         self.gyro_bias_y = float(node.declare_parameter("imu_gyro_bias_y", 0.0).value)
         self.gyro_bias_z = float(node.declare_parameter("imu_gyro_bias_z", 0.0).value)
@@ -111,6 +115,12 @@ class ImuPublisher:
                 f"{DEFAULT_ACCEL_COUNTS_PER_G:.1f}"
             )
             self.accel_counts_per_g = DEFAULT_ACCEL_COUNTS_PER_G
+        if self.gyro_lsb_per_dps <= 0.0:
+            self.node.get_logger().warn(
+                "imu_gyro_lsb_per_dps must be positive; using default "
+                f"{DEFAULT_GYRO_LSB_PER_DPS:.1f}"
+            )
+            self.gyro_lsb_per_dps = DEFAULT_GYRO_LSB_PER_DPS
         if self.calibration_sample_count < 1:
             self.node.get_logger().warn("imu_calibration_sample_count must be positive; using 1")
             self.calibration_sample_count = 1
@@ -255,9 +265,9 @@ class ImuPublisher:
         imu2.linear_acceleration.x = ax * GRAVITY_MPS2 / self.accel_counts_per_g
         imu2.linear_acceleration.y = ay * GRAVITY_MPS2 / self.accel_counts_per_g
         imu2.linear_acceleration.z = az * GRAVITY_MPS2 / self.accel_counts_per_g
-        imu2.angular_velocity.x = (gx - self.gyro_bias_x) / LSB_PER_DPS * math.pi / 180.0
-        imu2.angular_velocity.y = (gy - self.gyro_bias_y) / LSB_PER_DPS * math.pi / 180.0
-        imu2.angular_velocity.z = (gz - self.gyro_bias_z) / LSB_PER_DPS * math.pi / 180.0
+        imu2.angular_velocity.x = (gx - self.gyro_bias_x) / self.gyro_lsb_per_dps * math.pi / 180.0
+        imu2.angular_velocity.y = (gy - self.gyro_bias_y) / self.gyro_lsb_per_dps * math.pi / 180.0
+        imu2.angular_velocity.z = (gz - self.gyro_bias_z) / self.gyro_lsb_per_dps * math.pi / 180.0
 
         set_imu_covariance(imu2)
 

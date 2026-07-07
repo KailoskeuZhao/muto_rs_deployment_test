@@ -1,9 +1,12 @@
 # imu_node.py
 import math
+import time
 
 from sensor_msgs.msg import Imu, MagneticField
 
-LSB_PER_DPS = 131.0  # approx for ±250 dps
+LSB_PER_DPS = 16.4 #2000dps?
+GRAVITY_MPS2 = 9.80665
+DEFAULT_ACCEL_COUNTS_PER_G = 8500.0
 ANGULAR_VELOCITY_COVARIANCE = 6.9e-6
 LINEAR_ACCELERATION_COVARIANCE = 5.1e-4
 MAGNETIC_FIELD_COVARIANCE = 3.0e-4
@@ -42,6 +45,27 @@ def read_imu_raw(node, muto):
         return None
 
 
+def trimmed_mean(values, trim_fraction=0.1):
+    if not values:
+        return 0.0
+
+    ordered = sorted(values)
+    trim_count = int(len(ordered) * trim_fraction)
+    if trim_count > 0 and trim_count * 2 < len(ordered):
+        ordered = ordered[trim_count:-trim_count]
+
+    return sum(ordered) / len(ordered)
+
+
+def population_stddev(values):
+    if len(values) < 2:
+        return 0.0
+
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return math.sqrt(variance)
+
+
 class ImuPublisher:
     def __init__(self, node, muto, imu_link="imu_link"):
         self.node = node
@@ -50,6 +74,147 @@ class ImuPublisher:
         self.publisher = node.create_publisher(Imu, "/imu/data_raw", 100)
         self.mag_raw_publisher = node.create_publisher(MagneticField, "/imu/mag_raw", 100)
         self.publisher_1 = node.create_publisher(Imu, "/imu/data_processed", 100)
+
+        self.accel_counts_per_g = float(
+            node.declare_parameter("imu_accel_counts_per_g", DEFAULT_ACCEL_COUNTS_PER_G).value
+        )
+        self.gyro_bias_x = float(node.declare_parameter("imu_gyro_bias_x", 0.0).value)
+        self.gyro_bias_y = float(node.declare_parameter("imu_gyro_bias_y", 0.0).value)
+        self.gyro_bias_z = float(node.declare_parameter("imu_gyro_bias_z", 0.0).value)
+        self.calibrate_on_startup = bool(
+            node.declare_parameter("imu_calibrate_on_startup", True).value
+        )
+        self.calibration_sample_count = int(
+            node.declare_parameter("imu_calibration_sample_count", 100).value
+        )
+        self.calibration_max_reads = int(
+            node.declare_parameter("imu_calibration_max_reads", 300).value
+        )
+        self.calibration_read_interval = float(
+            node.declare_parameter("imu_calibration_read_interval", 0.005).value
+        )
+        self.calibration_gyro_stddev_limit = float(
+            node.declare_parameter("imu_calibration_gyro_stddev_limit", 80.0).value
+        )
+        self.calibration_accel_norm_stddev_limit = float(
+            node.declare_parameter("imu_calibration_accel_norm_stddev_limit", 250.0).value
+        )
+
+        self.normalize_calibration_parameters()
+        if self.calibrate_on_startup:
+            self.calibrate_from_startup_samples()
+
+    def normalize_calibration_parameters(self):
+        if self.accel_counts_per_g <= 0.0:
+            self.node.get_logger().warn(
+                "imu_accel_counts_per_g must be positive; using default "
+                f"{DEFAULT_ACCEL_COUNTS_PER_G:.1f}"
+            )
+            self.accel_counts_per_g = DEFAULT_ACCEL_COUNTS_PER_G
+        if self.calibration_sample_count < 1:
+            self.node.get_logger().warn("imu_calibration_sample_count must be positive; using 1")
+            self.calibration_sample_count = 1
+        if self.calibration_max_reads < self.calibration_sample_count:
+            self.node.get_logger().warn(
+                "imu_calibration_max_reads is smaller than imu_calibration_sample_count; "
+                "using sample count"
+            )
+            self.calibration_max_reads = self.calibration_sample_count
+        if self.calibration_read_interval < 0.0:
+            self.node.get_logger().warn(
+                "imu_calibration_read_interval must be non-negative; using 0.0"
+            )
+            self.calibration_read_interval = 0.0
+        if self.calibration_gyro_stddev_limit <= 0.0:
+            self.node.get_logger().warn(
+                "imu_calibration_gyro_stddev_limit must be positive; using 80.0"
+            )
+            self.calibration_gyro_stddev_limit = 80.0
+        if self.calibration_accel_norm_stddev_limit <= 0.0:
+            self.node.get_logger().warn(
+                "imu_calibration_accel_norm_stddev_limit must be positive; using 250.0"
+            )
+            self.calibration_accel_norm_stddev_limit = 250.0
+
+    def calibrate_from_startup_samples(self):
+        self.node.get_logger().info(
+            "Calibrating IMU from startup raw samples; keep the robot still"
+        )
+
+        samples = []
+        for _ in range(self.calibration_max_reads):
+            raw = read_imu_raw(self.node, self.muto)
+            if raw is not None:
+                samples.append(raw)
+                if len(samples) >= self.calibration_sample_count:
+                    break
+            if self.calibration_read_interval > 0.0:
+                time.sleep(self.calibration_read_interval)
+
+        min_required_samples = max(10, self.calibration_sample_count // 2)
+        if len(samples) < min_required_samples:
+            self.node.get_logger().warn(
+                "IMU startup calibration skipped: collected "
+                f"{len(samples)} valid samples, need at least {min_required_samples}. "
+                "Using configured IMU scale/bias parameters."
+            )
+            return
+
+        ax_values = [sample[0] for sample in samples]
+        ay_values = [sample[1] for sample in samples]
+        az_values = [sample[2] for sample in samples]
+        gx_values = [sample[3] for sample in samples]
+        gy_values = [sample[4] for sample in samples]
+        gz_values = [sample[5] for sample in samples]
+
+        gyro_stddev = max(
+            population_stddev(gx_values),
+            population_stddev(gy_values),
+            population_stddev(gz_values),
+        )
+        accel_norms = [
+            math.sqrt(ax * ax + ay * ay + az * az)
+            for ax, ay, az in zip(ax_values, ay_values, az_values)
+        ]
+        accel_norm_stddev = population_stddev(accel_norms)
+
+        if gyro_stddev > self.calibration_gyro_stddev_limit:
+            self.node.get_logger().warn(
+                "IMU startup calibration rejected: gyro stddev "
+                f"{gyro_stddev:.2f} raw counts exceeds "
+                f"{self.calibration_gyro_stddev_limit:.2f}. "
+                "Robot may have moved during startup."
+            )
+            return
+        if accel_norm_stddev > self.calibration_accel_norm_stddev_limit:
+            self.node.get_logger().warn(
+                "IMU startup calibration rejected: accel norm stddev "
+                f"{accel_norm_stddev:.2f} raw counts exceeds "
+                f"{self.calibration_accel_norm_stddev_limit:.2f}. "
+                "Robot may have moved during startup."
+            )
+            return
+
+        accel_counts_per_g = trimmed_mean(accel_norms)
+        if accel_counts_per_g <= 0.0:
+            self.node.get_logger().warn(
+                "IMU startup calibration rejected: invalid accel scale estimate. "
+                "Using configured IMU scale/bias parameters."
+            )
+            return
+
+        self.accel_counts_per_g = accel_counts_per_g
+        self.gyro_bias_x = trimmed_mean(gx_values)
+        self.gyro_bias_y = trimmed_mean(gy_values)
+        self.gyro_bias_z = trimmed_mean(gz_values)
+
+        self.node.get_logger().info(
+            "IMU startup calibration accepted: "
+            f"samples={len(samples)}, accel_counts_per_g={self.accel_counts_per_g:.2f}, "
+            f"gyro_bias=({self.gyro_bias_x:.2f}, {self.gyro_bias_y:.2f}, "
+            f"{self.gyro_bias_z:.2f}), gyro_stddev={gyro_stddev:.2f}, "
+            f"accel_norm_stddev={accel_norm_stddev:.2f}"
+        )
 
     def publish_imu_data(self):
         raw = read_imu_raw(self.node, self.muto)
@@ -87,12 +252,12 @@ class ImuPublisher:
         imu2 = Imu()
         imu2.header.stamp = stamp
         imu2.header.frame_id = self.imu_link
-        imu2.linear_acceleration.x = ax * 9.8 / 8500.0
-        imu2.linear_acceleration.y = ay * 9.8 / 8500.0
-        imu2.linear_acceleration.z = az * 9.8 / 8500.0
-        imu2.angular_velocity.x = (gx -31.0) / LSB_PER_DPS * math.pi / 180.0
-        imu2.angular_velocity.y = (gy +1.0) / LSB_PER_DPS * math.pi / 180.0
-        imu2.angular_velocity.z = (gz +17.0) / LSB_PER_DPS * math.pi / 180.0
+        imu2.linear_acceleration.x = ax * GRAVITY_MPS2 / self.accel_counts_per_g
+        imu2.linear_acceleration.y = ay * GRAVITY_MPS2 / self.accel_counts_per_g
+        imu2.linear_acceleration.z = az * GRAVITY_MPS2 / self.accel_counts_per_g
+        imu2.angular_velocity.x = (gx - self.gyro_bias_x) / LSB_PER_DPS * math.pi / 180.0
+        imu2.angular_velocity.y = (gy - self.gyro_bias_y) / LSB_PER_DPS * math.pi / 180.0
+        imu2.angular_velocity.z = (gz - self.gyro_bias_z) / LSB_PER_DPS * math.pi / 180.0
 
         set_imu_covariance(imu2)
 

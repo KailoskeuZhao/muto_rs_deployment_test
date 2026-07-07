@@ -36,6 +36,11 @@ def generate_launch_description():
         default_value="5",
         description="Point cloud and odometry queue size.",
     )
+    voxel_leaf_size_arg = DeclareLaunchArgument(
+        "voxel_leaf_size",
+        default_value="0.02",
+        description="LiDAR filter voxel leaf size in meters. 0.0 disables downsampling.",
+    )
 
     return LaunchDescription([
         input_topic_arg,
@@ -44,6 +49,7 @@ def generate_launch_description():
         odom_topic_arg,
         odom_child_frame_arg,
         queue_size_arg,
+        voxel_leaf_size_arg,
         Node(
             package="lidar_pointcloud_filter",
             executable="lidar_pointcloud_filter_node",
@@ -53,6 +59,10 @@ def generate_launch_description():
                 "input_topic": LaunchConfiguration("input_topic"),
                 "output_topic": LaunchConfiguration("filtered_topic"),
                 "target_frame": LaunchConfiguration("target_frame"),
+                "voxel_leaf_size": ParameterValue(
+                    LaunchConfiguration("voxel_leaf_size"),
+                    value_type=float,
+                ),
                 "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
             }],
         ),

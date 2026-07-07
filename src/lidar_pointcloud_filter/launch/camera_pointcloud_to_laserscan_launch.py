@@ -47,6 +47,11 @@ def generate_launch_description():
         default_value="base_frame",
         description="Frame that filtered LiDAR point clouds are transformed into.",
     )
+    voxel_leaf_size_arg = DeclareLaunchArgument(
+        "voxel_leaf_size",
+        default_value="0.02",
+        description="LiDAR filter voxel leaf size in meters. 0.0 disables downsampling.",
+    )
     use_lidar_arg = DeclareLaunchArgument(
         "use_lidar",
         default_value="true",
@@ -102,6 +107,7 @@ def generate_launch_description():
         lidar_topic_arg,
         launch_lidar_filter_arg,
         lidar_filter_target_frame_arg,
+        voxel_leaf_size_arg,
         use_lidar_arg,
         min_z_arg,
         max_z_arg,
@@ -121,6 +127,10 @@ def generate_launch_description():
                 "input_topic": LaunchConfiguration("raw_lidar_topic"),
                 "output_topic": LaunchConfiguration("filtered_lidar_topic"),
                 "target_frame": LaunchConfiguration("lidar_filter_target_frame"),
+                "voxel_leaf_size": ParameterValue(
+                    LaunchConfiguration("voxel_leaf_size"),
+                    value_type=float,
+                ),
                 "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
                 "transform_timeout": ParameterValue(
                     LaunchConfiguration("transform_timeout"),

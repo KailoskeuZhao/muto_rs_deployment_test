@@ -39,7 +39,7 @@ public:
     min_z_ = declare_parameter<double>("min_z", -1.0);
     max_z_ = declare_parameter<double>("max_z", 1.0);
 
-    voxel_leaf_size_ = declare_parameter<double>("voxel_leaf_size", 0.05);
+    voxel_leaf_size_ = declare_parameter<double>("voxel_leaf_size", 0.02);
     queue_size_ = declare_parameter<int>("queue_size", 5);
     transform_timeout_ = rclcpp::Duration::from_seconds(
       declare_parameter<double>("transform_timeout", 0.05));

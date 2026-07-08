@@ -10,7 +10,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     imu_gyro_lsb_per_dps_arg = DeclareLaunchArgument(
         "imu_gyro_lsb_per_dps",
-        default_value="65.5",
+        default_value="16.4",
         description="Raw gyro counts per degree/second used for processed IMU angular velocity.",
     )
 

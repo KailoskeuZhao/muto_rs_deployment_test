@@ -83,8 +83,8 @@ def generate_launch_description():
     )
     rf2o_publish_tf_arg = DeclareLaunchArgument(
         "rf2o_publish_tf",
-        default_value="false",
-        description="Whether rf2o should publish odom->base TF. Keep false when EKF publishes TF.",
+        default_value="true",
+        description="Whether rf2o should publish odom->base TF. Set false when EKF publishes TF.",
     )
     rf2o_freq_arg = DeclareLaunchArgument(
         "rf2o_freq",

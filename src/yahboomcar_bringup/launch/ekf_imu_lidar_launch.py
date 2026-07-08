@@ -70,6 +70,9 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(lidar_odometry_launch),
             condition=IfCondition(use_lidar_odometry),
+            launch_arguments={
+                "rf2o_publish_tf": "false",
+            }.items(),
         ),
         Node(
             package='yahboomcar_bringup',

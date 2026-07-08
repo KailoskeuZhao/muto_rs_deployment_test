@@ -68,6 +68,8 @@ Run LiDAR PointCloud filtering, filtered-cloud LaserScan conversion, and RF2O la
 ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
 ```
 
+Standalone RF2O publishes `odom -> base_frame` TF by default. When launched through `ekf_imu_lidar_launch.py`, RF2O TF publishing is disabled and the EKF publishes the odom TF instead.
+
 Convert camera depth points plus LiDAR points into a fused `LaserScan`:
 
 ```bash

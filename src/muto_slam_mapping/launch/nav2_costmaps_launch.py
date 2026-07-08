@@ -76,8 +76,8 @@ def generate_launch_description():
                 {"autostart": autostart},
                 {
                     "node_names": [
-                        "global_costmap/global_costmap",
-                        "local_costmap/local_costmap",
+                        "/global_costmap/global_costmap",
+                        "/local_costmap/local_costmap",
                     ]
                 },
             ],

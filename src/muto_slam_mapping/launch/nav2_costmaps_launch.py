@@ -29,29 +29,34 @@ def generate_launch_description():
         default_value="",
         description="Optional map YAML file passed to nav2_bringup.",
     )
+    use_namespace_arg = DeclareLaunchArgument(
+        "use_namespace",
+        default_value="False",
+        description="Whether nav2_bringup should apply a namespace.",
+    )
     use_localization_arg = DeclareLaunchArgument(
         "use_localization",
-        default_value="false",
+        default_value="False",
         description="Whether nav2_bringup should launch localization. False assumes SLAM/localization is already running.",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
-        default_value="false",
+        default_value="False",
         description="Use simulation clock if true.",
     )
     autostart_arg = DeclareLaunchArgument(
         "autostart",
-        default_value="true",
+        default_value="True",
         description="Automatically configure and activate Nav2 lifecycle nodes.",
     )
     use_composition_arg = DeclareLaunchArgument(
         "use_composition",
-        default_value="false",
+        default_value="False",
         description="Whether nav2_bringup should use component composition.",
     )
     use_respawn_arg = DeclareLaunchArgument(
         "use_respawn",
-        default_value="false",
+        default_value="False",
         description="Whether nav2_bringup should respawn crashed nodes.",
     )
     log_level_arg = DeclareLaunchArgument(
@@ -62,6 +67,7 @@ def generate_launch_description():
 
     params_file = LaunchConfiguration("params_file")
     map_yaml = LaunchConfiguration("map")
+    use_namespace = LaunchConfiguration("use_namespace")
     use_localization = LaunchConfiguration("use_localization")
     use_sim_time = LaunchConfiguration("use_sim_time")
     autostart = LaunchConfiguration("autostart")
@@ -72,6 +78,7 @@ def generate_launch_description():
     return LaunchDescription([
         params_file_arg,
         map_arg,
+        use_namespace_arg,
         use_localization_arg,
         use_sim_time_arg,
         autostart_arg,
@@ -83,7 +90,8 @@ def generate_launch_description():
             launch_arguments={
                 "params_file": params_file,
                 "map": map_yaml,
-                "slam": "false",
+                "use_namespace": use_namespace,
+                "slam": "False",
                 "use_localization": use_localization,
                 "use_sim_time": use_sim_time,
                 "autostart": autostart,

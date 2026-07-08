@@ -2,42 +2,22 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
     default_params_file = os.path.join(
         get_package_share_directory("muto_slam_mapping"),
         "config",
-        "nav2_costmap_params.yaml",
-    )
-    nav2_bringup_launch = os.path.join(
-        get_package_share_directory("nav2_bringup"),
-        "launch",
-        "bringup_launch.py",
+        "nav2_params.yaml",
     )
 
     params_file_arg = DeclareLaunchArgument(
         "params_file",
         default_value=default_params_file,
-        description="Path to the Nav2 parameter file.",
-    )
-    map_arg = DeclareLaunchArgument(
-        "map",
-        default_value="",
-        description="Optional map YAML file passed to nav2_bringup.",
-    )
-    use_namespace_arg = DeclareLaunchArgument(
-        "use_namespace",
-        default_value="False",
-        description="Whether nav2_bringup should apply a namespace.",
-    )
-    use_localization_arg = DeclareLaunchArgument(
-        "use_localization",
-        default_value="False",
-        description="Whether nav2_bringup should launch localization. False assumes SLAM/localization is already running.",
+        description="Path to the Nav2 parameter file. Only the costmap sections are launched here.",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
@@ -49,16 +29,6 @@ def generate_launch_description():
         default_value="True",
         description="Automatically configure and activate Nav2 lifecycle nodes.",
     )
-    use_composition_arg = DeclareLaunchArgument(
-        "use_composition",
-        default_value="False",
-        description="Whether nav2_bringup should use component composition.",
-    )
-    use_respawn_arg = DeclareLaunchArgument(
-        "use_respawn",
-        default_value="False",
-        description="Whether nav2_bringup should respawn crashed nodes.",
-    )
     log_level_arg = DeclareLaunchArgument(
         "log_level",
         default_value="info",
@@ -66,38 +36,51 @@ def generate_launch_description():
     )
 
     params_file = LaunchConfiguration("params_file")
-    map_yaml = LaunchConfiguration("map")
-    use_namespace = LaunchConfiguration("use_namespace")
-    use_localization = LaunchConfiguration("use_localization")
     use_sim_time = LaunchConfiguration("use_sim_time")
     autostart = LaunchConfiguration("autostart")
-    use_composition = LaunchConfiguration("use_composition")
-    use_respawn = LaunchConfiguration("use_respawn")
     log_level = LaunchConfiguration("log_level")
+    remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
 
     return LaunchDescription([
         params_file_arg,
-        map_arg,
-        use_namespace_arg,
-        use_localization_arg,
         use_sim_time_arg,
         autostart_arg,
-        use_composition_arg,
-        use_respawn_arg,
         log_level_arg,
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(nav2_bringup_launch),
-            launch_arguments={
-                "params_file": params_file,
-                "map": map_yaml,
-                "use_namespace": use_namespace,
-                "slam": "False",
-                "use_localization": use_localization,
-                "use_sim_time": use_sim_time,
-                "autostart": autostart,
-                "use_composition": use_composition,
-                "use_respawn": use_respawn,
-                "log_level": log_level,
-            }.items(),
+        Node(
+            package="nav2_costmap_2d",
+            executable="nav2_costmap_2d",
+            name="global_costmap",
+            namespace="global_costmap",
+            output="screen",
+            parameters=[params_file, {"use_sim_time": use_sim_time}],
+            arguments=["--ros-args", "--log-level", log_level],
+            remappings=remappings,
+        ),
+        Node(
+            package="nav2_costmap_2d",
+            executable="nav2_costmap_2d",
+            name="local_costmap",
+            namespace="local_costmap",
+            output="screen",
+            parameters=[params_file, {"use_sim_time": use_sim_time}],
+            arguments=["--ros-args", "--log-level", log_level],
+            remappings=remappings,
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_costmaps",
+            output="screen",
+            parameters=[
+                {"use_sim_time": use_sim_time},
+                {"autostart": autostart},
+                {
+                    "node_names": [
+                        "global_costmap/global_costmap",
+                        "local_costmap/local_costmap",
+                    ]
+                },
+            ],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
     ])

@@ -118,17 +118,17 @@ It launches fused LaserScan generation by default because `mapper_params_online_
 ros2 launch muto_slam_mapping online_async_mapping_launch.py launch_fused_laserscan:=false
 ```
 
-Run standalone Nav2 global/local costmaps:
+Run minimal Nav2 costmap bringup:
 
 ```bash
 ros2 launch muto_slam_mapping nav2_costmaps_launch.py
 ```
 
-This launch starts only two standalone `nav2_costmap_2d` lifecycle nodes plus a lifecycle manager. It does not start `controller_server`, `planner_server`, BT navigation, AMCL, or full `nav2_bringup`. The default config is the fuller `nav2_params.yaml`, but only the costmap sections are used by this launch. The costmaps use `/fused/laserscan`, `base_frame`, `odom`, and `map`.
+This launch follows Nav2's normal costmap ownership model: `controller_server` creates the local costmap and `planner_server` creates the global costmap. It only lifecycle-manages those two servers, so it does not start BT navigation, AMCL, route, behavior, waypoint, docking, or full `nav2_bringup`. The default config is the fuller `nav2_params.yaml`.
 
 The smaller `nav2_costmap_params.yaml` is still kept and can be passed with `params_file:=...` if needed.
 
-Mapping/TF/scan inputs should already be running. The global costmap expects `map -> base_frame`, and the local costmap expects `odom -> base_frame`.
+Mapping/TF/scan inputs should already be running. The global costmap expects `map -> base_frame`, and the local costmap expects `odom -> base_frame`. Both costmaps use `/fused/laserscan`, `base_frame`, `odom`, and `map`.
 
 YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` are parameter files, not launch files. Launch the matching `.py` file and let it load the YAML.
 

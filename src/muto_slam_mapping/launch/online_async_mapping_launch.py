@@ -45,6 +45,10 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(fused_laserscan_launch),
             condition=IfCondition(LaunchConfiguration("launch_fused_laserscan")),
+            launch_arguments={
+                "publish_fused_scan": "true",
+                "publish_filtered_lidar_scan": "false",
+            }.items(),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(slam_toolbox_launch),

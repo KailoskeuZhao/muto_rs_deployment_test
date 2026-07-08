@@ -124,7 +124,7 @@ Run standalone Nav2 global/local costmaps:
 ros2 launch muto_slam_mapping nav2_costmaps_launch.py
 ```
 
-This launch starts `nav2_costmap_2d` global and local costmap lifecycle nodes plus a lifecycle manager. The default config uses `/fused/laserscan`, `base_frame`, `odom`, and `map`, so mapping/TF/scan inputs should already be running.
+This launch wraps `nav2_bringup bringup_launch.py` with the local `nav2_params.yaml`. It defaults `use_localization:=false`, so mapping/TF/scan inputs should already be running. The default config uses `/fused/laserscan`, `base_frame`, `odom`, and `map`.
 
 YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` are parameter files, not launch files. Launch the matching `.py` file and let it load the YAML.
 

@@ -12,8 +12,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
 find_package(tf2 REQUIRED)
-find_package(tf2_eigen REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 
 add_executable(lidar_pointcloud_filter_node src/lidar_pointcloud_filter_node.cpp)
 add_executable(camera_pointcloud_to_laserscan_node src/camera_pointcloud_to_laserscan_node.cpp)
@@ -32,8 +32,8 @@ ament_target_dependencies(lidar_pointcloud_filter_node
   sensor_msgs
   pcl_conversions
   tf2
-  tf2_eigen
   tf2_ros
+  tf2_sensor_msgs
 )
 
 ament_target_dependencies(camera_pointcloud_to_laserscan_node
@@ -41,8 +41,8 @@ ament_target_dependencies(camera_pointcloud_to_laserscan_node
   sensor_msgs
   geometry_msgs
   tf2
-  tf2_eigen
   tf2_ros
+  tf2_sensor_msgs
 )
 
 install(TARGETS

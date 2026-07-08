@@ -4,7 +4,6 @@
 #include <string>
 #include <vector>
 
-#include <pcl/common/transforms.h>
 #include <pcl/filters/filter.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
@@ -14,8 +13,8 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
-#include "tf2_eigen/tf2_eigen.hpp"
 #include "tf2/exceptions.h"
+#include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -98,13 +97,6 @@ public:
 private:
   void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
-    pcl::PointCloud<pcl::PointXYZ> input_cloud;
-    pcl::fromROSMsg(*msg, input_cloud);
-
-    pcl::PointCloud<pcl::PointXYZ> finite_cloud;
-    std::vector<int> finite_indices;
-    pcl::removeNaNFromPointCloud(input_cloud, finite_cloud, finite_indices);
-
     const std::string output_frame = target_frame_.empty() ? msg->header.frame_id : target_frame_;
     if (output_frame.empty()) {
       RCLCPP_WARN_THROTTLE(
@@ -113,11 +105,17 @@ private:
       return;
     }
 
-    pcl::PointCloud<pcl::PointXYZ> target_frame_cloud;
-    if (!transformCloudToTargetFrame(finite_cloud, msg->header.frame_id, output_frame, msg->header.stamp,
-        target_frame_cloud)) {
+    sensor_msgs::msg::PointCloud2 target_frame_msg;
+    if (!transformCloudToTargetFrame(*msg, output_frame, target_frame_msg)) {
       return;
     }
+
+    pcl::PointCloud<pcl::PointXYZ> input_cloud;
+    pcl::fromROSMsg(target_frame_msg, input_cloud);
+
+    pcl::PointCloud<pcl::PointXYZ> target_frame_cloud;
+    std::vector<int> finite_indices;
+    pcl::removeNaNFromPointCloud(input_cloud, target_frame_cloud, finite_indices);
 
     auto cropped_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     cropped_cloud->reserve(target_frame_cloud.size());
@@ -180,9 +178,9 @@ private:
     if (log_filter_stats_) {
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Filtered cloud: input=%zu finite=%zu target=%zu roi_range=%zu output=%zu",
-        input_cloud.size(), finite_cloud.size(), target_frame_cloud.size(),
-        cropped_cloud->size(), output_cloud->size());
+        "Filtered cloud: input=%zu finite=%zu roi_range=%zu output=%zu",
+        input_cloud.size(), target_frame_cloud.size(), cropped_cloud->size(),
+        output_cloud->size());
     }
   }
 
@@ -200,14 +198,13 @@ private:
   }
 
   bool transformCloudToTargetFrame(
-    const pcl::PointCloud<pcl::PointXYZ> & input_cloud,
-    const std::string & source_frame,
+    const sensor_msgs::msg::PointCloud2 & input_msg,
     const std::string & target_frame,
-    const builtin_interfaces::msg::Time & stamp,
-    pcl::PointCloud<pcl::PointXYZ> & output_cloud)
+    sensor_msgs::msg::PointCloud2 & output_msg)
   {
+    const std::string & source_frame = input_msg.header.frame_id;
     if (source_frame == target_frame) {
-      output_cloud = input_cloud;
+      output_msg = input_msg;
       return true;
     }
 
@@ -220,10 +217,9 @@ private:
 
     try {
       const geometry_msgs::msg::TransformStamped transform =
-        tf_buffer_->lookupTransform(target_frame, source_frame, stamp, transform_timeout_);
-      const Eigen::Matrix4f transform_matrix = tf2::transformToEigen(transform).matrix().cast<float>();
-      pcl::transformPointCloud(input_cloud, output_cloud, transform_matrix);
-      output_cloud.header = input_cloud.header;
+        tf_buffer_->lookupTransform(
+        target_frame, source_frame, input_msg.header.stamp, transform_timeout_);
+      tf2::doTransform(input_msg, output_msg, transform);
       return true;
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN_THROTTLE(

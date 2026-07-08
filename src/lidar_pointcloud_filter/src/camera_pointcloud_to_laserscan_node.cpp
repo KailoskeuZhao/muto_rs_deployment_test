@@ -6,15 +6,13 @@
 #include <mutex>
 #include <string>
 
-#include <Eigen/Geometry>
-
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "tf2/exceptions.h"
-#include "tf2_eigen/tf2_eigen.hpp"
+#include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -169,8 +167,8 @@ private:
 
     const std::string scan_frame =
       processing_frame_.empty() ? msg->header.frame_id : processing_frame_;
-    Eigen::Isometry3d camera_to_scan_frame = Eigen::Isometry3d::Identity();
-    if (!lookupCloudTransform(*msg, scan_frame, camera_to_scan_frame, "camera")) {
+    sensor_msgs::msg::PointCloud2 camera_cloud;
+    if (!transformCloudToFrame(*msg, scan_frame, camera_cloud, "camera")) {
       return;
     }
 
@@ -189,7 +187,7 @@ private:
     scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
 
     FilterStats camera_stats;
-    addCloudToScan(*msg, camera_to_scan_frame, scan, camera_stats, range_min_, range_max_);
+    addCloudToScan(camera_cloud, scan, camera_stats, range_min_, range_max_);
 
     FilterStats lidar_stats;
     const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
@@ -255,24 +253,23 @@ private:
       }
     }
 
-    Eigen::Isometry3d lidar_to_scan_frame = Eigen::Isometry3d::Identity();
-    if (!lookupCloudTransform(*lidar_msg, scan.header.frame_id, lidar_to_scan_frame, "lidar")) {
+    sensor_msgs::msg::PointCloud2 lidar_cloud;
+    if (!transformCloudToFrame(*lidar_msg, scan.header.frame_id, lidar_cloud, "lidar")) {
       return false;
     }
 
-    addCloudToScan(
-      *lidar_msg, lidar_to_scan_frame, scan, stats, lidar_range_min_, lidar_range_max_);
+    addCloudToScan(lidar_cloud, scan, stats, lidar_range_min_, lidar_range_max_);
     return true;
   }
 
-  bool lookupCloudTransform(
+  bool transformCloudToFrame(
     const sensor_msgs::msg::PointCloud2 & msg,
     const std::string & target_frame,
-    Eigen::Isometry3d & transform,
+    sensor_msgs::msg::PointCloud2 & transformed_msg,
     const char * cloud_name)
   {
     if (msg.header.frame_id == target_frame) {
-      transform = Eigen::Isometry3d::Identity();
+      transformed_msg = msg;
       return true;
     }
 
@@ -280,7 +277,7 @@ private:
       const geometry_msgs::msg::TransformStamped transform_msg =
         tf_buffer_->lookupTransform(
         target_frame, msg.header.frame_id, msg.header.stamp, transform_timeout_);
-      transform = tf2::transformToEigen(transform_msg);
+      tf2::doTransform(msg, transformed_msg, transform_msg);
       return true;
     } catch (const tf2::TransformException & ex) {
       const std::string stamped_error = ex.what();
@@ -289,7 +286,7 @@ private:
           tf_buffer_->lookupTransform(
           target_frame, msg.header.frame_id, rclcpp::Time(0, 0, get_clock()->get_clock_type()),
           transform_timeout_);
-        transform = tf2::transformToEigen(transform_msg);
+        tf2::doTransform(msg, transformed_msg, transform_msg);
         return true;
       } catch (const tf2::TransformException & latest_ex) {
         RCLCPP_WARN_THROTTLE(
@@ -304,7 +301,6 @@ private:
 
   void addCloudToScan(
     const sensor_msgs::msg::PointCloud2 & msg,
-    const Eigen::Isometry3d & transform,
     sensor_msgs::msg::LaserScan & scan,
     FilterStats & stats,
     const double range_min,
@@ -320,11 +316,9 @@ private:
         continue;
       }
 
-      const Eigen::Vector3d point =
-        transform * Eigen::Vector3d(*iter_x, *iter_y, *iter_z);
-      const double x = point.x();
-      const double y = point.y();
-      const double z = point.z();
+      const double x = *iter_x;
+      const double y = *iter_y;
+      const double z = *iter_z;
 
       if (z < min_z_ || z > max_z_) {
         ++stats.z_filtered;

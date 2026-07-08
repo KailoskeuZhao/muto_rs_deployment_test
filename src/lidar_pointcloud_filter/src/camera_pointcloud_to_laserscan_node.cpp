@@ -70,7 +70,7 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], camera range[%.3f, %.3f]",
+      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], range[%.3f, %.3f]",
       input_topic_.c_str(), output_topic_.c_str(),
       processing_frame_.empty() ? "<input frame>" : processing_frame_.c_str(),
       min_z_, max_z_, range_min_, range_max_);

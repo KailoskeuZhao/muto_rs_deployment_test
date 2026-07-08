@@ -62,7 +62,7 @@ Start the sensor TF publishers:
 ros2 launch tf2_publisher all_tf2_publishers_launch.py
 ```
 
-Run LiDAR PointCloud filtering plus 2D LiDAR odometry:
+Run LiDAR PointCloud filtering, filtered-cloud LaserScan conversion, and RF2O laser odometry:
 
 ```bash
 ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
@@ -78,7 +78,7 @@ This launch does not start LiDAR filtering. It expects an existing LiDAR `PointC
 
 To consume a different existing LiDAR cloud, override `lidar_topic`.
 
-Run LiDAR PointCloud filtering, 2D LiDAR odometry, and the EKF:
+Run LiDAR PointCloud filtering, RF2O laser odometry, and the EKF:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
@@ -123,8 +123,9 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | Topic | Purpose |
 | --- | --- |
 | `/lidar/PointCloud` | Raw LiDAR `PointCloud2`. |
-| `/lidar/PointCloudFiltered` | Filtered and voxel-downsampled LiDAR `PointCloud2`, currently using `voxel_leaf_size:=0.02` by default. This is the odometry-friendly output. |
+| `/lidar/PointCloudFiltered` | Filtered and voxel-downsampled LiDAR `PointCloud2`, currently using `voxel_leaf_size:=0.02` by default. This is the default LiDAR input for RF2O scan conversion. |
 | `/lidar/PointCloudFilteredNoDownsample` | Filtered LiDAR `PointCloud2` before voxel downsampling. This is the default LiDAR input for fused LaserScan generation. |
+| `/lidar/filtered_laserscan` | LiDAR-only synthetic `LaserScan` generated from `/lidar/PointCloudFiltered`; default input to RF2O. |
 | `/camera/depth/points` | Depth camera `PointCloud2`. |
 | `/fused/laserscan` | Synthetic/fused `LaserScan` generated from camera depth points and LiDAR points. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
@@ -138,7 +139,7 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 - `/camera/depth/points`
 - `/lidar/PointCloudFilteredNoDownsample`
 
-The no-downsample LiDAR topic is used so the final scan has enough angular samples. The downsampled `/lidar/PointCloudFiltered` topic still exists for workflows that want a lighter cloud, such as LiDAR odometry.
+The no-downsample LiDAR topic is used so the final scan has enough angular samples. The downsampled `/lidar/PointCloudFiltered` topic still exists for workflows that want a lighter cloud.
 
 Current defaults:
 

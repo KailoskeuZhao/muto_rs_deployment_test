@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -16,15 +17,35 @@ def generate_launch_description():
         default_value="/fused/laserscan",
         description="Output LaserScan topic.",
     )
+    publish_fused_scan_arg = DeclareLaunchArgument(
+        "publish_fused_scan",
+        default_value="true",
+        description="Whether to publish the camera/depth plus LiDAR fused LaserScan.",
+    )
+    filtered_lidar_scan_topic_arg = DeclareLaunchArgument(
+        "filtered_lidar_scan_topic",
+        default_value="/lidar/filtered_laserscan",
+        description="Output LaserScan topic generated from the filtered LiDAR PointCloud2 only.",
+    )
     processing_frame_arg = DeclareLaunchArgument(
         "processing_frame",
         default_value="camera_link",
         description="Frame used for camera/LiDAR projection, z filtering, and scan output.",
     )
+    filtered_lidar_scan_frame_arg = DeclareLaunchArgument(
+        "filtered_lidar_scan_frame",
+        default_value="base_frame",
+        description="Frame used for the filtered LiDAR PointCloud2-only LaserScan output.",
+    )
     lidar_topic_arg = DeclareLaunchArgument(
         "lidar_topic",
         default_value="/lidar/PointCloudFilteredNoDownsample",
         description="Existing LiDAR PointCloud2 topic to merge into the scan.",
+    )
+    publish_filtered_lidar_scan_arg = DeclareLaunchArgument(
+        "publish_filtered_lidar_scan",
+        default_value="true",
+        description="Whether to also publish a LaserScan converted from the filtered LiDAR cloud only.",
     )
     use_lidar_arg = DeclareLaunchArgument(
         "use_lidar",
@@ -80,8 +101,12 @@ def generate_launch_description():
     return LaunchDescription([
         input_topic_arg,
         output_topic_arg,
+        publish_fused_scan_arg,
+        filtered_lidar_scan_topic_arg,
         processing_frame_arg,
+        filtered_lidar_scan_frame_arg,
         lidar_topic_arg,
+        publish_filtered_lidar_scan_arg,
         use_lidar_arg,
         min_z_arg,
         max_z_arg,
@@ -97,6 +122,7 @@ def generate_launch_description():
             executable="camera_pointcloud_to_laserscan_node",
             name="camera_pointcloud_to_laserscan_node",
             output="screen",
+            condition=IfCondition(LaunchConfiguration("publish_fused_scan")),
             parameters=[{
                 "input_topic": LaunchConfiguration("input_topic"),
                 "lidar_topic": LaunchConfiguration("lidar_topic"),
@@ -117,6 +143,32 @@ def generate_launch_description():
                     LaunchConfiguration("max_lidar_age"),
                     value_type=float,
                 ),
+                "transform_timeout": ParameterValue(
+                    LaunchConfiguration("transform_timeout"),
+                    value_type=float,
+                ),
+            }],
+        ),
+        Node(
+            package="lidar_pointcloud_filter",
+            executable="camera_pointcloud_to_laserscan_node",
+            name="filtered_lidar_pointcloud_to_laserscan_node",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("publish_filtered_lidar_scan")),
+            parameters=[{
+                "input_topic": LaunchConfiguration("lidar_topic"),
+                "output_topic": LaunchConfiguration("filtered_lidar_scan_topic"),
+                "processing_frame": LaunchConfiguration("filtered_lidar_scan_frame"),
+                "use_lidar": False,
+                "min_z": ParameterValue(LaunchConfiguration("min_z"), value_type=float),
+                "max_z": ParameterValue(LaunchConfiguration("max_z"), value_type=float),
+                "range_max": ParameterValue(
+                    LaunchConfiguration("lidar_range_max"),
+                    value_type=float,
+                ),
+                "angle_min": ParameterValue(LaunchConfiguration("angle_min"), value_type=float),
+                "angle_max": ParameterValue(LaunchConfiguration("angle_max"), value_type=float),
+                "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
                 "transform_timeout": ParameterValue(
                     LaunchConfiguration("transform_timeout"),
                     value_type=float,

@@ -5,7 +5,11 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, PushROSNamespace, SetParameter
+from launch_ros.actions import Node, SetParameter
+try:
+    from launch_ros.actions import PushROSNamespace
+except ImportError:
+    from launch_ros.actions import PushRosNamespace as PushROSNamespace
 from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import ReplaceString, RewrittenYaml
 

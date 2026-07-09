@@ -88,7 +88,7 @@ class LidarNode : public rclcpp::Node
 	public:
 	LidarNode() : Node("lidar_node"){
 		      publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lidar/PointCloud",5);
-		      timer_ = this->create_wall_timer(125ms, std::bind(&LidarNode::publish_lidar_info, this));
+		      timer_ = this->create_wall_timer(62500us, std::bind(&LidarNode::publish_lidar_info, this));
 		      
 		      ydlidar::os_init();
 
@@ -146,7 +146,7 @@ class LidarNode : public rclcpp::Node
 			      f_optvalue = 0.05f;
 			        laser.setlidaropt(LidarPropMinRange, &f_optvalue, sizeof(float));
 			
-			float frequency = 8.0;
+			float frequency = 16.0;
 			laser.setlidaropt(LidarPropScanFrequency, &frequency, sizeof(float));
 
 			  bool ret = laser.initialize();

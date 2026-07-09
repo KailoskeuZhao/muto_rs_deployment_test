@@ -27,12 +27,12 @@ def generate_launch_description():
     use_namespace_arg = DeclareLaunchArgument(
         "use_namespace",
         default_value="False",
-        description="Whether to apply a namespace to the Nav2 planner/controller bringup.",
+        description="Whether to apply a namespace to the Nav2 planner/controller/smoother bringup.",
     )
     params_file_arg = DeclareLaunchArgument(
         "params_file",
         default_value=default_params_file,
-        description="Path to the Nav2 parameter file for controller, planner, and their costmaps.",
+        description="Path to the Nav2 parameter file for controller, planner, smoother, and costmaps.",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",

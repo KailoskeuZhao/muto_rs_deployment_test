@@ -29,12 +29,12 @@ def generate_launch_description():
     use_namespace_arg = DeclareLaunchArgument(
         "use_namespace",
         default_value="False",
-        description="Whether to apply a namespace to the Nav2 planner/controller/smoother bringup.",
+        description="Whether to apply a namespace to the Nav2 action/planner/controller/smoother bringup.",
     )
     params_file_arg = DeclareLaunchArgument(
         "params_file",
         default_value=default_params_file,
-        description="Path to the Nav2 parameter file for controller, planner, smoother, and costmaps.",
+        description="Path to the Nav2 parameter file for BT navigator, controller, planner, smoother, and costmaps.",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
@@ -65,7 +65,7 @@ def generate_launch_description():
     use_respawn = LaunchConfiguration("use_respawn")
     log_level = LaunchConfiguration("log_level")
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
-    lifecycle_nodes = ["controller_server", "planner_server", "smoother_server"]
+    lifecycle_nodes = ["controller_server", "planner_server", "smoother_server", "bt_navigator"]
 
     params_file = ReplaceString(
         source_file=params_file,
@@ -115,6 +115,17 @@ def generate_launch_description():
             package="nav2_smoother",
             executable="smoother_server",
             name="smoother_server",
+            output="screen",
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[configured_params],
+            arguments=["--ros-args", "--log-level", log_level],
+            remappings=remappings,
+        ),
+        Node(
+            package="nav2_bt_navigator",
+            executable="bt_navigator",
+            name="bt_navigator",
             output="screen",
             respawn=use_respawn,
             respawn_delay=2.0,

@@ -13,6 +13,11 @@ def generate_launch_description():
         default_value="16.4",
         description="Raw gyro counts per degree/second used for processed IMU angular velocity.",
     )
+    imu_yaw_rate_deadband_rad_s_arg = DeclareLaunchArgument(
+        "imu_yaw_rate_deadband_rad_s",
+        default_value="0.03",
+        description="Processed IMU yaw-rate deadband in rad/s before publishing /imu/data_processed.",
+    )
     imu_publish_rate_hz_arg = DeclareLaunchArgument(
         "imu_publish_rate_hz",
         default_value="50.0",
@@ -56,6 +61,10 @@ def generate_launch_description():
                 LaunchConfiguration("imu_gyro_lsb_per_dps"),
                 value_type=float,
             ),
+            "imu_yaw_rate_deadband_rad_s": ParameterValue(
+                LaunchConfiguration("imu_yaw_rate_deadband_rad_s"),
+                value_type=float,
+            ),
             "imu_publish_rate_hz": ParameterValue(
                 LaunchConfiguration("imu_publish_rate_hz"),
                 value_type=float,
@@ -73,6 +82,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         imu_gyro_lsb_per_dps_arg,
+        imu_yaw_rate_deadband_rad_s_arg,
         imu_publish_rate_hz_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,

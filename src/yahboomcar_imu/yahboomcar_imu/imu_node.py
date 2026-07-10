@@ -10,6 +10,7 @@ GRAVITY_MPS2 = 9.80665
 DEFAULT_ACCEL_COUNTS_PER_G = 8500.0
 DEFAULT_CALIBRATION_SAMPLE_COUNT = 1200
 DEFAULT_CALIBRATION_MAX_READS = 3600
+DEFAULT_YAW_RATE_DEADBAND_RAD_S = 0.03
 ANGULAR_VELOCITY_COVARIANCE = 6.9e-6
 LINEAR_ACCELERATION_COVARIANCE = 5.1e-4
 MAGNETIC_FIELD_COVARIANCE = 3.0e-4
@@ -87,6 +88,11 @@ class ImuPublisher:
         self.gyro_bias_x = float(node.declare_parameter("imu_gyro_bias_x", 0.0).value)
         self.gyro_bias_y = float(node.declare_parameter("imu_gyro_bias_y", 0.0).value)
         self.gyro_bias_z = float(node.declare_parameter("imu_gyro_bias_z", 0.0).value)
+        self.yaw_rate_deadband_rad_s = float(
+            node.declare_parameter(
+                "imu_yaw_rate_deadband_rad_s", DEFAULT_YAW_RATE_DEADBAND_RAD_S
+            ).value
+        )
         self.calibrate_on_startup = bool(
             node.declare_parameter("imu_calibrate_on_startup", True).value
         )
@@ -127,6 +133,11 @@ class ImuPublisher:
                 f"{DEFAULT_GYRO_LSB_PER_DPS:.1f}"
             )
             self.gyro_lsb_per_dps = DEFAULT_GYRO_LSB_PER_DPS
+        if self.yaw_rate_deadband_rad_s < 0.0:
+            self.node.get_logger().warn(
+                "imu_yaw_rate_deadband_rad_s must be non-negative; using 0.0"
+            )
+            self.yaw_rate_deadband_rad_s = 0.0
         if self.calibration_sample_count < 1:
             self.node.get_logger().warn("imu_calibration_sample_count must be positive; using 1")
             self.calibration_sample_count = 1
@@ -273,7 +284,10 @@ class ImuPublisher:
         imu2.linear_acceleration.z = az * GRAVITY_MPS2 / self.accel_counts_per_g
         imu2.angular_velocity.x = (gx - self.gyro_bias_x) / self.gyro_lsb_per_dps * math.pi / 180.0
         imu2.angular_velocity.y = (gy - self.gyro_bias_y) / self.gyro_lsb_per_dps * math.pi / 180.0
-        imu2.angular_velocity.z = (gz - self.gyro_bias_z) / self.gyro_lsb_per_dps * math.pi / 180.0
+        yaw_rate = (gz - self.gyro_bias_z) / self.gyro_lsb_per_dps * math.pi / 180.0
+        if abs(yaw_rate) < self.yaw_rate_deadband_rad_s:
+            yaw_rate = 0.0
+        imu2.angular_velocity.z = yaw_rate
 
         set_imu_covariance(imu2)
 

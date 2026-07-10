@@ -1,7 +1,8 @@
 <!--
   Muto NavigateToPose tree.
-  Replans at 1 Hz, follows with the configured FollowPath controller, and runs
-  conservative recovery actions through nav2_behaviors when planning/control fail.
+  Reuses the current global path while it remains valid, replanning when the
+  path expires, the goal changes, or the path becomes invalid. Recovery actions
+  are kept conservative for the Muto platform.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -9,9 +10,20 @@
       <PipelineSequence name="NavigateWithReplanning">
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
-        <RateController hz="1.0">
+        <RateController hz="2.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            <Fallback>
+              <ReactiveSequence>
+                <Inverter>
+                  <PathExpiringTimer seconds="10" path="{path}"/>
+                </Inverter>
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            </Fallback>
             <Sequence>
               <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
               <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>

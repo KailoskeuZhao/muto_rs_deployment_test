@@ -13,6 +13,21 @@ def generate_launch_description():
         default_value="16.4",
         description="Raw gyro counts per degree/second used for processed IMU angular velocity.",
     )
+    imu_publish_rate_hz_arg = DeclareLaunchArgument(
+        "imu_publish_rate_hz",
+        default_value="50.0",
+        description="Processed/raw IMU publish rate in Hz.",
+    )
+    imu_calibration_sample_count_arg = DeclareLaunchArgument(
+        "imu_calibration_sample_count",
+        default_value="1200",
+        description="Number of valid startup IMU samples used for bias/scale calibration.",
+    )
+    imu_calibration_max_reads_arg = DeclareLaunchArgument(
+        "imu_calibration_max_reads",
+        default_value="3600",
+        description="Maximum startup IMU read attempts while collecting calibration samples.",
+    )
 
     lidar_node = Node(
         package="lidar_tg30",
@@ -41,11 +56,26 @@ def generate_launch_description():
                 LaunchConfiguration("imu_gyro_lsb_per_dps"),
                 value_type=float,
             ),
+            "imu_publish_rate_hz": ParameterValue(
+                LaunchConfiguration("imu_publish_rate_hz"),
+                value_type=float,
+            ),
+            "imu_calibration_sample_count": ParameterValue(
+                LaunchConfiguration("imu_calibration_sample_count"),
+                value_type=int,
+            ),
+            "imu_calibration_max_reads": ParameterValue(
+                LaunchConfiguration("imu_calibration_max_reads"),
+                value_type=int,
+            ),
         }],
     )
 
     return LaunchDescription([
         imu_gyro_lsb_per_dps_arg,
+        imu_publish_rate_hz_arg,
+        imu_calibration_sample_count_arg,
+        imu_calibration_max_reads_arg,
         lidar_node,
         camera_launch,
         driver_node,

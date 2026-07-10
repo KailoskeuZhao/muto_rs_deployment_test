@@ -53,7 +53,7 @@ def generate_launch_description():
     )
     scan_range_max_arg = DeclareLaunchArgument(
         "scan_range_max",
-        default_value="15.0",
+        default_value="10.0",
         description="Maximum range for the filtered LiDAR LaserScan.",
     )
     scan_angle_min_arg = DeclareLaunchArgument(

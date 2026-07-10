@@ -40,9 +40,15 @@ class yahboomcar_driver(Node):
 
 		self.declare_parameter("imu_link", "imu_link")
 		imu_link = self.get_parameter("imu_link").get_parameter_value().string_value
+		self.declare_parameter("imu_publish_rate_hz", 50.0)
+		imu_publish_rate_hz = self.get_parameter("imu_publish_rate_hz").get_parameter_value().double_value
+		if imu_publish_rate_hz <= 0.0:
+			self.get_logger().warn("imu_publish_rate_hz must be positive; using 50.0")
+			imu_publish_rate_hz = 50.0
 
 		self.imu = ImuPublisher(self, self.muto, imu_link)
-		self.imu_timer = self.create_timer(0.1, self.imu.publish_imu_data)
+		self.imu_timer = self.create_timer(1.0 / imu_publish_rate_hz, self.imu.publish_imu_data)
+		self.get_logger().info("IMU publish rate set to {:.1f} Hz".format(imu_publish_rate_hz))
 
 	def cmd_vel_callback(self,msg):
 		if not isinstance(msg, Twist): return

@@ -17,7 +17,7 @@ public:
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "scan_odom_raw");
     output_topic_ = declare_parameter<std::string>("output_topic", "scan_odom");
-    translation_deadband_ = declare_parameter<double>("translation_deadband", 0.001);
+    translation_deadband_ = declare_parameter<double>("translation_deadband", 0.003);
     yaw_deadband_ = declare_parameter<double>("yaw_deadband", 0.001);
     publish_tf_ = declare_parameter<bool>("publish_tf", true);
     queue_size_ = declare_parameter<int>("queue_size", 5);

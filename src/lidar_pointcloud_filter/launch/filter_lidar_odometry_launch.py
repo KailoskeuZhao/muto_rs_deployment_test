@@ -98,7 +98,7 @@ def generate_launch_description():
     )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         "rf2o_translation_deadband",
-        default_value="0.001",
+        default_value="0.003",
         description=(
             "Per-update RF2O planar translation deadband in meters. "
             "Set 0.0 to disable."

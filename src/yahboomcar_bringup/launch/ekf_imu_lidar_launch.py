@@ -43,6 +43,14 @@ def generate_launch_description():
             "Set 0.0 to disable."
         ),
     )
+    rf2o_yaw_deadband_arg = DeclareLaunchArgument(
+        "rf2o_yaw_deadband",
+        default_value="0.001",
+        description=(
+            "Per-update RF2O yaw deadband in radians. "
+            "Set 0.0 to disable."
+        ),
+    )
     launch_foot_odometry_arg = DeclareLaunchArgument(
         "launch_foot_odometry",
         default_value="false",
@@ -74,6 +82,7 @@ def generate_launch_description():
     return LaunchDescription([
         launch_lidar_odometry_arg,
         rf2o_translation_deadband_arg,
+        rf2o_yaw_deadband_arg,
         launch_foot_odometry_arg,
         imu_only_arg,
         IncludeLaunchDescription(
@@ -82,6 +91,7 @@ def generate_launch_description():
             launch_arguments={
                 "rf2o_publish_tf": "false",
                 "rf2o_translation_deadband": LaunchConfiguration("rf2o_translation_deadband"),
+                "rf2o_yaw_deadband": LaunchConfiguration("rf2o_yaw_deadband"),
             }.items(),
         ),
         Node(

@@ -15,11 +15,12 @@ ekf_filter_node:
     publish_acceleration: false
     print_diagnostics: true
 
-    # RF2O scan odometry is useful for planar position, but its yaw can drift
-    # during weak scan matching. Leave yaw rotation to the processed IMU.
+    # RF2O scan odometry provides planar position and yaw. The filtered
+    # LaserScan is generated in base_frame, so yaw is a LiDAR-derived odom
+    # estimate rather than raw IMU integration.
     odom0: /scan_odom
     odom0_config: [true,  true,  false,
-                   false, false, false,
+                   false, false, true,
                    false, false, false,
                    false, false, false,
                    false, false, false]
@@ -29,9 +30,8 @@ ekf_filter_node:
     odom0_relative: false
     odom0_pose_rejection_threshold: 5.0
 
-    # Small yaw-rate drift is removed upstream by imu_yaw_rate_deadband_rad_s.
-    # Fuse only yaw rate here, so real rotations come from the IMU while
-    # low-level gyro drift is already zeroed before the EKF sees it.
+    # Fuse IMU yaw rate as a secondary heading-rate source, while RF2O yaw
+    # remains the absolute heading source.
     imu0: /imu/data_processed
     imu0_config: [false, false, false,
                   false, false, false,

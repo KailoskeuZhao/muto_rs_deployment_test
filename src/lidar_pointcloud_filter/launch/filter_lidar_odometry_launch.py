@@ -104,6 +104,14 @@ def generate_launch_description():
             "Set 0.0 to disable."
         ),
     )
+    rf2o_yaw_deadband_arg = DeclareLaunchArgument(
+        "rf2o_yaw_deadband",
+        default_value="0.001",
+        description=(
+            "Per-update RF2O yaw deadband in radians. "
+            "Set 0.0 to disable."
+        ),
+    )
     rf2o_init_pose_from_topic_arg = DeclareLaunchArgument(
         "rf2o_init_pose_from_topic",
         default_value="",
@@ -143,6 +151,7 @@ def generate_launch_description():
         rf2o_publish_tf_arg,
         rf2o_freq_arg,
         rf2o_translation_deadband_arg,
+        rf2o_yaw_deadband_arg,
         rf2o_init_pose_from_topic_arg,
         queue_size_arg,
         voxel_leaf_size_arg,
@@ -210,6 +219,10 @@ def generate_launch_description():
                 "output_topic": LaunchConfiguration("odom_topic"),
                 "translation_deadband": ParameterValue(
                     LaunchConfiguration("rf2o_translation_deadband"),
+                    value_type=float,
+                ),
+                "yaw_deadband": ParameterValue(
+                    LaunchConfiguration("rf2o_yaw_deadband"),
                     value_type=float,
                 ),
                 "publish_tf": ParameterValue(

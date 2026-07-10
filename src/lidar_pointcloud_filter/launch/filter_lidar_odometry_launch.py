@@ -69,7 +69,12 @@ def generate_launch_description():
     odom_topic_arg = DeclareLaunchArgument(
         "odom_topic",
         default_value="scan_odom",
-        description="rf2o odometry output topic.",
+        description="Filtered odometry output topic consumed by downstream localization.",
+    )
+    raw_odom_topic_arg = DeclareLaunchArgument(
+        "raw_odom_topic",
+        default_value="scan_odom_raw",
+        description="Internal raw rf2o odometry topic before translation deadband filtering.",
     )
     odom_frame_arg = DeclareLaunchArgument(
         "odom_frame",
@@ -84,12 +89,20 @@ def generate_launch_description():
     rf2o_publish_tf_arg = DeclareLaunchArgument(
         "rf2o_publish_tf",
         default_value="true",
-        description="Whether rf2o should publish odom->base TF. Set false when EKF publishes TF.",
+        description="Whether filtered odometry should publish odom->base TF.",
     )
     rf2o_freq_arg = DeclareLaunchArgument(
         "rf2o_freq",
         default_value="20.0",
         description="rf2o processing frequency in Hz.",
+    )
+    rf2o_translation_deadband_arg = DeclareLaunchArgument(
+        "rf2o_translation_deadband",
+        default_value="0.001",
+        description=(
+            "Per-update RF2O planar translation deadband in meters. "
+            "Set 0.0 to disable."
+        ),
     )
     rf2o_init_pose_from_topic_arg = DeclareLaunchArgument(
         "rf2o_init_pose_from_topic",
@@ -124,10 +137,12 @@ def generate_launch_description():
         scan_angle_min_arg,
         scan_angle_max_arg,
         odom_topic_arg,
+        raw_odom_topic_arg,
         odom_frame_arg,
         odom_child_frame_arg,
         rf2o_publish_tf_arg,
         rf2o_freq_arg,
+        rf2o_translation_deadband_arg,
         rf2o_init_pose_from_topic_arg,
         queue_size_arg,
         voxel_leaf_size_arg,
@@ -177,15 +192,31 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "laser_scan_topic": LaunchConfiguration("scan_topic"),
-                "odom_topic": LaunchConfiguration("odom_topic"),
-                "publish_tf": ParameterValue(
-                    LaunchConfiguration("rf2o_publish_tf"),
-                    value_type=bool,
-                ),
+                "odom_topic": LaunchConfiguration("raw_odom_topic"),
+                "publish_tf": False,
                 "base_frame_id": LaunchConfiguration("odom_child_frame"),
                 "odom_frame_id": LaunchConfiguration("odom_frame"),
                 "init_pose_from_topic": LaunchConfiguration("rf2o_init_pose_from_topic"),
                 "freq": ParameterValue(LaunchConfiguration("rf2o_freq"), value_type=float),
+            }],
+        ),
+        Node(
+            package="lidar_pointcloud_filter",
+            executable="odometry_translation_deadband_node",
+            name="rf2o_translation_deadband_filter",
+            output="screen",
+            parameters=[{
+                "input_topic": LaunchConfiguration("raw_odom_topic"),
+                "output_topic": LaunchConfiguration("odom_topic"),
+                "translation_deadband": ParameterValue(
+                    LaunchConfiguration("rf2o_translation_deadband"),
+                    value_type=float,
+                ),
+                "publish_tf": ParameterValue(
+                    LaunchConfiguration("rf2o_publish_tf"),
+                    value_type=bool,
+                ),
+                "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
             }],
         ),
     ])

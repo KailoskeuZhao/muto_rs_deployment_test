@@ -68,7 +68,9 @@ Run LiDAR PointCloud filtering, filtered-cloud LaserScan conversion, and RF2O la
 ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
 ```
 
-Standalone RF2O publishes `odom -> base_frame` TF by default. When launched through `ekf_imu_lidar_launch.py`, RF2O TF publishing is disabled and the EKF publishes the odom TF instead.
+`filter_lidar_odometry_launch.py` keeps RF2O itself unmodified: RF2O publishes raw odometry on `scan_odom_raw`, then `lidar_pointcloud_filter/odometry_translation_deadband_node` republishes the EKF-facing `scan_odom`. The wrapper applies a small per-update planar translation deadband by default (`rf2o_translation_deadband:=0.001`) so stationary scan-match drift does not feed `/scan_odom`. Set `rf2o_translation_deadband:=0.0` to disable it, or tune the value in meters for the robot.
+
+Standalone filtered odometry publishes `odom -> base_frame` TF by default. When launched through `ekf_imu_lidar_launch.py`, filtered odometry TF publishing is disabled and the EKF publishes the odom TF instead.
 
 Convert camera depth points plus LiDAR points into a fused `LaserScan`:
 

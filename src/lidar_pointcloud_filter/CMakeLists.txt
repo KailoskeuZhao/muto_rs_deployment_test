@@ -8,6 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
@@ -17,6 +18,7 @@ find_package(tf2_sensor_msgs REQUIRED)
 
 add_executable(lidar_pointcloud_filter_node src/lidar_pointcloud_filter_node.cpp)
 add_executable(camera_pointcloud_to_laserscan_node src/camera_pointcloud_to_laserscan_node.cpp)
+add_executable(odometry_translation_deadband_node src/odometry_translation_deadband_node.cpp)
 
 target_include_directories(lidar_pointcloud_filter_node PUBLIC
   ${PCL_INCLUDE_DIRS}
@@ -45,9 +47,17 @@ ament_target_dependencies(camera_pointcloud_to_laserscan_node
   tf2_sensor_msgs
 )
 
+ament_target_dependencies(odometry_translation_deadband_node
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  tf2_ros
+)
+
 install(TARGETS
   lidar_pointcloud_filter_node
   camera_pointcloud_to_laserscan_node
+  odometry_translation_deadband_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

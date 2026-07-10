@@ -7,9 +7,12 @@ bt_navigator:
     default_server_timeout: 20
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
+    default_nav_to_pose_bt_xml: $(find-pkg-share muto_slam_mapping)/behavior_trees/muto_nav_to_pose.xml
     navigators: ["navigate_to_pose"]
     navigate_to_pose:
       plugin: "nav2_bt_navigator/NavigateToPoseNavigator"
+      goal_blackboard_id: goal
+      path_blackboard_id: path
 
 controller_server:
   ros__parameters:
@@ -134,6 +137,29 @@ smoother_server:
       refinement_num: 5
       enforce_path_inversion: false
       do_refinement: true
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_frame
+    transform_tolerance: 0.1
+    simulate_ahead_time: 1.5
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.1
+    rotational_acc_lim: 1.0
 
 global_costmap:
   global_costmap:

@@ -4,6 +4,7 @@ project(muto_slam_mapping)
 find_package(ament_cmake REQUIRED)
 
 install(DIRECTORY
+  behavior_trees
   config
   launch
   DESTINATION share/${PROJECT_NAME}

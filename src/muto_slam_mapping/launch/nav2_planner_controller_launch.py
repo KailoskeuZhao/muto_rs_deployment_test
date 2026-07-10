@@ -65,7 +65,13 @@ def generate_launch_description():
     use_respawn = LaunchConfiguration("use_respawn")
     log_level = LaunchConfiguration("log_level")
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
-    lifecycle_nodes = ["controller_server", "planner_server", "smoother_server", "bt_navigator"]
+    lifecycle_nodes = [
+        "controller_server",
+        "planner_server",
+        "smoother_server",
+        "behavior_server",
+        "bt_navigator",
+    ]
 
     params_file = ReplaceString(
         source_file=params_file,
@@ -115,6 +121,17 @@ def generate_launch_description():
             package="nav2_smoother",
             executable="smoother_server",
             name="smoother_server",
+            output="screen",
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[configured_params],
+            arguments=["--ros-args", "--log-level", log_level],
+            remappings=remappings,
+        ),
+        Node(
+            package="nav2_behaviors",
+            executable="behavior_server",
+            name="behavior_server",
             output="screen",
             respawn=use_respawn,
             respawn_delay=2.0,

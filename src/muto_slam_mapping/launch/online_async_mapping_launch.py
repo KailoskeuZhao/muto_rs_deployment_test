@@ -38,10 +38,16 @@ def generate_launch_description():
             "This assumes the configured LiDAR cloud topic already exists."
         ),
     )
+    use_sim_time_arg = DeclareLaunchArgument(
+        "use_sim_time",
+        default_value="false",
+        description="Use simulation clock if true.",
+    )
 
     return LaunchDescription([
         slam_params_file_arg,
         launch_fused_laserscan_arg,
+        use_sim_time_arg,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(fused_laserscan_launch),
             condition=IfCondition(LaunchConfiguration("launch_fused_laserscan")),
@@ -54,6 +60,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(slam_toolbox_launch),
             launch_arguments={
                 "slam_params_file": LaunchConfiguration("slam_params_file"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
             }.items(),
         ),
     ])

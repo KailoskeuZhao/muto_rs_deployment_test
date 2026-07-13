@@ -83,7 +83,10 @@ def generate_launch_description():
         RewrittenYaml(
             source_file=params_file,
             root_key=namespace,
-            param_rewrites={"autostart": autostart},
+            param_rewrites={
+                "use_sim_time": use_sim_time,
+                "autostart": autostart,
+            },
             convert_types=True,
         ),
         allow_substs=True,
@@ -104,7 +107,7 @@ def generate_launch_description():
             respawn_delay=2.0,
             parameters=[configured_params],
             arguments=["--ros-args", "--log-level", log_level],
-            remappings=remappings + [("cmd_vel", "cmd_vel_nav")],
+            remappings=remappings,
         ),
         Node(
             package="nav2_planner",
@@ -156,6 +159,7 @@ def generate_launch_description():
             name="lifecycle_manager_costmaps",
             output="screen",
             parameters=[
+                {"use_sim_time": use_sim_time},
                 {"autostart": autostart},
                 {"node_names": lifecycle_nodes},
             ],

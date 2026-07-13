@@ -1,6 +1,7 @@
 global_costmap:
   global_costmap:
     ros__parameters:
+      use_sim_time: false
       footprint_padding: 0.03
       update_frequency: 1.0
       publish_frequency: 1.0
@@ -42,11 +43,11 @@ global_costmap:
         inflate_unknown: false
         inflate_around_unknown: true
       always_send_full_costmap: true
-      introspection_mode: "disabled"
 
 local_costmap:
   local_costmap:
     ros__parameters:
+      use_sim_time: false
       footprint_padding: 0.03
       update_frequency: 5.0
       publish_frequency: 2.0
@@ -86,4 +87,3 @@ local_costmap:
         inflate_unknown: false
         inflate_around_unknown: true
       always_send_full_costmap: true
-      introspection_mode: "disabled"

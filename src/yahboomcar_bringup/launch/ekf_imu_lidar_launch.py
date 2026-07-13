@@ -43,12 +43,44 @@ def generate_launch_description():
             "Set 0.0 to disable."
         ),
     )
+    rf2o_translation_jump_rejection_threshold_arg = DeclareLaunchArgument(
+        "rf2o_translation_jump_rejection_threshold",
+        default_value="0.20",
+        description=(
+            "Reject an RF2O XY update above this per-message distance in meters "
+            "when it also exceeds rf2o_max_translation_rate. Set 0.0 to disable."
+        ),
+    )
+    rf2o_max_translation_rate_arg = DeclareLaunchArgument(
+        "rf2o_max_translation_rate",
+        default_value="1.5",
+        description=(
+            "Maximum plausible RF2O planar speed in m/s for translation-jump rejection. "
+            "Set 0.0 to use only rf2o_translation_jump_rejection_threshold."
+        ),
+    )
     rf2o_yaw_deadband_arg = DeclareLaunchArgument(
         "rf2o_yaw_deadband",
         default_value="0.001",
         description=(
             "Per-update RF2O yaw deadband in radians. "
             "Set 0.0 to disable."
+        ),
+    )
+    rf2o_yaw_jump_rejection_threshold_arg = DeclareLaunchArgument(
+        "rf2o_yaw_jump_rejection_threshold",
+        default_value="0.30",
+        description=(
+            "Reject an RF2O yaw update above this per-message delta in radians "
+            "when it also exceeds rf2o_max_yaw_rate. Set 0.0 to disable."
+        ),
+    )
+    rf2o_max_yaw_rate_arg = DeclareLaunchArgument(
+        "rf2o_max_yaw_rate",
+        default_value="4.0",
+        description=(
+            "Maximum plausible RF2O yaw rate in rad/s for yaw-jump rejection. "
+            "Set 0.0 to use only rf2o_yaw_jump_rejection_threshold."
         ),
     )
     launch_foot_odometry_arg = DeclareLaunchArgument(
@@ -82,7 +114,11 @@ def generate_launch_description():
     return LaunchDescription([
         launch_lidar_odometry_arg,
         rf2o_translation_deadband_arg,
+        rf2o_translation_jump_rejection_threshold_arg,
+        rf2o_max_translation_rate_arg,
         rf2o_yaw_deadband_arg,
+        rf2o_yaw_jump_rejection_threshold_arg,
+        rf2o_max_yaw_rate_arg,
         launch_foot_odometry_arg,
         imu_only_arg,
         IncludeLaunchDescription(
@@ -91,7 +127,15 @@ def generate_launch_description():
             launch_arguments={
                 "rf2o_publish_tf": "false",
                 "rf2o_translation_deadband": LaunchConfiguration("rf2o_translation_deadband"),
+                "rf2o_translation_jump_rejection_threshold": LaunchConfiguration(
+                    "rf2o_translation_jump_rejection_threshold"
+                ),
+                "rf2o_max_translation_rate": LaunchConfiguration("rf2o_max_translation_rate"),
                 "rf2o_yaw_deadband": LaunchConfiguration("rf2o_yaw_deadband"),
+                "rf2o_yaw_jump_rejection_threshold": LaunchConfiguration(
+                    "rf2o_yaw_jump_rejection_threshold"
+                ),
+                "rf2o_max_yaw_rate": LaunchConfiguration("rf2o_max_yaw_rate"),
             }.items(),
         ),
         Node(

@@ -107,12 +107,44 @@ def generate_launch_description():
             "Set 0.0 to disable."
         ),
     )
+    rf2o_translation_jump_rejection_threshold_arg = DeclareLaunchArgument(
+        "rf2o_translation_jump_rejection_threshold",
+        default_value="0.20",
+        description=(
+            "Reject an RF2O XY update above this per-message distance in meters "
+            "when it also exceeds rf2o_max_translation_rate. Set 0.0 to disable."
+        ),
+    )
+    rf2o_max_translation_rate_arg = DeclareLaunchArgument(
+        "rf2o_max_translation_rate",
+        default_value="1.5",
+        description=(
+            "Maximum plausible RF2O planar speed in m/s for translation-jump rejection. "
+            "Set 0.0 to use only rf2o_translation_jump_rejection_threshold."
+        ),
+    )
     rf2o_yaw_deadband_arg = DeclareLaunchArgument(
         "rf2o_yaw_deadband",
         default_value="0.001",
         description=(
             "Per-update RF2O yaw deadband in radians. "
             "Set 0.0 to disable."
+        ),
+    )
+    rf2o_yaw_jump_rejection_threshold_arg = DeclareLaunchArgument(
+        "rf2o_yaw_jump_rejection_threshold",
+        default_value="0.30",
+        description=(
+            "Reject an RF2O yaw update above this per-message delta in radians "
+            "when it also exceeds rf2o_max_yaw_rate. Set 0.0 to disable."
+        ),
+    )
+    rf2o_max_yaw_rate_arg = DeclareLaunchArgument(
+        "rf2o_max_yaw_rate",
+        default_value="4.0",
+        description=(
+            "Maximum plausible RF2O yaw rate in rad/s for yaw-jump rejection. "
+            "Set 0.0 to use only rf2o_yaw_jump_rejection_threshold."
         ),
     )
     rf2o_init_pose_from_topic_arg = DeclareLaunchArgument(
@@ -154,7 +186,11 @@ def generate_launch_description():
         rf2o_publish_tf_arg,
         rf2o_freq_arg,
         rf2o_translation_deadband_arg,
+        rf2o_translation_jump_rejection_threshold_arg,
+        rf2o_max_translation_rate_arg,
         rf2o_yaw_deadband_arg,
+        rf2o_yaw_jump_rejection_threshold_arg,
+        rf2o_max_yaw_rate_arg,
         rf2o_init_pose_from_topic_arg,
         queue_size_arg,
         voxel_leaf_size_arg,
@@ -223,8 +259,24 @@ def generate_launch_description():
                     LaunchConfiguration("rf2o_translation_deadband"),
                     value_type=float,
                 ),
+                "translation_jump_rejection_threshold": ParameterValue(
+                    LaunchConfiguration("rf2o_translation_jump_rejection_threshold"),
+                    value_type=float,
+                ),
+                "max_translation_rate": ParameterValue(
+                    LaunchConfiguration("rf2o_max_translation_rate"),
+                    value_type=float,
+                ),
                 "yaw_deadband": ParameterValue(
                     LaunchConfiguration("rf2o_yaw_deadband"),
+                    value_type=float,
+                ),
+                "yaw_jump_rejection_threshold": ParameterValue(
+                    LaunchConfiguration("rf2o_yaw_jump_rejection_threshold"),
+                    value_type=float,
+                ),
+                "max_yaw_rate": ParameterValue(
+                    LaunchConfiguration("rf2o_max_yaw_rate"),
                     value_type=float,
                 ),
                 "publish_tf": ParameterValue(

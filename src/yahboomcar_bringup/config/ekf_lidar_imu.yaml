@@ -28,7 +28,7 @@ ekf_filter_node:
     odom0_nodelay: false
     odom0_differential: false
     odom0_relative: false
-    odom0_pose_rejection_threshold: 5.0
+    odom0_pose_rejection_threshold: 4.0
 
     # Fuse IMU yaw rate as a secondary heading-rate source, while RF2O yaw
     # remains the absolute heading source.

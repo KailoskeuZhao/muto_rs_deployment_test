@@ -89,7 +89,10 @@ def generate_launch_description():
     rf2o_publish_tf_arg = DeclareLaunchArgument(
         "rf2o_publish_tf",
         default_value="true",
-        description="Whether filtered odometry should publish odom->base TF.",
+        description=(
+            "Whether filtered odometry should publish odom->base TF. "
+            "Set false when an EKF consumes /scan_odom and publishes the authoritative TF."
+        ),
     )
     rf2o_freq_arg = DeclareLaunchArgument(
         "rf2o_freq",

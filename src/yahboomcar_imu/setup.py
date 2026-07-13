@@ -17,7 +17,6 @@ setup(
     maintainer_email='1461190907@qq.com',
     description='IMU publisher for Yahboom car Muto controller',
     license='TODO: License declaration',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'yahboomcar_imu = yahboomcar_imu.imu_node:main',

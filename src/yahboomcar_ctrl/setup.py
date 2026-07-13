@@ -19,7 +19,6 @@ setup(
     maintainer_email='nx-ros2@todo.todo',
     description='TODO: Package description',
     license='TODO: License declaration',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
         'yahboom_joy	= yahboomcar_ctrl.yahboom_joy:main',

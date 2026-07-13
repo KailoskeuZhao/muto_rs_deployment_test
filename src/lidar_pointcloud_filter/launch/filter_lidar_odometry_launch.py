@@ -200,7 +200,6 @@ def generate_launch_description():
         Node(
             package="rf2o_laser_odometry",
             executable="rf2o_laser_odometry_node",
-            name="rf2o_laser_odometry",
             output="screen",
             parameters=[{
                 "laser_scan_topic": LaunchConfiguration("scan_topic"),

@@ -19,6 +19,7 @@ namespace
 {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kRadToDeg = 180.0 / kPi;
+constexpr std::int64_t kNanosecondsPerSecond = 1000000000LL;
 
 struct PointXYZ
 {
@@ -27,8 +28,17 @@ struct PointXYZ
   float z;
 };
 
+builtin_interfaces::msg::Time toBuiltinTime(const rclcpp::Time & time)
+{
+  builtin_interfaces::msg::Time stamp;
+  const std::int64_t nanoseconds = time.nanoseconds();
+  stamp.sec = static_cast<std::int32_t>(nanoseconds / kNanosecondsPerSecond);
+  stamp.nanosec = static_cast<std::uint32_t>(nanoseconds % kNanosecondsPerSecond);
+  return stamp;
+}
+
 void packPointCloudMsg(
-  const ydlidar::LaserScan & scan,
+  const LaserScan & scan,
   const std::string & frame_id,
   const builtin_interfaces::msg::Time & stamp,
   sensor_msgs::msg::PointCloud2 & cloud)
@@ -64,7 +74,7 @@ void packPointCloudMsg(
 
   for (std::size_t i = 0; i < scan.points.size(); ++i) {
     auto * p = reinterpret_cast<PointXYZ *>(&cloud.data[i * cloud.point_step]);
-    const ydlidar::LaserPoint & point = scan.points[i];
+    const LaserPoint & point = scan.points[i];
     p->x = static_cast<float>(std::cos(point.angle) * point.range);
     p->y = static_cast<float>(std::sin(point.angle) * point.range);
     p->z = 0.0F;
@@ -75,7 +85,7 @@ void packPointCloudMsg(
 }
 
 void packLaserScanMsg(
-  const ydlidar::LaserScan & scan,
+  const LaserScan & scan,
   const std::string & frame_id,
   const builtin_interfaces::msg::Time & stamp,
   const double angle_min,
@@ -190,60 +200,60 @@ private:
   void configureLidar()
   {
     std::string port = "/dev/mylidar";
-    laser_.setlidaropt(ydlidar::LidarPropSerialPort, port.c_str(), port.size());
+    laser_.setlidaropt(LidarPropSerialPort, port.c_str(), port.size());
 
     std::string ignore_array;
-    laser_.setlidaropt(ydlidar::LidarPropIgnoreArray, ignore_array.c_str(), ignore_array.size());
+    laser_.setlidaropt(LidarPropIgnoreArray, ignore_array.c_str(), ignore_array.size());
 
     int baudrate = 512000;
-    laser_.setlidaropt(ydlidar::LidarPropSerialBaudrate, &baudrate, sizeof(int));
+    laser_.setlidaropt(LidarPropSerialBaudrate, &baudrate, sizeof(int));
 
-    int optval = ydlidar::TYPE_TOF;
-    laser_.setlidaropt(ydlidar::LidarPropLidarType, &optval, sizeof(int));
+    int optval = TYPE_TOF;
+    laser_.setlidaropt(LidarPropLidarType, &optval, sizeof(int));
 
-    optval = ydlidar::YDLIDAR_TYPE_SERIAL;
-    laser_.setlidaropt(ydlidar::LidarPropDeviceType, &optval, sizeof(int));
+    optval = YDLIDAR_TYPE_SERIAL;
+    laser_.setlidaropt(LidarPropDeviceType, &optval, sizeof(int));
 
     optval = 20;
-    laser_.setlidaropt(ydlidar::LidarPropSampleRate, &optval, sizeof(int));
+    laser_.setlidaropt(LidarPropSampleRate, &optval, sizeof(int));
 
     optval = 4;
-    laser_.setlidaropt(ydlidar::LidarPropAbnormalCheckCount, &optval, sizeof(int));
+    laser_.setlidaropt(LidarPropAbnormalCheckCount, &optval, sizeof(int));
 
     optval = 0;
-    laser_.setlidaropt(ydlidar::LidarPropIntenstiyBit, &optval, sizeof(int));
+    laser_.setlidaropt(LidarPropIntenstiyBit, &optval, sizeof(int));
 
     bool b_optvalue = false;
-    laser_.setlidaropt(ydlidar::LidarPropFixedResolution, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropFixedResolution, &b_optvalue, sizeof(bool));
 
     b_optvalue = false;
-    laser_.setlidaropt(ydlidar::LidarPropReversion, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropReversion, &b_optvalue, sizeof(bool));
 
     b_optvalue = false;
-    laser_.setlidaropt(ydlidar::LidarPropInverted, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropInverted, &b_optvalue, sizeof(bool));
 
     b_optvalue = true;
-    laser_.setlidaropt(ydlidar::LidarPropAutoReconnect, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropAutoReconnect, &b_optvalue, sizeof(bool));
 
     b_optvalue = false;
-    laser_.setlidaropt(ydlidar::LidarPropSingleChannel, &b_optvalue, sizeof(bool));
-    laser_.setlidaropt(ydlidar::LidarPropIntenstiy, &b_optvalue, sizeof(bool));
-    laser_.setlidaropt(ydlidar::LidarPropSupportMotorDtrCtrl, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropSingleChannel, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropIntenstiy, &b_optvalue, sizeof(bool));
+    laser_.setlidaropt(LidarPropSupportMotorDtrCtrl, &b_optvalue, sizeof(bool));
 
     float f_optvalue = static_cast<float>(angle_max_ * kRadToDeg);
-    laser_.setlidaropt(ydlidar::LidarPropMaxAngle, &f_optvalue, sizeof(float));
+    laser_.setlidaropt(LidarPropMaxAngle, &f_optvalue, sizeof(float));
 
     f_optvalue = static_cast<float>(angle_min_ * kRadToDeg);
-    laser_.setlidaropt(ydlidar::LidarPropMinAngle, &f_optvalue, sizeof(float));
+    laser_.setlidaropt(LidarPropMinAngle, &f_optvalue, sizeof(float));
 
     f_optvalue = static_cast<float>(range_max_);
-    laser_.setlidaropt(ydlidar::LidarPropMaxRange, &f_optvalue, sizeof(float));
+    laser_.setlidaropt(LidarPropMaxRange, &f_optvalue, sizeof(float));
 
     f_optvalue = static_cast<float>(range_min_);
-    laser_.setlidaropt(ydlidar::LidarPropMinRange, &f_optvalue, sizeof(float));
+    laser_.setlidaropt(LidarPropMinRange, &f_optvalue, sizeof(float));
 
     f_optvalue = static_cast<float>(scan_frequency_);
-    laser_.setlidaropt(ydlidar::LidarPropScanFrequency, &f_optvalue, sizeof(float));
+    laser_.setlidaropt(LidarPropScanFrequency, &f_optvalue, sizeof(float));
 
     bool ret = laser_.initialize();
     if (ret) {
@@ -262,7 +272,7 @@ private:
       return;
     }
 
-    const auto stamp = get_clock()->now().to_msg();
+    const auto stamp = toBuiltinTime(get_clock()->now());
     if (pointcloud_publisher_) {
       sensor_msgs::msg::PointCloud2 pointcloud_msg;
       packPointCloudMsg(scan_, frame_id_, stamp, pointcloud_msg);
@@ -281,8 +291,8 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
-  ydlidar::CYdLidar laser_;
-  ydlidar::LaserScan scan_;
+  CYdLidar laser_;
+  LaserScan scan_;
   std::string frame_id_;
   std::string pointcloud_topic_;
   std::string scan_topic_;

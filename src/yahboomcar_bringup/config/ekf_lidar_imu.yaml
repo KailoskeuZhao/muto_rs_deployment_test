@@ -15,9 +15,10 @@ ekf_filter_node:
     publish_acceleration: false
     print_diagnostics: true
 
-    # RF2O scan odometry provides planar position and yaw. The filtered
-    # LaserScan is generated in base_frame, so yaw is a LiDAR-derived odom
-    # estimate rather than raw IMU integration.
+    # RF2O scan odometry provides planar position and yaw. The scan may remain
+    # in lidar_frame; RF2O uses the static lidar_frame->base_frame transform,
+    # so yaw is still a LiDAR-derived odom estimate rather than raw IMU
+    # integration.
     odom0: /scan_odom
     odom0_config: [true,  true,  false,
                    false, false, true,

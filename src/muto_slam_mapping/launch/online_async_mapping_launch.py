@@ -34,26 +34,121 @@ def generate_launch_description():
         "launch_fused_laserscan",
         default_value="true",
         description=(
-            "Whether to launch camera/LiDAR PointCloud2 to fused LaserScan conversion. "
-            "This assumes the configured LiDAR cloud topic already exists."
+            "Whether to launch camera PointCloud2 to LaserScan conversion and fuse it with "
+            "the filtered no-downsample LiDAR LaserScan."
         ),
+    )
+    camera_scan_topic_arg = DeclareLaunchArgument(
+        "camera_scan_topic",
+        default_value="/camera/filtered_laserscan",
+        description="Intermediate downsampled camera LaserScan topic.",
+    )
+    lidar_scan_topic_arg = DeclareLaunchArgument(
+        "lidar_scan_topic",
+        default_value="/lidar/filtered_laserscan_no_downsample",
+        description="Filtered full-resolution LiDAR LaserScan topic used by scan fusion.",
+    )
+    fused_scan_frame_arg = DeclareLaunchArgument(
+        "fused_scan_frame",
+        default_value="base_frame",
+        description="Frame used for /fused/laserscan.",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false",
         description="Use simulation clock if true.",
     )
+    restamp_laserscan_output_arg = DeclareLaunchArgument(
+        "restamp_laserscan_output",
+        default_value="false",
+        description=(
+            "Use current ROS time for generated /fused/laserscan stamps. "
+            "Leave false unless camera/LiDAR stamps are known bad while the data is fresh."
+        ),
+    )
+    input_stamp_warning_age_arg = DeclareLaunchArgument(
+        "input_stamp_warning_age",
+        default_value="1.0",
+        description="Warn when camera cloud or scan stamps differ from this node clock by more seconds.",
+    )
+    max_input_age_arg = DeclareLaunchArgument(
+        "max_input_age",
+        default_value="2.0",
+        description=(
+            "Drop camera clouds/scans whose stamps differ from this node clock by more seconds. "
+            "Set 0.0 only for intentional non-live stamps."
+        ),
+    )
+    fused_scan_queue_size_arg = DeclareLaunchArgument(
+        "fused_scan_queue_size",
+        default_value="1",
+        description="Queue size for camera scan conversion and scan fusion.",
+    )
+    fused_scan_max_publish_rate_arg = DeclareLaunchArgument(
+        "fused_scan_max_publish_rate",
+        default_value="10.0",
+        description="Maximum /fused/laserscan publish rate in Hz. Set 0.0 to process every cloud.",
+    )
+    fused_scan_input_point_stride_arg = DeclareLaunchArgument(
+        "fused_scan_input_point_stride",
+        default_value="4",
+        description="Process every Nth depth-camera point when building the camera scan.",
+    )
+    camera_scan_angle_increment_arg = DeclareLaunchArgument(
+        "camera_scan_angle_increment",
+        default_value="0.017453292519943295",
+        description="Intermediate camera LaserScan angular resolution in radians.",
+    )
+    fused_scan_angle_increment_arg = DeclareLaunchArgument(
+        "fused_scan_angle_increment",
+        default_value="0.004363323129985824",
+        description="/fused/laserscan angular resolution in radians.",
+    )
+    fused_scan_processing_time_warning_arg = DeclareLaunchArgument(
+        "fused_scan_processing_time_warning",
+        default_value="0.05",
+        description="Warn when one /fused/laserscan conversion takes longer than this many seconds.",
+    )
 
     return LaunchDescription([
         slam_params_file_arg,
         launch_fused_laserscan_arg,
+        camera_scan_topic_arg,
+        lidar_scan_topic_arg,
+        fused_scan_frame_arg,
         use_sim_time_arg,
+        restamp_laserscan_output_arg,
+        input_stamp_warning_age_arg,
+        max_input_age_arg,
+        fused_scan_queue_size_arg,
+        fused_scan_max_publish_rate_arg,
+        fused_scan_input_point_stride_arg,
+        camera_scan_angle_increment_arg,
+        fused_scan_angle_increment_arg,
+        fused_scan_processing_time_warning_arg,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(fused_laserscan_launch),
             condition=IfCondition(LaunchConfiguration("launch_fused_laserscan")),
             launch_arguments={
                 "publish_fused_scan": "true",
+                "publish_camera_scan": "true",
                 "publish_filtered_lidar_scan": "false",
+                "camera_scan_topic": LaunchConfiguration("camera_scan_topic"),
+                "lidar_scan_topic": LaunchConfiguration("lidar_scan_topic"),
+                "fused_scan_frame": LaunchConfiguration("fused_scan_frame"),
+                "processing_frame": LaunchConfiguration("fused_scan_frame"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "restamp_output": LaunchConfiguration("restamp_laserscan_output"),
+                "input_stamp_warning_age": LaunchConfiguration("input_stamp_warning_age"),
+                "max_input_age": LaunchConfiguration("max_input_age"),
+                "queue_size": LaunchConfiguration("fused_scan_queue_size"),
+                "max_publish_rate": LaunchConfiguration("fused_scan_max_publish_rate"),
+                "input_point_stride": LaunchConfiguration("fused_scan_input_point_stride"),
+                "camera_angle_increment": LaunchConfiguration("camera_scan_angle_increment"),
+                "fused_angle_increment": LaunchConfiguration("fused_scan_angle_increment"),
+                "processing_time_warning": LaunchConfiguration(
+                    "fused_scan_processing_time_warning"
+                ),
             }.items(),
         ),
         IncludeLaunchDescription(

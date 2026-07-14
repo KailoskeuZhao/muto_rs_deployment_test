@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -19,7 +20,20 @@ def generate_launch_description():
     input_topic_arg = DeclareLaunchArgument(
         "input_topic",
         default_value="lidar/PointCloud",
-        description="Raw LiDAR PointCloud2 topic.",
+        description="Legacy raw LiDAR PointCloud2 topic.",
+    )
+    use_laserscan_pipeline_arg = DeclareLaunchArgument(
+        "use_laserscan_pipeline",
+        default_value="true",
+        description=(
+            "Use the raw LiDAR LaserScan filter path. Set false to use the legacy "
+            "PointCloud2 filter and PointCloud2-to-LaserScan conversion path."
+        ),
+    )
+    raw_scan_topic_arg = DeclareLaunchArgument(
+        "raw_scan_topic",
+        default_value="/lidar/raw_laserscan",
+        description="Raw LiDAR LaserScan topic published by the TG30 driver.",
     )
     filtered_topic_arg = DeclareLaunchArgument(
         "filtered_topic",
@@ -36,10 +50,25 @@ def generate_launch_description():
         default_value="base_frame",
         description="Frame that filtered point clouds are transformed into.",
     )
+    use_sim_time_arg = DeclareLaunchArgument(
+        "use_sim_time",
+        default_value="false",
+        description="Use simulation clock if true.",
+    )
     scan_topic_arg = DeclareLaunchArgument(
         "scan_topic",
         default_value="/lidar/filtered_laserscan",
-        description="LaserScan topic generated from the filtered LiDAR cloud and consumed by rf2o.",
+        description="Downsampled filtered LiDAR LaserScan topic consumed by rf2o.",
+    )
+    no_downsample_scan_topic_arg = DeclareLaunchArgument(
+        "no_downsample_scan_topic",
+        default_value="/lidar/filtered_laserscan_no_downsample",
+        description="Full-resolution filtered LiDAR LaserScan topic consumed by scan fusion.",
+    )
+    no_downsample_scan_range_max_arg = DeclareLaunchArgument(
+        "no_downsample_scan_range_max",
+        default_value="15.0",
+        description="Maximum range for the full-resolution LiDAR LaserScan used by fusion.",
     )
     scan_min_z_arg = DeclareLaunchArgument(
         "scan_min_z",
@@ -56,6 +85,11 @@ def generate_launch_description():
         default_value="10.0",
         description="Maximum range for the filtered LiDAR LaserScan.",
     )
+    scan_range_min_arg = DeclareLaunchArgument(
+        "scan_range_min",
+        default_value="0.05",
+        description="Minimum range for the filtered LiDAR LaserScan.",
+    )
     scan_angle_min_arg = DeclareLaunchArgument(
         "scan_angle_min",
         default_value="-3.141592653589793",
@@ -65,6 +99,32 @@ def generate_launch_description():
         "scan_angle_max",
         default_value="3.141592653589793",
         description="Maximum filtered LiDAR scan angle in radians.",
+    )
+    scan_downsample_factor_arg = DeclareLaunchArgument(
+        "scan_downsample_factor",
+        default_value="2",
+        description="Group this many LiDAR scan bins into one RF2O scan bin.",
+    )
+    scan_restamp_output_arg = DeclareLaunchArgument(
+        "scan_restamp_output",
+        default_value="false",
+        description=(
+            "Use current ROS time for the RF2O input LaserScan stamp. "
+            "Leave false unless LiDAR scan stamps are known bad while the data is fresh."
+        ),
+    )
+    scan_input_stamp_warning_age_arg = DeclareLaunchArgument(
+        "scan_input_stamp_warning_age",
+        default_value="1.0",
+        description="Warn when LiDAR scan/cloud stamps differ from this node clock by more seconds.",
+    )
+    scan_max_input_age_arg = DeclareLaunchArgument(
+        "scan_max_input_age",
+        default_value="2.0",
+        description=(
+            "Drop LiDAR scans/clouds whose stamps differ from this node clock by more seconds before "
+            "publishing RF2O input scans. Set 0.0 only for intentional non-live stamps."
+        ),
     )
     odom_topic_arg = DeclareLaunchArgument(
         "odom_topic",
@@ -170,15 +230,25 @@ def generate_launch_description():
 
     return LaunchDescription([
         input_topic_arg,
+        use_laserscan_pipeline_arg,
+        raw_scan_topic_arg,
         filtered_topic_arg,
         filtered_no_downsample_topic_arg,
         target_frame_arg,
+        use_sim_time_arg,
         scan_topic_arg,
+        no_downsample_scan_topic_arg,
+        no_downsample_scan_range_max_arg,
         scan_min_z_arg,
         scan_max_z_arg,
         scan_range_max_arg,
+        scan_range_min_arg,
         scan_angle_min_arg,
         scan_angle_max_arg,
+        scan_downsample_factor_arg,
+        scan_restamp_output_arg,
+        scan_input_stamp_warning_age_arg,
+        scan_max_input_age_arg,
         odom_topic_arg,
         raw_odom_topic_arg,
         odom_frame_arg,
@@ -200,11 +270,16 @@ def generate_launch_description():
             executable="lidar_pointcloud_filter_node",
             name="lidar_pointcloud_filter_node",
             output="screen",
+            condition=UnlessCondition(LaunchConfiguration("use_laserscan_pipeline")),
             parameters=[{
                 "input_topic": LaunchConfiguration("input_topic"),
                 "output_topic": LaunchConfiguration("filtered_topic"),
                 "no_downsample_output_topic": LaunchConfiguration("filtered_no_downsample_topic"),
                 "target_frame": LaunchConfiguration("target_frame"),
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
                 "voxel_leaf_size": ParameterValue(
                     LaunchConfiguration("voxel_leaf_size"),
                     value_type=float,
@@ -218,20 +293,79 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(scan_converter_launch),
+            condition=UnlessCondition(LaunchConfiguration("use_laserscan_pipeline")),
             launch_arguments={
+                "publish_camera_scan": "false",
                 "publish_fused_scan": "false",
                 "publish_filtered_lidar_scan": "true",
                 "lidar_topic": LaunchConfiguration("filtered_topic"),
                 "filtered_lidar_scan_topic": LaunchConfiguration("scan_topic"),
                 "filtered_lidar_scan_frame": LaunchConfiguration("target_frame"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "min_z": LaunchConfiguration("scan_min_z"),
                 "max_z": LaunchConfiguration("scan_max_z"),
                 "lidar_range_max": LaunchConfiguration("scan_range_max"),
                 "angle_min": LaunchConfiguration("scan_angle_min"),
                 "angle_max": LaunchConfiguration("scan_angle_max"),
+                "restamp_output": LaunchConfiguration("scan_restamp_output"),
+                "input_stamp_warning_age": LaunchConfiguration("scan_input_stamp_warning_age"),
+                "max_input_age": LaunchConfiguration("scan_max_input_age"),
                 "queue_size": LaunchConfiguration("queue_size"),
                 "transform_timeout": LaunchConfiguration("transform_timeout"),
             }.items(),
+        ),
+        Node(
+            package="lidar_pointcloud_filter",
+            executable="lidar_laserscan_filter_node",
+            name="lidar_laserscan_filter_node",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("use_laserscan_pipeline")),
+            parameters=[{
+                "input_topic": LaunchConfiguration("raw_scan_topic"),
+                "output_topic": LaunchConfiguration("scan_topic"),
+                "no_downsample_output_topic": LaunchConfiguration("no_downsample_scan_topic"),
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
+                "range_min": ParameterValue(
+                    LaunchConfiguration("scan_range_min"),
+                    value_type=float,
+                ),
+                "range_max": ParameterValue(
+                    LaunchConfiguration("scan_range_max"),
+                    value_type=float,
+                ),
+                "no_downsample_range_max": ParameterValue(
+                    LaunchConfiguration("no_downsample_scan_range_max"),
+                    value_type=float,
+                ),
+                "angle_min": ParameterValue(
+                    LaunchConfiguration("scan_angle_min"),
+                    value_type=float,
+                ),
+                "angle_max": ParameterValue(
+                    LaunchConfiguration("scan_angle_max"),
+                    value_type=float,
+                ),
+                "downsample_factor": ParameterValue(
+                    LaunchConfiguration("scan_downsample_factor"),
+                    value_type=int,
+                ),
+                "restamp_output": ParameterValue(
+                    LaunchConfiguration("scan_restamp_output"),
+                    value_type=bool,
+                ),
+                "queue_size": ParameterValue(LaunchConfiguration("queue_size"), value_type=int),
+                "input_stamp_warning_age": ParameterValue(
+                    LaunchConfiguration("scan_input_stamp_warning_age"),
+                    value_type=float,
+                ),
+                "max_input_age": ParameterValue(
+                    LaunchConfiguration("scan_max_input_age"),
+                    value_type=float,
+                ),
+            }],
         ),
         Node(
             package="rf2o_laser_odometry",
@@ -241,6 +375,10 @@ def generate_launch_description():
                 "laser_scan_topic": LaunchConfiguration("scan_topic"),
                 "odom_topic": LaunchConfiguration("raw_odom_topic"),
                 "publish_tf": False,
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
                 "base_frame_id": LaunchConfiguration("odom_child_frame"),
                 "odom_frame_id": LaunchConfiguration("odom_frame"),
                 "init_pose_from_topic": LaunchConfiguration("rf2o_init_pose_from_topic"),
@@ -255,6 +393,10 @@ def generate_launch_description():
             parameters=[{
                 "input_topic": LaunchConfiguration("raw_odom_topic"),
                 "output_topic": LaunchConfiguration("odom_topic"),
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
                 "translation_deadband": ParameterValue(
                     LaunchConfiguration("rf2o_translation_deadband"),
                     value_type=float,

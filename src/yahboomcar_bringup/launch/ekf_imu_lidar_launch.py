@@ -7,6 +7,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     ekf_config = os.path.join(
@@ -34,6 +35,29 @@ def generate_launch_description():
         "launch_lidar_odometry",
         default_value="true",
         description="Whether to launch LiDAR filtering and odometry for /scan_odom.",
+    )
+    use_laserscan_pipeline_arg = DeclareLaunchArgument(
+        "use_laserscan_pipeline",
+        default_value="true",
+        description=(
+            "Use raw LiDAR LaserScan filtering for RF2O. Set false for the legacy "
+            "PointCloud2 filter/conversion path."
+        ),
+    )
+    raw_scan_topic_arg = DeclareLaunchArgument(
+        "raw_scan_topic",
+        default_value="/lidar/raw_laserscan",
+        description="Raw LiDAR LaserScan topic from the TG30 driver.",
+    )
+    scan_downsample_factor_arg = DeclareLaunchArgument(
+        "scan_downsample_factor",
+        default_value="2",
+        description="LiDAR scan bin grouping factor for the RF2O input scan.",
+    )
+    use_sim_time_arg = DeclareLaunchArgument(
+        "use_sim_time",
+        default_value="false",
+        description="Use simulation clock if true.",
     )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         "rf2o_translation_deadband",
@@ -113,6 +137,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         launch_lidar_odometry_arg,
+        use_laserscan_pipeline_arg,
+        raw_scan_topic_arg,
+        scan_downsample_factor_arg,
+        use_sim_time_arg,
         rf2o_translation_deadband_arg,
         rf2o_translation_jump_rejection_threshold_arg,
         rf2o_max_translation_rate_arg,
@@ -126,6 +154,10 @@ def generate_launch_description():
             condition=IfCondition(use_lidar_odometry),
             launch_arguments={
                 "rf2o_publish_tf": "false",
+                "use_laserscan_pipeline": LaunchConfiguration("use_laserscan_pipeline"),
+                "raw_scan_topic": LaunchConfiguration("raw_scan_topic"),
+                "scan_downsample_factor": LaunchConfiguration("scan_downsample_factor"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "rf2o_translation_deadband": LaunchConfiguration("rf2o_translation_deadband"),
                 "rf2o_translation_jump_rejection_threshold": LaunchConfiguration(
                     "rf2o_translation_jump_rejection_threshold"
@@ -149,6 +181,10 @@ def generate_launch_description():
                 'frame_id': 'odom',
                 'child_frame_id': 'base_frame',
                 'publish_tf': False,
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
             }],
         ),
         Node(
@@ -157,7 +193,15 @@ def generate_launch_description():
             name='ekf_filter_node',
             output='screen',
             condition=IfCondition(use_lidar_imu_ekf),
-            parameters=[ekf_config],
+            parameters=[
+                ekf_config,
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    )
+                },
+            ],
         ),
         Node(
             package='robot_localization',
@@ -165,7 +209,15 @@ def generate_launch_description():
             name='ekf_filter_node',
             output='screen',
             condition=IfCondition(use_foot_ekf),
-            parameters=[ekf_with_foot_config],
+            parameters=[
+                ekf_with_foot_config,
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    )
+                },
+            ],
         ),
         Node(
             package='robot_localization',
@@ -173,6 +225,14 @@ def generate_launch_description():
             name='ekf_filter_node',
             output='screen',
             condition=IfCondition(LaunchConfiguration("imu_only")),
-            parameters=[ekf_imu_only_config],
+            parameters=[
+                ekf_imu_only_config,
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    )
+                },
+            ],
         ),
     ])

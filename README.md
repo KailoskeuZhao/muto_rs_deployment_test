@@ -42,7 +42,12 @@ source install/setup.bash
 
 If your robot workspace lives somewhere else, run the same commands from that workspace root.
 
-## Common Launches
+## Normal Startup Sequence
+
+Use this sequence for the normal robot bringup. Do not launch
+`camera_pointcloud_to_laserscan_launch.py` as a separate normal-startup step.
+That launch is a component/test launch; mapping launches it internally when a
+fused scan is needed.
 
 Start the TG30 LiDAR, Orbbec depth camera, and Muto base driver:
 
@@ -62,39 +67,116 @@ Start the sensor TF publishers:
 ros2 launch tf2_publisher all_tf2_publishers_launch.py
 ```
 
-Run LiDAR PointCloud filtering, filtered-cloud LaserScan conversion, and RF2O laser odometry:
-
-```bash
-ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
-```
-
-`filter_lidar_odometry_launch.py` keeps RF2O itself unmodified: RF2O publishes raw odometry on `scan_odom_raw`, then `lidar_pointcloud_filter/odometry_translation_deadband_node` republishes the EKF-facing `scan_odom`. The wrapper applies a small per-update planar translation deadband by default (`rf2o_translation_deadband:=0.001`) so stationary scan-match drift does not feed `/scan_odom`. Set `rf2o_translation_deadband:=0.0` to disable it, or tune the value in meters for the robot.
-
-Standalone filtered odometry publishes `odom -> base_frame` TF by default. When launched through `ekf_imu_lidar_launch.py`, filtered odometry TF publishing is disabled and the EKF publishes the odom TF instead.
-
-Convert camera depth points plus LiDAR points into a fused `LaserScan`:
-
-```bash
-ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py
-```
-
-This launch does not start LiDAR filtering. It expects an existing LiDAR `PointCloud2` topic, defaulting to `/lidar/PointCloudFilteredNoDownsample`. Start `filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py` first if that topic is not already running.
-
-To consume a different existing LiDAR cloud, override `lidar_topic`.
-
-Run LiDAR PointCloud filtering, RF2O laser odometry, and the EKF:
+Start LiDAR scan filtering, RF2O laser odometry, and the EKF:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
 ```
 
-If `/scan_odom` is already being produced by another launch:
+This launch includes `filter_lidar_odometry_launch.py` by default. The LiDAR
+odom path is:
+
+- `/lidar/raw_laserscan`
+- `/lidar/filtered_laserscan` for RF2O
+- `scan_odom_raw`
+- `scan_odom`
+- EKF output and EKF-owned `odom -> base_frame` TF
+
+When launched through `ekf_imu_lidar_launch.py`, RF2O/deadband odometry TF
+publishing is disabled and the EKF publishes the odom TF instead.
+
+## Mapping And Nav2 Add-Ons
+
+After the normal startup sequence is running, start online async SLAM Toolbox
+mapping:
+
+```bash
+ros2 launch muto_slam_mapping online_async_mapping_launch.py
+```
+
+This launch starts fused LaserScan generation for mapping. It assumes the normal
+LiDAR odom/filter path is already running and producing
+`/lidar/filtered_laserscan_no_downsample`. It does not start hardware, sensor
+TF, LiDAR odometry, or the EKF.
+
+If `/fused/laserscan` is already running:
+
+```bash
+ros2 launch muto_slam_mapping online_async_mapping_launch.py launch_fused_laserscan:=false
+```
+
+Run the Nav2 BT/planner/controller bringup after mapping, TF, EKF, and
+`/fused/laserscan` are available:
+
+```bash
+ros2 launch muto_slam_mapping nav2_planner_controller_launch.py
+```
+
+This launch follows Nav2's normal server ownership model: `bt_navigator` hosts
+the NavigateToPose action, `behavior_server` hosts recovery actions,
+`controller_server` creates the local costmap, `planner_server` creates the
+global costmap, and `smoother_server` hosts path smoothing. It lifecycle-manages
+only those servers, so it does not start AMCL, route, waypoint, docking, or full
+`nav2_bringup`. The default config is `nav2_params.yaml`.
+
+Mapping/TF/scan inputs should already be running. The global costmap expects
+`map -> base_frame`, and the local costmap expects `odom -> base_frame`. Both
+costmaps use `/fused/laserscan`, `base_frame`, `odom`, and `map`.
+
+## Experimental And Test Launches
+
+Run the LiDAR odometry path without the EKF:
+
+```bash
+ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
+```
+
+By default this uses the raw TG30 `LaserScan` path. It publishes:
+
+- `/lidar/filtered_laserscan`, a downsampled filtered scan for RF2O
+- `/lidar/filtered_laserscan_no_downsample`, a full-resolution filtered scan for fusion
+- `scan_odom_raw`, RF2O output before deadband/jump filtering
+- `scan_odom`, filtered odometry output
+
+`filter_lidar_odometry_launch.py` keeps RF2O itself unmodified: RF2O publishes
+raw odometry on `scan_odom_raw`, then
+`lidar_pointcloud_filter/odometry_translation_deadband_node` republishes the
+EKF-facing `scan_odom`. The wrapper applies a small per-update planar
+translation deadband by default (`rf2o_translation_deadband:=0.003`) so
+stationary scan-match drift does not feed `/scan_odom`. Set
+`rf2o_translation_deadband:=0.0` to disable it, or tune the value in meters for
+the robot.
+
+Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
+`rf2o_publish_tf:=false` when an EKF or another localization node owns odom TF.
+
+To force the older PointCloud2 odom path for comparison:
+
+```bash
+ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py use_laserscan_pipeline:=false
+```
+
+Directly test camera scan conversion plus scan fusion:
+
+```bash
+ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py
+```
+
+This is not part of the normal startup sequence. It expects an existing
+`/lidar/filtered_laserscan_no_downsample` topic, normally produced by
+`filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py`. It converts
+`/camera/depth/points` to `/camera/filtered_laserscan`, then fuses that with the
+LiDAR scan into `/fused/laserscan`.
+
+If `/scan_odom` is already being produced by another launch and you only want
+the EKF:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_lidar_odometry:=false
 ```
 
-Rough gait/cmd_vel dead-reckoned odometry is disabled by default. To launch it and fuse `/foot_odom` into the EKF as a low-trust planar velocity source:
+Rough gait/cmd_vel dead-reckoned odometry is disabled by default. To launch it
+and fuse `/foot_odom` into the EKF as a low-trust planar velocity source:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=true
@@ -106,31 +188,8 @@ To test the EKF with only `/imu/data_processed` and no LiDAR or foot odometry:
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py imu_only:=true
 ```
 
-Run online async SLAM Toolbox mapping plus fused LaserScan conversion:
-
-```bash
-ros2 launch muto_slam_mapping online_async_mapping_launch.py
-```
-
-This launch assumes the upstream LiDAR filtered cloud already exists, usually `/lidar/PointCloudFilteredNoDownsample` from `filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py`. It does not start LiDAR filtering.
-
-It launches fused LaserScan generation by default because `mapper_params_online_async.yaml` uses `/fused/laserscan` as `scan_topic`. If `/fused/laserscan` is already running:
-
-```bash
-ros2 launch muto_slam_mapping online_async_mapping_launch.py launch_fused_laserscan:=false
-```
-
-Run the Nav2 BT/planner/controller bringup:
-
-```bash
-ros2 launch muto_slam_mapping nav2_planner_controller_launch.py
-```
-
-This launch follows Nav2's normal server ownership model: `bt_navigator` hosts the NavigateToPose action, `behavior_server` hosts recovery actions, `controller_server` creates the local costmap, `planner_server` creates the global costmap, and `smoother_server` hosts path smoothing. It lifecycle-manages only those servers, so it does not start AMCL, route, waypoint, docking, or full `nav2_bringup`. The default config is `nav2_params.yaml`.
-
-The smaller `nav2_costmap_params.yaml` is still kept and can be passed with `params_file:=...` if needed.
-
-Mapping/TF/scan inputs should already be running. The global costmap expects `map -> base_frame`, and the local costmap expects `odom -> base_frame`. Both costmaps use `/fused/laserscan`, `base_frame`, `odom`, and `map`.
+The smaller `nav2_costmap_params.yaml` is still kept and can be passed to Nav2
+with `params_file:=...` if needed.
 
 YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` are parameter files, not launch files. Launch the matching `.py` file and let it load the YAML.
 
@@ -138,38 +197,47 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 
 | Topic | Purpose |
 | --- | --- |
-| `/lidar/PointCloud` | Raw LiDAR `PointCloud2`. |
-| `/lidar/PointCloudFiltered` | Filtered and voxel-downsampled LiDAR `PointCloud2`, currently using `voxel_leaf_size:=0.02` by default. This is the default LiDAR input for RF2O scan conversion. |
-| `/lidar/PointCloudFilteredNoDownsample` | Filtered LiDAR `PointCloud2` before voxel downsampling. This is the default LiDAR input for fused LaserScan generation. |
-| `/lidar/filtered_laserscan` | LiDAR-only synthetic `LaserScan` generated from `/lidar/PointCloudFiltered`; default input to RF2O. |
+| `/lidar/raw_laserscan` | Raw TG30 `LaserScan`; default input to LiDAR scan filtering. |
+| `/lidar/filtered_laserscan` | Downsampled filtered LiDAR `LaserScan`; default input to RF2O. |
+| `/lidar/filtered_laserscan_no_downsample` | Full-resolution filtered LiDAR `LaserScan`; default LiDAR input for scan fusion. |
+| `/lidar/PointCloud` | Legacy raw LiDAR `PointCloud2`, still published by default for compatibility. |
+| `/lidar/PointCloudFiltered` | Legacy filtered and voxel-downsampled LiDAR `PointCloud2`. |
+| `/lidar/PointCloudFilteredNoDownsample` | Legacy filtered LiDAR `PointCloud2` before voxel downsampling. |
 | `/camera/depth/points` | Depth camera `PointCloud2`. |
-| `/fused/laserscan` | Synthetic/fused `LaserScan` generated from camera depth points and LiDAR points. |
+| `/camera/filtered_laserscan` | Intermediate camera `LaserScan` generated from `/camera/depth/points`. |
+| `/fused/laserscan` | Fused `LaserScan` generated from `/camera/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
 | `/foot_odom` | Rough command/gait odometry from `cmd_vel` and motor-angle activity. Optional EKF input when `launch_foot_odometry:=true`. |
 
 ## Fused LaserScan Notes
 
-`camera_pointcloud_to_laserscan_launch.py` currently builds `/fused/laserscan` from:
+`camera_pointcloud_to_laserscan_launch.py` is a component/test launch. It
+currently builds `/fused/laserscan` from:
 
-- `/camera/depth/points`
-- `/lidar/PointCloudFilteredNoDownsample`
+- `/camera/depth/points`, converted to `/camera/filtered_laserscan`
+- `/lidar/filtered_laserscan_no_downsample`
 
-The no-downsample LiDAR topic is used so the final scan has enough angular samples. The downsampled `/lidar/PointCloudFiltered` topic still exists for workflows that want a lighter cloud.
+The no-downsample LiDAR scan is used so the final scan has enough angular
+samples. The downsampled `/lidar/filtered_laserscan` topic is reserved for RF2O.
 
 Current defaults:
 
 | Setting | Default | Notes |
 | --- | --- | --- |
 | `output_topic` | `/fused/laserscan` | Final synthetic scan. |
-| `processing_frame` | `camera_link` | Camera and LiDAR clouds are transformed here before scan projection. |
+| `camera_scan_topic` | `/camera/filtered_laserscan` | Intermediate camera scan. |
+| `lidar_scan_topic` | `/lidar/filtered_laserscan_no_downsample` | Existing LiDAR scan consumed by fusion. |
+| `processing_frame` | `base_frame` | Camera cloud is transformed here before scan projection. |
+| `fused_scan_frame` | `base_frame` | Final fused scan frame. |
 | `angle_min` / `angle_max` | `-pi` / `pi` | Full-circle scan output. |
 | `range_max` | `3.0` | Depth camera points are capped at 3 m. |
-| `lidar_range_max` | `15.0` | LiDAR points are capped at 15 m. |
+| `lidar_range_max` | `15.0` | Fused output range cap for LiDAR scan points. |
 | `min_z` / `max_z` | `-0.4` / `0.2` | Z slice applied in `processing_frame`. |
-| `lidar_topic` | `/lidar/PointCloudFilteredNoDownsample` | Existing LiDAR cloud consumed by the scan converter. |
+| `require_lidar_scan` | `true` | Wait for a timestamp-matched LiDAR scan before publishing fused output. |
 
-When `use_lidar:=true`, the scan node waits until a valid LiDAR cloud is available instead of publishing camera-only scans during startup.
+When `require_lidar_scan:=true`, fusion waits until a valid LiDAR scan is
+available instead of publishing camera-only scans during startup.
 
 ## Frame Notes
 

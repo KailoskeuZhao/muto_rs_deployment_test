@@ -1,13 +1,9 @@
-#include <chrono>
-#include <functional>
 #include <memory>
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2/LinearMath/Quaternion.h"
-#include "tf2_ros/transform_broadcaster.h"
-
-using namespace std::chrono_literals;
+#include "tf2_ros/static_transform_broadcaster.h"
 
 class FixedFrameBroadcaster : public rclcpp::Node
 {
@@ -15,13 +11,12 @@ public:
   FixedFrameBroadcaster()
   : Node("camera_tf2_broadcaster")
   {
-    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
-    timer_ = this->create_wall_timer(
-      100ms, std::bind(&FixedFrameBroadcaster::broadcast_timer_callback, this));
+    tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
+    broadcast_static_transform();
   }
 
 private:
-  void broadcast_timer_callback()
+  void broadcast_static_transform()
   {
     geometry_msgs::msg::TransformStamped t;
 
@@ -39,11 +34,9 @@ private:
     t.transform.rotation.w = q.w();
 
     tf_broadcaster_->sendTransform(t);
-
   }
 
-rclcpp::TimerBase::SharedPtr timer_;
-  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_broadcaster_;
 };
 
 int main(int argc, char * argv[])

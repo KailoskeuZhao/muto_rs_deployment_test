@@ -170,7 +170,7 @@ private:
     const sensor_msgs::msg::LaserScan & input,
     const double range_max,
     sensor_msgs::msg::LaserScan & output,
-    FilterStats & stats) const
+    FilterStats & stats)
   {
     const double input_increment = input.angle_increment;
     const double selected_angle_min = std::max(angle_min_, static_cast<double>(input.angle_min));

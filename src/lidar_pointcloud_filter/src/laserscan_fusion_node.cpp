@@ -258,7 +258,7 @@ private:
 
   void initializeOutputScan(
     const sensor_msgs::msg::LaserScan & camera_msg,
-    sensor_msgs::msg::LaserScan & output_msg) const
+    sensor_msgs::msg::LaserScan & output_msg)
   {
     const auto bin_count = static_cast<std::size_t>(
       std::floor((angle_max_ - angle_min_) / angle_increment_)) + 1U;

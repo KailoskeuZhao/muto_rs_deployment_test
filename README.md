@@ -10,6 +10,9 @@ Expect launch files, topic names, frames, calibration values, and filtering assu
 
 Hardware-specific assumptions are currently embedded in several places, especially frame names, sensor poses, IMU calibration constants, LiDAR/depth-camera filtering ranges, and SLAM/EKF parameters.
 
+Detailed odometry and localization notes are in [docs/odometry.md](docs/odometry.md).
+Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
+
 ## Package Origins
 
 Some packages in this workspace are original deployment glue, while others were imported or forked and then modified.
@@ -256,7 +259,10 @@ The current TF setup expects robot sensor frames such as:
 | `lidar_frame` | LiDAR frame used by the TG30 point cloud. |
 | `imu_link` | IMU frame. |
 
-The depth camera point cloud may arrive in `camera_depth_optical_frame`, but filtering/projection logic may transform it into `camera_link` before applying deployment-specific bounds.
+The depth camera point cloud may arrive in `camera_depth_optical_frame`. The
+fusion path uses TF2 to transform sampled points into the configured
+`processing_frame`, which is `base_frame` by default, before applying the
+deployment-specific z/range bounds and projecting to LaserScan.
 
 ## Development Notes
 

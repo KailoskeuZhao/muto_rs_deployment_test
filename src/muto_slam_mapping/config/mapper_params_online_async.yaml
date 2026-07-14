@@ -9,5 +9,5 @@ slam_toolbox:
     mode: mapping
 
     resolution: 0.04
-    transform_publish_period: 0.02
+    transform_publish_period: 0.08
     map_update_interval: 3.0

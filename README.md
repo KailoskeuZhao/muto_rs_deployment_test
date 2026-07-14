@@ -234,10 +234,15 @@ Current defaults:
 | `range_max` | `3.0` | Depth camera points are capped at 3 m. |
 | `lidar_range_max` | `15.0` | Fused output range cap for LiDAR scan points. |
 | `min_z` / `max_z` | `-0.4` / `0.2` | Z slice applied in `processing_frame`. |
+| `input_point_stride` | `8` | Process every 8th depth-camera point before scan projection. |
 | `require_lidar_scan` | `true` | Wait for a timestamp-matched LiDAR scan before publishing fused output. |
 
 When `require_lidar_scan:=true`, fusion waits until a valid LiDAR scan is
 available instead of publishing camera-only scans during startup.
+If a live depth-camera cloud contains no points, it is still converted into an
+empty all-infinity `/camera/filtered_laserscan` with the cloud timestamp. Fusion
+then combines that camera scan with the latest timestamp-compatible LiDAR scan,
+so temporary depth-camera no-return frames do not block `/fused/laserscan`.
 
 ## Frame Notes
 

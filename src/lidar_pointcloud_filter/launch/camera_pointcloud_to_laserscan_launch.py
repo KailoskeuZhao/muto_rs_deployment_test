@@ -132,7 +132,7 @@ def generate_launch_description():
     )
     input_point_stride_arg = DeclareLaunchArgument(
         "input_point_stride",
-        default_value="1",
+        default_value="8",
         description="Process every Nth point from the primary input cloud.",
     )
     lidar_point_stride_arg = DeclareLaunchArgument(

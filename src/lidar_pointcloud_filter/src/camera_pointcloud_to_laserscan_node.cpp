@@ -45,7 +45,7 @@ public:
 
     queue_size_ = declare_parameter<int>("queue_size", 5);
     max_publish_rate_ = declare_parameter<double>("max_publish_rate", 0.0);
-    input_point_stride_ = declare_parameter<int>("input_point_stride", 1);
+    input_point_stride_ = declare_parameter<int>("input_point_stride", 8);
     lidar_point_stride_ = declare_parameter<int>("lidar_point_stride", 1);
     max_lidar_age_ = declare_parameter<double>("max_lidar_age", 0.5);
     restamp_output_ = declare_parameter<bool>("restamp_output", false);
@@ -212,6 +212,38 @@ private:
         "Input cloud has an empty frame_id; dropping cloud");
       return;
     }
+
+    const bool cloud_has_points =
+      msg->width > 0U && msg->height > 0U && msg->point_step > 0U && !msg->data.empty();
+    if (!cloud_has_points) {
+      last_process_time_ = now;
+      const std::string scan_frame =
+        processing_frame_.empty() ? msg->header.frame_id : processing_frame_;
+
+      sensor_msgs::msg::LaserScan scan;
+      initializeScan(*msg, scan_frame, scan);
+
+      FilterStats camera_stats;
+      FilterStats lidar_stats;
+      const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
+      if (use_lidar_ && !lidar_used) {
+        return;
+      }
+
+      publisher_->publish(scan);
+      warnIfProcessingWasSlow(processing_start, *msg, camera_stats, lidar_stats, lidar_used);
+
+      if (log_filter_stats_) {
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Converted empty input cloud to empty scan: camera_input=%u lidar_used=%s "
+          "lidar_kept=%zu bins=%zu",
+          msg->width * msg->height, lidar_used ? "true" : "false", lidar_stats.kept,
+          scan.ranges.size());
+      }
+      return;
+    }
+
     if (!hasField(*msg, "x") || !hasField(*msg, "y") || !hasField(*msg, "z")) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -219,9 +251,6 @@ private:
       return;
     }
     last_process_time_ = now;
-
-    const auto bin_count = static_cast<std::size_t>(
-      std::floor((angle_max_ - angle_min_) / angle_increment_)) + 1U;
 
     const std::string scan_frame =
       processing_frame_.empty() ? msg->header.frame_id : processing_frame_;
@@ -231,21 +260,7 @@ private:
     }
 
     sensor_msgs::msg::LaserScan scan;
-    scan.header = msg->header;
-    scan.header.frame_id = scan_frame;
-    if (restamp_output_) {
-      scan.header.stamp = get_clock()->now();
-    }
-    scan.angle_min = static_cast<float>(angle_min_);
-    scan.angle_max = static_cast<float>(angle_min_ + (bin_count - 1U) * angle_increment_);
-    scan.angle_increment = static_cast<float>(angle_increment_);
-    scan.time_increment = static_cast<float>(time_increment_);
-    scan.scan_time = static_cast<float>(scan_time_);
-    const double scan_range_min = use_lidar_ ? std::min(range_min_, lidar_range_min_) : range_min_;
-    const double scan_range_max = use_lidar_ ? std::max(range_max_, lidar_range_max_) : range_max_;
-    scan.range_min = static_cast<float>(scan_range_min);
-    scan.range_max = static_cast<float>(scan_range_max);
-    scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
+    initializeScan(*msg, scan_frame, scan);
 
     FilterStats camera_stats;
     addCloudToScan(camera_cloud, scan, camera_stats, range_min_, range_max_, input_point_stride_);
@@ -280,6 +295,32 @@ private:
 
     const double elapsed = (now - last_process_time_).seconds();
     return elapsed >= 0.0 && elapsed < 1.0 / max_publish_rate_;
+  }
+
+  void initializeScan(
+    const sensor_msgs::msg::PointCloud2 & input_msg,
+    const std::string & scan_frame,
+    sensor_msgs::msg::LaserScan & scan)
+  {
+    const auto bin_count = static_cast<std::size_t>(
+      std::floor((angle_max_ - angle_min_) / angle_increment_)) + 1U;
+
+    scan.header = input_msg.header;
+    scan.header.frame_id = scan_frame;
+    if (restamp_output_) {
+      scan.header.stamp = get_clock()->now();
+    }
+    scan.angle_min = static_cast<float>(angle_min_);
+    scan.angle_max = static_cast<float>(angle_min_ + (bin_count - 1U) * angle_increment_);
+    scan.angle_increment = static_cast<float>(angle_increment_);
+    scan.time_increment = static_cast<float>(time_increment_);
+    scan.scan_time = static_cast<float>(scan_time_);
+    const double scan_range_min = use_lidar_ ? std::min(range_min_, lidar_range_min_) : range_min_;
+    const double scan_range_max = use_lidar_ ? std::max(range_max_, lidar_range_max_) : range_max_;
+    scan.range_min = static_cast<float>(scan_range_min);
+    scan.range_max = static_cast<float>(scan_range_max);
+    scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
+    scan.intensities.clear();
   }
 
   bool addLatestLidarCloudToScan(

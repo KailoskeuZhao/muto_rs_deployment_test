@@ -218,8 +218,12 @@ private:
     initializeOutputScan(*msg, output_scan);
 
     FilterStats camera_stats;
-    if (!addScanToOutput(*msg, output_scan, "camera", camera_stats)) {
-      return;
+    if (hasUsableRange(*msg)) {
+      if (!addScanToOutput(*msg, output_scan, "camera", camera_stats)) {
+        return;
+      }
+    } else {
+      camera_stats.invalid = msg->ranges.size();
     }
 
     FilterStats lidar_stats;
@@ -254,6 +258,15 @@ private:
 
     const double elapsed = (now - last_process_time_).seconds();
     return elapsed >= 0.0 && elapsed < 1.0 / max_publish_rate_;
+  }
+
+  bool hasUsableRange(const sensor_msgs::msg::LaserScan & scan) const
+  {
+    return std::any_of(
+      scan.ranges.begin(), scan.ranges.end(),
+      [&scan](const float range) {
+        return std::isfinite(range) && range >= scan.range_min && range <= scan.range_max;
+      });
   }
 
   void initializeOutputScan(

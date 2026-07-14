@@ -91,7 +91,7 @@ def generate_launch_description():
     )
     fused_scan_input_point_stride_arg = DeclareLaunchArgument(
         "fused_scan_input_point_stride",
-        default_value="4",
+        default_value="8",
         description="Process every Nth depth-camera point when building the camera scan.",
     )
     camera_scan_angle_increment_arg = DeclareLaunchArgument(

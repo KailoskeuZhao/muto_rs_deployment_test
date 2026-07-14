@@ -12,8 +12,10 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/point_cloud2_iterator.hpp"
+#include "tf2/LinearMath/Quaternion.h"
+#include "tf2/LinearMath/Transform.h"
+#include "tf2/LinearMath/Vector3.h"
 #include "tf2/exceptions.h"
-#include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -254,8 +256,8 @@ private:
 
     const std::string scan_frame =
       processing_frame_.empty() ? msg->header.frame_id : processing_frame_;
-    sensor_msgs::msg::PointCloud2 camera_cloud;
-    if (!transformCloudToFrame(*msg, scan_frame, camera_cloud, "camera")) {
+    tf2::Transform camera_transform;
+    if (!lookupCloudTransform(*msg, scan_frame, "camera", camera_transform)) {
       return;
     }
 
@@ -263,7 +265,8 @@ private:
     initializeScan(*msg, scan_frame, scan);
 
     FilterStats camera_stats;
-    addCloudToScan(camera_cloud, scan, camera_stats, range_min_, range_max_, input_point_stride_);
+    addCloudToScan(
+      *msg, camera_transform, scan, camera_stats, range_min_, range_max_, input_point_stride_);
 
     FilterStats lidar_stats;
     const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
@@ -369,24 +372,24 @@ private:
       }
     }
 
-    sensor_msgs::msg::PointCloud2 lidar_cloud;
-    if (!transformCloudToFrame(*lidar_msg, scan.header.frame_id, lidar_cloud, "lidar")) {
+    tf2::Transform lidar_transform;
+    if (!lookupCloudTransform(*lidar_msg, scan.header.frame_id, "lidar", lidar_transform)) {
       return false;
     }
 
-    addCloudToScan(lidar_cloud, scan, stats, lidar_range_min_, lidar_range_max_,
+    addCloudToScan(*lidar_msg, lidar_transform, scan, stats, lidar_range_min_, lidar_range_max_,
       lidar_point_stride_);
     return true;
   }
 
-  bool transformCloudToFrame(
+  bool lookupCloudTransform(
     const sensor_msgs::msg::PointCloud2 & msg,
     const std::string & target_frame,
-    sensor_msgs::msg::PointCloud2 & transformed_msg,
-    const char * cloud_name)
+    const char * cloud_name,
+    tf2::Transform & transform)
   {
     if (msg.header.frame_id == target_frame) {
-      transformed_msg = msg;
+      transform.setIdentity();
       return true;
     }
 
@@ -394,7 +397,7 @@ private:
       const geometry_msgs::msg::TransformStamped transform_msg =
         tf_buffer_->lookupTransform(
         target_frame, msg.header.frame_id, msg.header.stamp, transform_timeout_);
-      tf2::doTransform(msg, transformed_msg, transform_msg);
+      setTfTransform(transform_msg, transform);
       return true;
     } catch (const tf2::TransformException & ex) {
       const std::string stamped_error = ex.what();
@@ -403,7 +406,7 @@ private:
           tf_buffer_->lookupTransform(
           target_frame, msg.header.frame_id, rclcpp::Time(0, 0, get_clock()->get_clock_type()),
           transform_timeout_);
-        tf2::doTransform(msg, transformed_msg, transform_msg);
+        setTfTransform(transform_msg, transform);
         return true;
       } catch (const tf2::TransformException & latest_ex) {
         RCLCPP_WARN_THROTTLE(
@@ -416,8 +419,19 @@ private:
     }
   }
 
+  void setTfTransform(
+    const geometry_msgs::msg::TransformStamped & transform_msg,
+    tf2::Transform & transform) const
+  {
+    const auto & translation = transform_msg.transform.translation;
+    const auto & rotation = transform_msg.transform.rotation;
+    transform.setOrigin(tf2::Vector3(translation.x, translation.y, translation.z));
+    transform.setRotation(tf2::Quaternion(rotation.x, rotation.y, rotation.z, rotation.w));
+  }
+
   void addCloudToScan(
     const sensor_msgs::msg::PointCloud2 & msg,
+    const tf2::Transform & transform,
     sensor_msgs::msg::LaserScan & scan,
     FilterStats & stats,
     const double range_min,
@@ -439,9 +453,11 @@ private:
         continue;
       }
 
-      const double x = *iter_x;
-      const double y = *iter_y;
-      const double z = *iter_z;
+      const tf2::Vector3 transformed_point =
+        transform * tf2::Vector3(*iter_x, *iter_y, *iter_z);
+      const double x = transformed_point.x();
+      const double y = transformed_point.y();
+      const double z = transformed_point.z();
 
       if (z < min_z_ || z > max_z_) {
         ++stats.z_filtered;

@@ -30,8 +30,8 @@ public:
     processing_frame_ = declare_parameter<std::string>("processing_frame", "camera_link");
     use_lidar_ = declare_parameter<bool>("use_lidar", true);
 
-    min_z_ = declare_parameter<double>("min_z", -0.4);
-    max_z_ = declare_parameter<double>("max_z", 0.2);
+    min_z_ = declare_parameter<double>("min_z", -0.2);
+    max_z_ = declare_parameter<double>("max_z", 0.05);
     range_min_ = declare_parameter<double>("range_min", 0.05);
     range_max_ = declare_parameter<double>("range_max", 3.0);
     lidar_range_min_ = declare_parameter<double>("lidar_range_min", range_min_);

@@ -233,7 +233,7 @@ Current defaults:
 | `angle_min` / `angle_max` | `-pi` / `pi` | Full-circle scan output. |
 | `range_max` | `3.0` | Depth camera points are capped at 3 m. |
 | `lidar_range_max` | `15.0` | Fused output range cap for LiDAR scan points. |
-| `min_z` / `max_z` | `-0.4` / `0.2` | Z slice applied in `processing_frame`. |
+| `min_z` / `max_z` | `-0.2` / `0.05` | Z slice applied in `processing_frame`. |
 | `input_point_stride` | `8` | Process every 8th depth-camera point before scan projection. |
 | `require_lidar_scan` | `true` | Wait for a timestamp-matched LiDAR scan before publishing fused output. |
 

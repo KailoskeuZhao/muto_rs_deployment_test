@@ -82,12 +82,12 @@ def generate_launch_description():
     )
     min_z_arg = DeclareLaunchArgument(
         "min_z",
-        default_value="-0.4",
+        default_value="-0.2",
         description="Minimum original-frame z value to keep.",
     )
     max_z_arg = DeclareLaunchArgument(
         "max_z",
-        default_value="0.2",
+        default_value="0.05",
         description="Maximum original-frame z value to keep.",
     )
     range_max_arg = DeclareLaunchArgument(

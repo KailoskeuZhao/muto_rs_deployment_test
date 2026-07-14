@@ -53,6 +53,16 @@ def generate_launch_description():
         default_value="base_frame",
         description="Frame used for /fused/laserscan.",
     )
+    depth_min_z_arg = DeclareLaunchArgument(
+        "depth_min_z",
+        default_value="-0.2",
+        description="Minimum depth-camera point z in fused_scan_frame to keep.",
+    )
+    depth_max_z_arg = DeclareLaunchArgument(
+        "depth_max_z",
+        default_value="0.05",
+        description="Maximum depth-camera point z in fused_scan_frame to keep.",
+    )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false",
@@ -116,6 +126,8 @@ def generate_launch_description():
         camera_scan_topic_arg,
         lidar_scan_topic_arg,
         fused_scan_frame_arg,
+        depth_min_z_arg,
+        depth_max_z_arg,
         use_sim_time_arg,
         restamp_laserscan_output_arg,
         input_stamp_warning_age_arg,
@@ -137,6 +149,8 @@ def generate_launch_description():
                 "lidar_scan_topic": LaunchConfiguration("lidar_scan_topic"),
                 "fused_scan_frame": LaunchConfiguration("fused_scan_frame"),
                 "processing_frame": LaunchConfiguration("fused_scan_frame"),
+                "min_z": LaunchConfiguration("depth_min_z"),
+                "max_z": LaunchConfiguration("depth_max_z"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "restamp_output": LaunchConfiguration("restamp_laserscan_output"),
                 "input_stamp_warning_age": LaunchConfiguration("input_stamp_warning_age"),

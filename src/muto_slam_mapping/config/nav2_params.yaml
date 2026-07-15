@@ -84,12 +84,14 @@ local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: false
-      footprint_padding: 0.03
+      footprint_padding: 0.01
       update_frequency: 5.0
       publish_frequency: 2.0
       transform_tolerance: 0.1
       global_frame: odom
       robot_base_frame: base_frame
+      # Body + fixed sensor package from the MUTO URDF is ~0.145 m radius.
+      # Full zero-pose leg collision radius is ~0.30 m and is intentionally not used here.
       rolling_window: true
       width: 3
       height: 3
@@ -118,8 +120,8 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        cost_scaling_factor: 10.0
-        inflation_radius: 0.2
+        cost_scaling_factor: 12.0
+        inflation_radius: 0.18
         inflate_unknown: false
         inflate_around_unknown: true
       always_send_full_costmap: true
@@ -172,11 +174,12 @@ global_costmap:
       use_sim_time: false
       update_frequency: 1.0
       publish_frequency: 1.0
-      footprint_padding: 0.03
+      footprint_padding: 0.01
       transform_tolerance: 0.1
       global_frame: map
       robot_base_frame: base_frame
-      robot_radius: 0.22
+      # Match the local costmap's body-only navigation footprint.
+      robot_radius: 0.16
       resolution: 0.04
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -207,8 +210,8 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        cost_scaling_factor: 10.0
-        inflation_radius: 0.2
+        cost_scaling_factor: 12.0
+        inflation_radius: 0.18
         inflate_unknown: false
         inflate_around_unknown: true
       always_send_full_costmap: true

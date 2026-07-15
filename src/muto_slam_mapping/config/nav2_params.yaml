@@ -121,7 +121,7 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
         cost_scaling_factor: 12.0
-        inflation_radius: 0.18
+        inflation_radius: 0.4
         inflate_unknown: false
         inflate_around_unknown: true
       always_send_full_costmap: true
@@ -211,7 +211,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
         cost_scaling_factor: 12.0
-        inflation_radius: 0.18
+        inflation_radius: 0.4
         inflate_unknown: false
         inflate_around_unknown: true
       always_send_full_costmap: true

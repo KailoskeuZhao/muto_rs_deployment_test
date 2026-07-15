@@ -82,13 +82,18 @@ def generate_launch_description():
     )
     min_z_arg = DeclareLaunchArgument(
         "min_z",
-        default_value="-0.2",
-        description="Minimum original-frame z value to keep.",
+        default_value="-0.10",
+        description="Minimum processing-frame z value to keep.",
     )
     max_z_arg = DeclareLaunchArgument(
         "max_z",
-        default_value="0.05",
-        description="Maximum original-frame z value to keep.",
+        default_value="0.18",
+        description="Maximum processing-frame z value to keep.",
+    )
+    camera_min_x_arg = DeclareLaunchArgument(
+        "camera_min_x",
+        default_value="0.30",
+        description="Minimum processing-frame x value for depth-camera points.",
     )
     range_max_arg = DeclareLaunchArgument(
         "range_max",
@@ -194,6 +199,7 @@ def generate_launch_description():
         use_sim_time_arg,
         min_z_arg,
         max_z_arg,
+        camera_min_x_arg,
         range_max_arg,
         lidar_range_max_arg,
         angle_min_arg,
@@ -228,6 +234,10 @@ def generate_launch_description():
                 ),
                 "min_z": ParameterValue(LaunchConfiguration("min_z"), value_type=float),
                 "max_z": ParameterValue(LaunchConfiguration("max_z"), value_type=float),
+                "camera_min_x": ParameterValue(
+                    LaunchConfiguration("camera_min_x"),
+                    value_type=float,
+                ),
                 "range_max": ParameterValue(LaunchConfiguration("range_max"), value_type=float),
                 "lidar_range_max": ParameterValue(
                     LaunchConfiguration("lidar_range_max"),

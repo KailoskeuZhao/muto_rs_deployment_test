@@ -23,11 +23,11 @@ private:
     t.header.stamp = this->get_clock()->now();
     t.header.frame_id = "base_frame";
     t.child_frame_id = "camera_link";
-    t.transform.translation.x = -0.018;
+    t.transform.translation.x = 0.13;
     t.transform.translation.y = 0.0;
-    t.transform.translation.z = 0.16;
+    t.transform.translation.z = 0.115;
     tf2::Quaternion q;
-    q.setRPY(0.0, 0.0, 0.0);
+    q.setRPY(0.0, 0.408407, 0.0);
     t.transform.rotation.x = q.x();
     t.transform.rotation.y = q.y();
     t.transform.rotation.z = q.z();

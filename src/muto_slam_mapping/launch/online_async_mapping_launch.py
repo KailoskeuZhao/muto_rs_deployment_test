@@ -55,13 +55,18 @@ def generate_launch_description():
     )
     depth_min_z_arg = DeclareLaunchArgument(
         "depth_min_z",
-        default_value="-0.2",
+        default_value="-0.10",
         description="Minimum depth-camera point z in fused_scan_frame to keep.",
     )
     depth_max_z_arg = DeclareLaunchArgument(
         "depth_max_z",
-        default_value="0.05",
+        default_value="0.18",
         description="Maximum depth-camera point z in fused_scan_frame to keep.",
+    )
+    depth_min_x_arg = DeclareLaunchArgument(
+        "depth_min_x",
+        default_value="0.30",
+        description="Minimum depth-camera point x in fused_scan_frame to keep.",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
@@ -128,6 +133,7 @@ def generate_launch_description():
         fused_scan_frame_arg,
         depth_min_z_arg,
         depth_max_z_arg,
+        depth_min_x_arg,
         use_sim_time_arg,
         restamp_laserscan_output_arg,
         input_stamp_warning_age_arg,
@@ -151,6 +157,7 @@ def generate_launch_description():
                 "processing_frame": LaunchConfiguration("fused_scan_frame"),
                 "min_z": LaunchConfiguration("depth_min_z"),
                 "max_z": LaunchConfiguration("depth_max_z"),
+                "camera_min_x": LaunchConfiguration("depth_min_x"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "restamp_output": LaunchConfiguration("restamp_laserscan_output"),
                 "input_stamp_warning_age": LaunchConfiguration("input_stamp_warning_age"),

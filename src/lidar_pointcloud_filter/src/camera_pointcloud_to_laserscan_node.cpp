@@ -34,6 +34,7 @@ public:
 
     min_z_ = declare_parameter<double>("min_z", -0.2);
     max_z_ = declare_parameter<double>("max_z", 0.05);
+    camera_min_x_ = declare_parameter<double>("camera_min_x", -100.0);
     range_min_ = declare_parameter<double>("range_min", 0.05);
     range_max_ = declare_parameter<double>("range_max", 3.0);
     lidar_range_min_ = declare_parameter<double>("lidar_range_min", range_min_);
@@ -80,11 +81,12 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], range[%.3f, %.3f], "
-      "restamp_output=%s",
+      "Converting %s -> %s in processing frame %s, z[%.3f, %.3f], camera_x>=%.3f, "
+      "range[%.3f, %.3f], restamp_output=%s",
       input_topic_.c_str(), output_topic_.c_str(),
       processing_frame_.empty() ? "<input frame>" : processing_frame_.c_str(),
-      min_z_, max_z_, range_min_, range_max_, restamp_output_ ? "true" : "false");
+      min_z_, max_z_, camera_min_x_, range_min_, range_max_,
+      restamp_output_ ? "true" : "false");
     if (max_publish_rate_ > 0.0 || input_point_stride_ > 1 || lidar_point_stride_ > 1) {
       RCLCPP_INFO(
         get_logger(), "Cost controls: max_publish_rate=%.3f Hz, input_point_stride=%d, "
@@ -104,6 +106,7 @@ private:
   {
     std::size_t kept{0};
     std::size_t invalid{0};
+    std::size_t x_filtered{0};
     std::size_t z_filtered{0};
     std::size_t range_filtered{0};
     std::size_t angle_filtered{0};
@@ -266,7 +269,8 @@ private:
 
     FilterStats camera_stats;
     addCloudToScan(
-      *msg, camera_transform, scan, camera_stats, range_min_, range_max_, input_point_stride_);
+      *msg, camera_transform, scan, camera_stats, camera_min_x_, range_min_, range_max_,
+      input_point_stride_);
 
     FilterStats lidar_stats;
     const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
@@ -281,9 +285,10 @@ private:
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Converted clouds to scan: camera_input=%u camera_kept=%zu lidar_used=%s lidar_kept=%zu "
-        "camera_z_filtered=%zu lidar_z_filtered=%zu bins=%zu",
+        "camera_x_filtered=%zu camera_z_filtered=%zu lidar_z_filtered=%zu bins=%zu",
         msg->width * msg->height, camera_stats.kept, lidar_used ? "true" : "false",
-        lidar_stats.kept, camera_stats.z_filtered, lidar_stats.z_filtered, scan.ranges.size());
+        lidar_stats.kept, camera_stats.x_filtered, camera_stats.z_filtered,
+        lidar_stats.z_filtered, scan.ranges.size());
     }
   }
 
@@ -377,8 +382,9 @@ private:
       return false;
     }
 
-    addCloudToScan(*lidar_msg, lidar_transform, scan, stats, lidar_range_min_, lidar_range_max_,
-      lidar_point_stride_);
+    addCloudToScan(
+      *lidar_msg, lidar_transform, scan, stats, -std::numeric_limits<double>::infinity(),
+      lidar_range_min_, lidar_range_max_, lidar_point_stride_);
     return true;
   }
 
@@ -434,6 +440,7 @@ private:
     const tf2::Transform & transform,
     sensor_msgs::msg::LaserScan & scan,
     FilterStats & stats,
+    const double min_x,
     const double range_min,
     const double range_max,
     const int point_stride)
@@ -458,6 +465,11 @@ private:
       const double x = transformed_point.x();
       const double y = transformed_point.y();
       const double z = transformed_point.z();
+
+      if (x < min_x) {
+        ++stats.x_filtered;
+        continue;
+      }
 
       if (z < min_z_ || z > max_z_) {
         ++stats.z_filtered;
@@ -573,6 +585,7 @@ private:
   bool use_lidar_;
   double min_z_;
   double max_z_;
+  double camera_min_x_;
   double range_min_;
   double range_max_;
   double lidar_range_min_;

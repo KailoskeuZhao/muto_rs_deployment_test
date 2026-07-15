@@ -36,7 +36,7 @@ controller_server:
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.075
     min_y_velocity_threshold: 0.075
-    min_theta_velocity_threshold: 0.01
+    min_theta_velocity_threshold: 0.2
     failure_tolerance: 0.4
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]

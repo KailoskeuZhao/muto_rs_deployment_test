@@ -72,7 +72,7 @@ controller_server:
       cost_scaling_dist: 0.35
       cost_scaling_gain: 1.0
       regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.05
+      regulated_linear_scaling_min_speed: 0.075
       use_fixed_curvature_lookahead: false
       curvature_lookahead_dist: 0.25
       use_rotate_to_heading: true

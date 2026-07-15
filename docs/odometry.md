@@ -160,12 +160,16 @@ Current default filters:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `translation_deadband` | `0.003` m | Suppress tiny per-update XY drift. |
+| `translation_deadband` | `0.0025` m | Suppress tiny per-update XY drift; at 20 Hz RF2O, this accepts roughly `>=5 cm/s`. |
 | `yaw_deadband` | `0.001` rad | Suppress tiny per-update yaw drift. |
-| `translation_jump_rejection_threshold` | `0.20` m | Reject a suspicious XY jump if rate is also implausible. |
-| `max_translation_rate` | `1.5` m/s | Rate gate for translation jump rejection. |
-| `yaw_jump_rejection_threshold` | `0.30` rad | Reject a suspicious yaw jump if rate is also implausible. |
-| `max_yaw_rate` | `4.0` rad/s | Rate gate for yaw jump rejection. |
+| `translation_jump_rejection_threshold` | `0.03` m | Reject RF2O XY updates above 3 cm per update while commanded translation is near zero. |
+| `max_translation_rate` | `0.0` m/s | Disabled so translation jump rejection uses only the per-update 3 cm cap. |
+| `yaw_jump_rejection_threshold` | `0.087266` rad | Reject RF2O yaw updates above 5 deg per update while commanded yaw is near zero. |
+| `max_yaw_rate` | `0.0` rad/s | Disabled so yaw jump rejection uses only the per-update 5 deg cap. |
+| `use_cmd_vel_gate` | `true` | Apply RF2O deadbands and jump caps per axis only when recent `cmd_vel` for that axis is near zero. |
+| `cmd_vel_timeout` | `0.5` s | If no fresh `cmd_vel` is seen, assume stationary and apply the filters. |
+| `cmd_vel_stationary_linear_threshold` | `0.03` m/s | Translation filters apply at or below this commanded planar speed. |
+| `cmd_vel_stationary_angular_threshold` | `0.03` rad/s | Yaw filters apply at or below this commanded yaw rate. |
 
 In standalone mode, `filter_lidar_odometry_launch.py` defaults
 `rf2o_publish_tf:=true`, so the deadband wrapper can publish `odom -> base_frame`

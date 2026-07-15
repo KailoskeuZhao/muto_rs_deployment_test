@@ -145,10 +145,13 @@ By default this uses the raw TG30 `LaserScan` path. It publishes:
 raw odometry on `scan_odom_raw`, then
 `lidar_pointcloud_filter/odometry_translation_deadband_node` republishes the
 EKF-facing `scan_odom`. The wrapper applies a small per-update planar
-translation deadband by default (`rf2o_translation_deadband:=0.003`) so
-stationary scan-match drift does not feed `/scan_odom`. Set
+translation deadband by default (`rf2o_translation_deadband:=0.0025`) so
+stationary scan-match drift does not feed `/scan_odom`. At the default 20 Hz
+RF2O rate, this accepts roughly `>=5 cm/s` planar motion. Set
 `rf2o_translation_deadband:=0.0` to disable it, or tune the value in meters for
-the robot.
+the robot. By default, these RF2O deadbands and jump caps are gated per axis by
+recent `cmd_vel`: translation filters apply while commanded planar motion is
+near zero, and yaw filters apply while commanded yaw is near zero.
 
 Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
 `rf2o_publish_tf:=false` when an EKF or another localization node owns odom TF.

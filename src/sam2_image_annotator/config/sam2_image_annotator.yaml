@@ -1,0 +1,31 @@
+sam2_image_annotator:
+  ros__parameters:
+    image_topic: /camera/color/image_raw
+    annotated_topic: /sam2/annotated_image
+    mask_topic: /sam2/mask
+
+    checkpoint: ./checkpoints/sam2.1_hiera_large.pt
+    model_cfg: configs/sam2.1/sam2.1_hiera_l.yaml
+    device: cuda
+    use_autocast: true
+    autocast_dtype: bfloat16
+
+    # Prompt formats:
+    #   point_coords: "x,y;x,y"
+    #   point_labels: "1,0" where 1 is positive and 0 is negative
+    #   box: "x1,y1,x2,y2"
+    # If no prompt is configured, center_point uses the image center as a
+    # positive point prompt so the node can be exercised immediately.
+    default_prompt: center_point
+    point_coords: ""
+    point_labels: ""
+    box: ""
+    multimask_output: false
+
+    overlay_alpha: 0.45
+    mask_color_bgr: "0,255,0"
+    contour_color_bgr: "0,255,255"
+    draw_prompts: true
+    publish_passthrough_on_error: true
+    max_publish_rate: 1.0
+    queue_size: 2

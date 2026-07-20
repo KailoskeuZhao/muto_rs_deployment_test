@@ -171,7 +171,10 @@ def generate_launch_description():
                 "device": LaunchConfiguration("device"),
                 "prompt_mode": LaunchConfiguration("prompt_mode"),
                 "yolo_model": LaunchConfiguration("yolo_model"),
-                "yolo_device": LaunchConfiguration("yolo_device"),
+                "yolo_device": ParameterValue(
+                    LaunchConfiguration("yolo_device"),
+                    value_type=str,
+                ),
                 "yolo_confidence": ParameterValue(
                     LaunchConfiguration("yolo_confidence"),
                     value_type=float,
@@ -188,7 +191,10 @@ def generate_launch_description():
                     LaunchConfiguration("yolo_max_detections"),
                     value_type=int,
                 ),
-                "yolo_classes": LaunchConfiguration("yolo_classes"),
+                "yolo_classes": ParameterValue(
+                    LaunchConfiguration("yolo_classes"),
+                    value_type=str,
+                ),
                 "yolo_half": ParameterValue(
                     LaunchConfiguration("yolo_half"),
                     value_type=bool,

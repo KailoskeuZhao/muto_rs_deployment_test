@@ -8,6 +8,17 @@ The SAM 2 Python package, PyTorch, model config, and checkpoint are runtime
 dependencies. They are intentionally imported lazily so this ROS workspace can
 still build on machines that do not have SAM 2 installed.
 
+The default checkpoint is `checkpoints/sam2.1_hiera_large.pt`. Relative
+checkpoint paths are checked from both the launch working directory and the SAM
+2 project root, so an editable SAM 2 installation at `/opt/sam2` resolves the
+default to `/opt/sam2/checkpoints/sam2.1_hiera_large.pt`. An absolute path can
+always be supplied explicitly:
+
+```bash
+ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
+  checkpoint:=/path/to/sam2.1_hiera_large.pt
+```
+
 ```bash
 ros2 launch sam2_image_annotator sam2_image_annotator_launch.py
 ```

@@ -11,6 +11,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
+from sam2_image_annotator.paths import resolve_checkpoint_path
+
 
 class Sam2ImageAnnotatorNode(Node):
     def __init__(self):
@@ -23,7 +25,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.mask_topic = self.declare_parameter("mask_topic", "/sam2/mask").value
 
         self.checkpoint = self.declare_parameter(
-            "checkpoint", "./checkpoints/sam2.1_hiera_large.pt").value
+            "checkpoint", "checkpoints/sam2.1_hiera_large.pt").value
         self.model_cfg = self.declare_parameter(
             "model_cfg", "configs/sam2.1/sam2.1_hiera_l.yaml").value
         self.device = self.declare_parameter("device", "cuda").value
@@ -91,6 +93,7 @@ class Sam2ImageAnnotatorNode(Node):
 
     def load_predictor(self):
         try:
+            import sam2
             import torch
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -101,6 +104,10 @@ class Sam2ImageAnnotatorNode(Node):
             return
 
         try:
+            self.checkpoint = resolve_checkpoint_path(
+                self.checkpoint,
+                getattr(sam2, "__file__", None),
+            )
             try:
                 sam_model = build_sam2(
                     self.model_cfg,

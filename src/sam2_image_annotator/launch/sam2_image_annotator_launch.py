@@ -23,8 +23,11 @@ def generate_launch_description():
     )
     checkpoint_arg = DeclareLaunchArgument(
         "checkpoint",
-        default_value="./checkpoints/sam2.1_hiera_large.pt",
-        description="SAM 2 checkpoint path.",
+        default_value="checkpoints/sam2.1_hiera_large.pt",
+        description=(
+            "SAM 2 checkpoint path. Relative paths are checked from the current "
+            "working directory and the SAM 2 project root."
+        ),
     )
     model_cfg_arg = DeclareLaunchArgument(
         "model_cfg",

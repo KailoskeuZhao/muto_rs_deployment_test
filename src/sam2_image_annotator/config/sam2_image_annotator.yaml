@@ -4,7 +4,9 @@ sam2_image_annotator:
     annotated_topic: /sam2/annotated_image
     mask_topic: /sam2/mask
 
-    checkpoint: ./checkpoints/sam2.1_hiera_large.pt
+    # Relative paths are checked from both the launch working directory and the
+    # installed SAM 2 project root (for example, /opt/sam2).
+    checkpoint: checkpoints/sam2.1_hiera_large.pt
     model_cfg: configs/sam2.1/sam2.1_hiera_l.yaml
     device: cuda
     use_autocast: true

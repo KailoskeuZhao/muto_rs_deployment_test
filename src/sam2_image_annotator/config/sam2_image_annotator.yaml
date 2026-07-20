@@ -3,6 +3,8 @@ sam2_image_annotator:
     image_topic: /camera/color/image_raw
     annotated_topic: /sam2/annotated_image
     mask_topic: /sam2/mask
+    instance_mask_topic: /sam2/instance_mask
+    segments_topic: /sam2/segments
 
     # Relative paths are checked from both the launch working directory and the
     # installed SAM 2 project root (for example, /opt/sam2).
@@ -12,12 +14,22 @@ sam2_image_annotator:
     use_autocast: true
     autocast_dtype: bfloat16
 
-    # Prompt formats:
+    # YOLO detects objects and supplies one box prompt per object to SAM 2.
+    prompt_mode: yolo
+    yolo_model: yolo11n.pt
+    yolo_device: "0"
+    yolo_confidence: 0.25
+    yolo_iou: 0.7
+    yolo_imgsz: 640
+    yolo_max_detections: 20
+    yolo_classes: ""
+    yolo_half: true
+
+    # Manual mode prompt formats:
     #   point_coords: "x,y;x,y"
     #   point_labels: "1,0" where 1 is positive and 0 is negative
     #   box: "x1,y1,x2,y2"
-    # If no prompt is configured, center_point uses the image center as a
-    # positive point prompt so the node can be exercised immediately.
+    # Set prompt_mode to manual to use these instead of YOLO.
     default_prompt: center_point
     point_coords: ""
     point_labels: ""

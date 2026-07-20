@@ -52,7 +52,8 @@ class Sam2ImageAnnotatorNode(Node):
             self.declare_parameter("yolo_max_detections", 20).value)
         self.yolo_classes_text = str(
             self.declare_parameter("yolo_classes", "").value)
-        self.yolo_half = bool(self.declare_parameter("yolo_half", True).value)
+        self.yolo_quantize = str(
+            self.declare_parameter("yolo_quantize", "fp16").value).strip()
 
         self.default_prompt = self.declare_parameter("default_prompt", "center_point").value
         self.point_coords_text = self.declare_parameter("point_coords", "").value
@@ -262,6 +263,9 @@ class Sam2ImageAnnotatorNode(Node):
 
     def detect_objects(self, bgr_image):
         class_ids = self.parse_class_ids(self.yolo_classes_text)
+        quantize = self.yolo_quantize or None
+        if self.yolo_device.lower() == "cpu" and quantize in ("16", "fp16"):
+            quantize = None
         results = self.detector.predict(
             source=bgr_image,
             conf=self.yolo_confidence,
@@ -270,7 +274,7 @@ class Sam2ImageAnnotatorNode(Node):
             max_det=self.yolo_max_detections,
             classes=class_ids,
             device=self.yolo_device or None,
-            half=self.yolo_half and self.yolo_device.lower() != "cpu",
+            quantize=quantize,
             verbose=False,
         )
         if not results or results[0].boxes is None:

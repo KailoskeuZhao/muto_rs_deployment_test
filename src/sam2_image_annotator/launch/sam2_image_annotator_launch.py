@@ -97,10 +97,10 @@ def generate_launch_description():
         default_value="",
         description="Optional comma-separated YOLO class IDs.",
     )
-    yolo_half_arg = DeclareLaunchArgument(
-        "yolo_half",
-        default_value="true",
-        description="Use FP16 for YOLO when running on CUDA.",
+    yolo_quantize_arg = DeclareLaunchArgument(
+        "yolo_quantize",
+        default_value="fp16",
+        description="YOLO inference precision, such as fp16 or fp32.",
     )
     point_coords_arg = DeclareLaunchArgument(
         "point_coords",
@@ -146,7 +146,7 @@ def generate_launch_description():
         yolo_imgsz_arg,
         yolo_max_detections_arg,
         yolo_classes_arg,
-        yolo_half_arg,
+        yolo_quantize_arg,
         point_coords_arg,
         point_labels_arg,
         box_arg,
@@ -195,9 +195,9 @@ def generate_launch_description():
                     LaunchConfiguration("yolo_classes"),
                     value_type=str,
                 ),
-                "yolo_half": ParameterValue(
-                    LaunchConfiguration("yolo_half"),
-                    value_type=bool,
+                "yolo_quantize": ParameterValue(
+                    LaunchConfiguration("yolo_quantize"),
+                    value_type=str,
                 ),
                 "point_coords": LaunchConfiguration("point_coords"),
                 "point_labels": LaunchConfiguration("point_labels"),

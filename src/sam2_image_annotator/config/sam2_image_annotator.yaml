@@ -23,7 +23,7 @@ sam2_image_annotator:
     yolo_imgsz: 640
     yolo_max_detections: 20
     yolo_classes: ""
-    yolo_half: true
+    yolo_quantize: fp16
 
     # Manual mode prompt formats:
     #   point_coords: "x,y;x,y"

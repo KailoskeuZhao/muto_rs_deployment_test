@@ -34,6 +34,9 @@ ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
   yolo_model:=/path/to/model.pt yolo_confidence:=0.35
 ```
 
+`yolo_quantize:=fp16` is the default CUDA inference precision. Set it to
+`fp32` when full precision is required.
+
 Use `yolo_classes` to limit processing to selected class IDs. For example,
 COCO class IDs `0,2` process people and cars:
 

@@ -8,19 +8,28 @@ The SAM 2 Python package, PyTorch, model config, and checkpoint are runtime
 dependencies. They are intentionally imported lazily so this ROS workspace can
 still build on machines that do not have SAM 2 installed.
 
-The default checkpoint is `checkpoints/sam2.1_hiera_large.pt`. Relative
+The default checkpoint is `checkpoints/sam2.1_hiera_base_plus.pt`. Relative
 checkpoint paths are checked from both the launch working directory and the SAM
 2 project root, so an editable SAM 2 installation at `/opt/sam2` resolves the
-default to `/opt/sam2/checkpoints/sam2.1_hiera_large.pt`. An absolute path can
+default to `/opt/sam2/checkpoints/sam2.1_hiera_base_plus.pt`. An absolute path can
 always be supplied explicitly:
 
 ```bash
 ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
-  checkpoint:=/path/to/sam2.1_hiera_large.pt
+  checkpoint:=/path/to/sam2.1_hiera_base_plus.pt
 ```
 
 ```bash
 ros2 launch sam2_image_annotator sam2_image_annotator_launch.py
+```
+
+On Jetson, the launch file preloads Ubuntu's OpenBLAS for this node only to
+avoid a `gotoblas` symbol collision with NVIDIA's fixed-target OpenBLAS. The
+library path can be overridden when needed:
+
+```bash
+ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
+  openblas_preload:=/path/to/libopenblas.so.0
 ```
 
 Useful prompt examples:

@@ -6,8 +6,8 @@ sam2_image_annotator:
 
     # Relative paths are checked from both the launch working directory and the
     # installed SAM 2 project root (for example, /opt/sam2).
-    checkpoint: checkpoints/sam2.1_hiera_large.pt
-    model_cfg: configs/sam2.1/sam2.1_hiera_l.yaml
+    checkpoint: checkpoints/sam2.1_hiera_base_plus.pt
+    model_cfg: configs/sam2.1/sam2.1_hiera_b+.yaml
     device: cuda
     use_autocast: true
     autocast_dtype: bfloat16

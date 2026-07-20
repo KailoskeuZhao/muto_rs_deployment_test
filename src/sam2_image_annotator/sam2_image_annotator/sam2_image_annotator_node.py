@@ -25,9 +25,9 @@ class Sam2ImageAnnotatorNode(Node):
         self.mask_topic = self.declare_parameter("mask_topic", "/sam2/mask").value
 
         self.checkpoint = self.declare_parameter(
-            "checkpoint", "checkpoints/sam2.1_hiera_large.pt").value
+            "checkpoint", "checkpoints/sam2.1_hiera_base_plus.pt").value
         self.model_cfg = self.declare_parameter(
-            "model_cfg", "configs/sam2.1/sam2.1_hiera_l.yaml").value
+            "model_cfg", "configs/sam2.1/sam2.1_hiera_b+.yaml").value
         self.device = self.declare_parameter("device", "cuda").value
         self.use_autocast = bool(self.declare_parameter("use_autocast", True).value)
         self.autocast_dtype = self.declare_parameter("autocast_dtype", "bfloat16").value

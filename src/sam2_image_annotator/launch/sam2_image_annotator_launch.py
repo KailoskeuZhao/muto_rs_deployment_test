@@ -23,15 +23,23 @@ def generate_launch_description():
     )
     checkpoint_arg = DeclareLaunchArgument(
         "checkpoint",
-        default_value="checkpoints/sam2.1_hiera_large.pt",
+        default_value="checkpoints/sam2.1_hiera_base_plus.pt",
         description=(
             "SAM 2 checkpoint path. Relative paths are checked from the current "
             "working directory and the SAM 2 project root."
         ),
     )
+    openblas_preload_arg = DeclareLaunchArgument(
+        "openblas_preload",
+        default_value="/usr/lib/aarch64-linux-gnu/libopenblas.so.0",
+        description=(
+            "OpenBLAS library preloaded for this node to avoid mixing the Jetson "
+            "and Ubuntu OpenBLAS implementations."
+        ),
+    )
     model_cfg_arg = DeclareLaunchArgument(
         "model_cfg",
-        default_value="configs/sam2.1/sam2.1_hiera_l.yaml",
+        default_value="configs/sam2.1/sam2.1_hiera_b+.yaml",
         description="SAM 2 model config path.",
     )
     device_arg = DeclareLaunchArgument(
@@ -70,6 +78,7 @@ def generate_launch_description():
         annotated_topic_arg,
         mask_topic_arg,
         checkpoint_arg,
+        openblas_preload_arg,
         model_cfg_arg,
         device_arg,
         point_coords_arg,
@@ -82,6 +91,9 @@ def generate_launch_description():
             executable="sam2_image_annotator_node",
             name="sam2_image_annotator",
             output="screen",
+            additional_env={
+                "LD_PRELOAD": LaunchConfiguration("openblas_preload"),
+            },
             parameters=[{
                 "image_topic": LaunchConfiguration("image_topic"),
                 "annotated_topic": LaunchConfiguration("annotated_topic"),

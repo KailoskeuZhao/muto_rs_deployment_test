@@ -21,17 +21,18 @@ Some packages in this workspace are original deployment glue, while others were 
 | --- | --- |
 | `src/yahboomcar_bringup` | Came from the Muto RS tutorial material and has been modified for this deployment. |
 | `src/yahboomcar_ctrl` | Came from the Muto RS tutorial material and has been modified for this deployment. |
-| `src/Simple-2D-LiDAR-Odometry` | Forked/imported from another GitHub repository and adapted for this workspace. Check the package's own README and license. |
-| `src/simple_vlm` | Also carried as external/forked GitHub code in this workspace. Check the package's own README and license. |
 | `src/sam2_image_annotator` | Local SAM 2 image segmentation/annotation node. Runtime requires SAM 2, PyTorch, and model weights. |
 | `src/lidar_pointcloud_filter` | Local filtering and scan-conversion utilities for this deployment. |
 | `src/muto_slam_mapping` | Local SLAM launch/config package for this deployment. |
 | `src/tf2_publisher` | Local TF publisher package for robot sensor frames. |
 | `src/yahboomcar_imu` | IMU publishing package used by the robot. |
 | `src/lidar_tg30` | TG30 LiDAR driver/package used by the robot. |
-| `src/robot_localization` | Vendor/upstream `robot_localization` package kept inside this workspace. |
 
 Because this workspace mixes local code, tutorial-derived code, and forked external packages, check package-level license files before redistributing any part of it.
+
+External ROS packages such as `robot_localization` are resolved from the sourced
+ROS Humble installation through normal package dependencies, not kept under
+`src/`.
 
 ## Build
 
@@ -39,7 +40,8 @@ From the workspace root:
 
 ```bash
 cd ~/Documents/testground/muto_rs_deployment_test
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src --rosdistro humble -y
 colcon build --symlink-install
 source install/setup.bash
 ```

@@ -219,7 +219,8 @@ ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
 ```
 
 It starts the LiDAR odometry path unless `launch_lidar_odometry:=false`, then
-starts `robot_localization/ekf_node` with `ekf_lidar_imu.yaml`.
+starts the installed ROS Humble `robot_localization/ekf_node` with
+`ekf_lidar_imu.yaml`.
 
 Important EKF frame settings:
 
@@ -273,19 +274,12 @@ comes from the IMU. The node is launched with `publish_tf:=false`.
 a wiring test for `/imu/data_processed`, but it is not a complete mobile-base
 odometry source because it has no translational input and no absolute yaw input.
 
-## Simple-2D-LiDAR-Odometry Package
+## Removed Legacy LiDAR Odometry Package
 
-`src/Simple-2D-LiDAR-Odometry` is present in the workspace as an imported and
-modified experimental package. It is not started by the normal launch sequence.
-
-The package README and package description call the method GICP, but the current
-source instantiates `pcl::IterativeClosestPoint` with a 2D transformation
-estimator. It consumes a filtered point cloud, expects it to already be in
-`base_frame`, and publishes `scan_odom` as `nav_msgs/Odometry`. It does not
-publish TF by itself.
-
-Use this package as a comparison or legacy experiment, not as the documented
-normal odometry pipeline.
+`src/Simple-2D-LiDAR-Odometry` was removed from the active workspace. The
+current odometry pipeline is the TG30 `LaserScan` path through
+`lidar_pointcloud_filter`, `rf2o_laser_odometry`, the deadband wrapper, and the
+EKF.
 
 ## Mapping And Nav2 Relationship
 
@@ -411,8 +405,8 @@ EKF pipeline.
 
 - Test odometry by teleoperating the robot through loops and returning to the
   start pose.
-- Compare RF2O behavior with the legacy point-cloud ICP package only after the
-  normal RF2O/EKF baseline is stable.
+- Compare RF2O behavior with any separately reintroduced point-cloud ICP
+  experiment only after the normal RF2O/EKF baseline is stable.
 - Revisit EKF covariances after collecting repeatable bag data.
 - Decide whether `/foot_odom` should remain optional or be removed if it does
   not improve robustness.

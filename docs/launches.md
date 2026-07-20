@@ -1,26 +1,35 @@
 # Launch Reference
 
-Date: 2026-07-14
+Date: 2026-07-17
 
 This document summarizes the launch files that matter for the current Muto RS
 workspace. It separates the normal robot sequence from experimental and
 component launches.
 
+## Removed Packages
+
+`src/Simple-2D-LiDAR-Odometry` and `src/simple_vlm` were removed from the
+active workspace. The current launch files do not include them, and no active
+package declares them as a dependency.
+
 ## Launch File Summary
+
+`robot_localization` is an external ROS Humble dependency. The workspace launch
+files invoke its installed `ekf_node`; this workspace does not keep
+`robot_localization` under `src/`.
 
 | Launch file | What it starts | Usual role |
 | --- | --- | --- |
 | `yahboomcar_bringup/launch/muto_hardware_launch.py` | `lidar_tg30/lidar_node`, Orbbec `astra_pro_plus.launch.py`, and `yahboomcar_bringup/muto_driver`. | Hardware source layer. Run first on the robot. |
 | `tf2_publisher/launch/all_tf2_publishers_launch.py` | Static TF publishers for `base_frame -> camera_link`, `base_frame -> lidar_frame`, and `base_frame -> imu_link`. Optional odom TF publisher is off by default. | Sensor TF layer. Needed before scan conversion, RF2O, mapping, and Nav2. |
 | `lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | Default path filters `/lidar/raw_laserscan` into `/lidar/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`, then runs RF2O and the odometry deadband/jump wrapper. | LiDAR odometry chain. Direct standalone launch lets the wrapper publish `odom -> base_frame` by default. |
-| `yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Includes the LiDAR odometry launch with odom TF disabled, optionally starts `/foot_odom`, then runs `robot_localization/ekf_node`. | Preferred odometry/localization layer. EKF owns `odom -> base_frame`. |
+| `yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Includes the LiDAR odometry launch with odom TF disabled, optionally starts `/foot_odom`, then runs the installed `robot_localization/ekf_node`. | Preferred odometry/localization layer. EKF owns `odom -> base_frame`. |
 | `lidar_pointcloud_filter/launch/camera_pointcloud_to_laserscan_launch.py` | Converts `/camera/depth/points` to `/camera/filtered_laserscan`, fuses it with `/lidar/filtered_laserscan_no_downsample`, and publishes `/fused/laserscan`. Can also run a legacy LiDAR PointCloud2-to-LaserScan utility path. | Component/test launch. Mapping includes it internally when `launch_fused_laserscan:=true`; do not launch separately during normal startup unless testing. |
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts fused LaserScan generation by default, then starts SLAM Toolbox online async mapping. | Mapping layer. Uses `/fused/laserscan` and the EKF odom TF to maintain the map relationship. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, `smoother_server`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Current Nav2 planner/controller/action bringup. Requires mapping, TF, EKF, and `/fused/laserscan` already running. |
 | `muto_slam_mapping/launch/nav2_costmaps_launch.py` | Wrapper around `nav2_planner_controller_launch.py` using the same Nav2 params. | Compatibility/alias launch. Despite the name, it is no longer costmaps-only. |
-| `yahboomcar_bringup/launch/bringup_launch.py` | Starts `robot_state_publisher` from `yahboomcar_description` and `muto_driver`. Does not start LiDAR, Orbbec, or the current odom/mapping stack. | Older/simple bringup. Not the normal robot hardware launch for this workspace. |
+| `yahboomcar_bringup/launch/bringup_launch.py` | Starts only `yahboomcar_bringup/muto_driver`. Does not start robot description TF, LiDAR, Orbbec, or the current odom/mapping stack. | Older/simple driver launch. Not the normal robot hardware launch for this workspace. |
 | `yahboomcar_ctrl/launch/yahboomcar_joy_launch.py` | Starts `joy_node` and `yahboom_joy`. | Joystick teleop. |
-| `robot_localization/launch/*.py` | Upstream example EKF/UKF/navsat launches from the vendored package. | Reference only. Prefer `ekf_imu_lidar_launch.py` for this robot. |
 
 ## Main Ownership Graph
 

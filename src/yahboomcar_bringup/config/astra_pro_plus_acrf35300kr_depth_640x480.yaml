@@ -1,0 +1,27 @@
+# Astra Pro Plus ACRF35300KR, depth stream at 640x480.
+# Captured from /camera/depth/camera_info on 2026-07-20.
+
+image_width: 640
+image_height: 480
+camera_name: astra_pro_plus_acrf35300kr_depth_640x480
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [579.5171508789062, 0.0, 312.95947265625, 0.0, 579.5171508789062, 248.79693603515625, 0.0, 0.0, 1.0]
+
+distortion_model: rational_polynomial
+distortion_coefficients:
+  rows: 1
+  cols: 8
+  data: [-0.06753148138523102, 0.01893598400056362, 0.0009055870468728244, 0.003032793290913105, 0.15370602905750275, 0.0, 0.0, 0.0]
+
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [579.5171508789062, 0.0, 312.95947265625, 0.0, 0.0, 579.5171508789062, 248.79693603515625, 0.0, 0.0, 0.0, 1.0, 0.0]

@@ -1,0 +1,27 @@
+# Astra Pro Plus ACRF35300KR, color stream at 640x480.
+# Captured from /camera/color/camera_info on 2026-07-20.
+
+image_width: 640
+image_height: 480
+camera_name: astra_pro_plus_acrf35300kr_color_640x480
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [544.2887573242188, 0.0, 314.674560546875, 0.0, 544.2887573242188, 246.8755340576172, 0.0, 0.0, 1.0]
+
+distortion_model: rational_polynomial
+distortion_coefficients:
+  rows: 1
+  cols: 8
+  data: [0.10768365859985352, -0.1984691321849823, 0.00015051169611979276, 0.0025057040620595217, 0.04645000025629997, 0.0, 0.0, 0.0]
+
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [544.2887573242188, 0.0, 314.674560546875, 0.0, 0.0, 544.2887573242188, 246.8755340576172, 0.0, 0.0, 0.0, 1.0, 0.0]

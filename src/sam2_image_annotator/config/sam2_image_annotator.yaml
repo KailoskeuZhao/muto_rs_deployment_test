@@ -1,3 +1,16 @@
+object_centroid_recorder:
+  ros__parameters:
+    pointcloud_topic: /sam2/instance_pointcloud
+    segments_topic: /sam2/segments
+    save_service: /sam2/save_object_centroids
+    output_yaml: ~/.ros/sam2_objects.yaml
+    target_frame: map
+    duplicate_distance_threshold: 0.25
+    metadata_sync_tolerance: 0.15
+    sync_queue_size: 10
+    min_points: 20
+    tf_timeout: 0.1
+
 sam2_image_annotator:
   ros__parameters:
     image_topic: /camera/color/image_raw
@@ -10,8 +23,8 @@ sam2_image_annotator:
     color_camera_info_topic: /camera/color/camera_info
     instance_pointcloud_topic: /sam2/instance_pointcloud
     depth_scale: 0.001
-    depth_sync_tolerance: 0.1
-    pointcloud_stride: 1
+    depth_sync_tolerance: 0.2
+    pointcloud_stride: 6
     pointcloud_mask_trim_ratio: 0.1
     tf_timeout: 0.1
 
@@ -27,7 +40,7 @@ sam2_image_annotator:
     prompt_mode: yolo
     yolo_model: yolo26m.pt
     yolo_device: "0"
-    yolo_confidence: 0.25
+    yolo_confidence: 0.4
     yolo_iou: 0.7
     yolo_imgsz: 640
     yolo_max_detections: 20

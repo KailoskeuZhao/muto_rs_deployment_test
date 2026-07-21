@@ -50,6 +50,20 @@ If your robot workspace lives somewhere else, run the same commands from that wo
 
 ## Normal Startup Sequence
 
+For the full hardware, TF, localization, mapping, and Nav2 stack, use the
+single pipeline launch:
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
+```
+
+It applies minimum startup delays, then waits for live topics and TF before each
+downstream layer. Localization waits for the raw scan and sensor TF; mapping waits
+for filtered odometry and `odom -> base_frame`; Nav2 waits for `/map`,
+`/fused/laserscan`, and `map -> base_frame`. A readiness timeout shuts down the
+pipeline instead of launching the next layer early. Use the lower-level commands
+below when debugging one layer at a time.
+
 Use this sequence for the normal robot bringup. Do not launch
 `camera_pointcloud_to_laserscan_launch.py` as a separate normal-startup step.
 That launch is a component/test launch; mapping launches it internally when a

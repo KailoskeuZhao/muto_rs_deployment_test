@@ -43,9 +43,9 @@ class Sam2ImageAnnotatorNode(Node):
         self.depth_scale = float(
             self.declare_parameter("depth_scale", 0.001).value)
         self.depth_sync_tolerance = float(
-            self.declare_parameter("depth_sync_tolerance", 0.1).value)
+            self.declare_parameter("depth_sync_tolerance", 0.2).value)
         self.pointcloud_stride = int(
-            self.declare_parameter("pointcloud_stride", 1).value)
+            self.declare_parameter("pointcloud_stride", 6).value)
         self.pointcloud_mask_trim_ratio = float(
             self.declare_parameter("pointcloud_mask_trim_ratio", 0.1).value)
         self.tf_timeout = float(
@@ -66,7 +66,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.yolo_device = str(
             self.declare_parameter("yolo_device", "0").value).strip()
         self.yolo_confidence = float(
-            self.declare_parameter("yolo_confidence", 0.25).value)
+            self.declare_parameter("yolo_confidence", 0.4).value)
         self.yolo_iou = float(self.declare_parameter("yolo_iou", 0.7).value)
         self.yolo_imgsz = int(self.declare_parameter("yolo_imgsz", 640).value)
         self.yolo_max_detections = int(
@@ -114,11 +114,11 @@ class Sam2ImageAnnotatorNode(Node):
             self.depth_scale = 0.001
         if self.depth_sync_tolerance < 0.0:
             self.get_logger().warn(
-                "depth_sync_tolerance must be non-negative; using 0.1")
-            self.depth_sync_tolerance = 0.1
+                "depth_sync_tolerance must be non-negative; using 0.2")
+            self.depth_sync_tolerance = 0.2
         if self.pointcloud_stride < 1:
-            self.get_logger().warn("pointcloud_stride must be positive; using 1")
-            self.pointcloud_stride = 1
+            self.get_logger().warn("pointcloud_stride must be positive; using 6")
+            self.pointcloud_stride = 6
         if not 0.0 <= self.pointcloud_mask_trim_ratio < 0.5:
             self.get_logger().warn(
                 "pointcloud_mask_trim_ratio must be in [0.0, 0.5); using 0.1")
@@ -139,8 +139,8 @@ class Sam2ImageAnnotatorNode(Node):
             self.yolo_imgsz = 640
         if not 0.0 <= self.yolo_confidence <= 1.0:
             self.get_logger().warn(
-                "yolo_confidence must be in [0.0, 1.0]; using 0.25")
-            self.yolo_confidence = 0.25
+                "yolo_confidence must be in [0.0, 1.0]; using 0.4")
+            self.yolo_confidence = 0.4
         if not 0.0 <= self.yolo_iou <= 1.0:
             self.get_logger().warn(
                 "yolo_iou must be in [0.0, 1.0]; using 0.7")
@@ -377,6 +377,10 @@ class Sam2ImageAnnotatorNode(Node):
 
         for box, confidence, class_index in zip(
                 boxes, confidences, class_indices):
+            confidence = float(confidence)
+            if (not np.isfinite(confidence) or
+                    confidence < self.yolo_confidence):
+                continue
             box = np.asarray(box, dtype=np.float32).reshape(4)
             box[0::2] = np.clip(box[0::2], 0, max(width - 1, 0))
             box[1::2] = np.clip(box[1::2], 0, max(height - 1, 0))
@@ -393,7 +397,7 @@ class Sam2ImageAnnotatorNode(Node):
             detections.append({
                 "class_id": class_id,
                 "label": str(label),
-                "confidence": float(confidence),
+                "confidence": confidence,
                 "box": box,
             })
 
@@ -786,33 +790,7 @@ class Sam2ImageAnnotatorNode(Node):
             )
             return
 
-        stride = self.pointcloud_stride
-        sampled_depth = depth[::stride, ::stride]
-        sampled_v, sampled_u = np.nonzero(sampled_depth > 0)
-        if sampled_u.size == 0:
-            self.publish_instance_points(
-                depth_msg, depth_frame, np.empty((0, 3), np.float32),
-                np.empty(0, np.uint16))
-            return
-
-        raw_depth = sampled_depth[sampled_v, sampled_u].astype(np.float32)
-        z = raw_depth * self.depth_scale
-        depth_pixels = np.column_stack((
-            sampled_u.astype(np.float64) * stride,
-            sampled_v.astype(np.float64) * stride,
-        )).reshape(-1, 1, 2)
         depth_distortion = np.asarray(depth_camera_info.d, dtype=np.float64)
-        normalized_depth_pixels = cv2.undistortPoints(
-            depth_pixels,
-            depth_matrix,
-            depth_distortion if depth_distortion.size else None,
-        ).reshape(-1, 2)
-        depth_points = np.column_stack((
-            normalized_depth_pixels[:, 0] * z,
-            normalized_depth_pixels[:, 1] * z,
-            z,
-        )).astype(np.float32, copy=False)
-
         transform = depth_to_color.transform
         rotation = self.quaternion_matrix(transform.rotation)
         translation = np.array([
@@ -823,44 +801,109 @@ class Sam2ImageAnnotatorNode(Node):
         rotation_vector, _ = cv2.Rodrigues(rotation)
         color_distortion = np.asarray(
             color_camera_info.d, dtype=np.float64)
-        projected, _ = cv2.projectPoints(
-            depth_points.astype(np.float64),
-            rotation_vector,
-            translation,
-            color_matrix,
-            color_distortion if color_distortion.size else None,
-        )
-        projected = projected.reshape(-1, 2)
-        color_points = depth_points.astype(np.float64) @ rotation.T + translation
-        projected_u = np.rint(projected[:, 0]).astype(np.int64)
-        projected_v = np.rint(projected[:, 1]).astype(np.int64)
-        inside = np.logical_and.reduce((
-            color_points[:, 2] > 0.0,
-            projected_u >= 0,
-            projected_u < pointcloud_instance_mask.shape[1],
-            projected_v >= 0,
-            projected_v < pointcloud_instance_mask.shape[0],
-        ))
+        color_height, color_width = pointcloud_instance_mask.shape
+        color_pixel_count = color_height * color_width
+        nearest_z = np.full(color_pixel_count, np.inf, dtype=np.float64)
+        nearest_xyz = np.empty((color_pixel_count, 3), dtype=np.float32)
+        instance_ids = np.zeros(color_pixel_count, dtype=np.uint16)
 
-        instance_ids = np.zeros(depth_points.shape[0], dtype=np.uint16)
-        candidates = np.flatnonzero(inside)
-        if candidates.size:
+        # Bound temporary allocations for high-resolution depth profiles. A
+        # 1280x1024 frame otherwise requires several full-frame float64 arrays.
+        for row_start in range(0, depth.shape[0], 64):
+            row_end = min(row_start + 64, depth.shape[0])
+            sampled_v, sampled_u = np.nonzero(depth[row_start:row_end] > 0)
+            if sampled_u.size == 0:
+                continue
+            sampled_v += row_start
+
+            z = (
+                depth[sampled_v, sampled_u].astype(np.float32)
+                * self.depth_scale
+            )
+            depth_pixels = np.column_stack((
+                sampled_u.astype(np.float64),
+                sampled_v.astype(np.float64),
+            )).reshape(-1, 1, 2)
+            normalized_depth_pixels = cv2.undistortPoints(
+                depth_pixels,
+                depth_matrix,
+                depth_distortion if depth_distortion.size else None,
+            ).reshape(-1, 2)
+            depth_points = np.column_stack((
+                normalized_depth_pixels[:, 0] * z,
+                normalized_depth_pixels[:, 1] * z,
+                z,
+            )).astype(np.float32, copy=False)
+
+            projected, _ = cv2.projectPoints(
+                depth_points.astype(np.float64),
+                rotation_vector,
+                translation,
+                color_matrix,
+                color_distortion if color_distortion.size else None,
+            )
+            projected = projected.reshape(-1, 2)
+            color_points = (
+                depth_points.astype(np.float64) @ rotation.T + translation
+            )
+            projected_u = np.rint(projected[:, 0]).astype(np.int64)
+            projected_v = np.rint(projected[:, 1]).astype(np.int64)
+            inside = np.logical_and.reduce((
+                color_points[:, 2] > 0.0,
+                projected_u >= 0,
+                projected_u < color_width,
+                projected_v >= 0,
+                projected_v < color_height,
+            ))
+            candidates = np.flatnonzero(inside)
+            if candidates.size == 0:
+                continue
+            candidate_ids = pointcloud_instance_mask[
+                projected_v[candidates], projected_u[candidates]]
+            candidates = candidates[candidate_ids > 0]
+            if candidates.size == 0:
+                continue
+
             projected_index = (
-                projected_v[candidates] * pointcloud_instance_mask.shape[1]
+                projected_v[candidates] * color_width
                 + projected_u[candidates]
             )
-            order = np.lexsort((color_points[candidates, 2], projected_index))
+            order = np.lexsort((
+                color_points[candidates, 2], projected_index))
             sorted_index = projected_index[order]
             first_at_pixel = np.concatenate((
                 np.array([True]),
                 sorted_index[1:] != sorted_index[:-1],
             ))
             visible = candidates[order[first_at_pixel]]
-            instance_ids[visible] = pointcloud_instance_mask[
+            visible_pixels = (
+                projected_v[visible] * color_width + projected_u[visible]
+            )
+            visible_z = color_points[visible, 2]
+            closer = visible_z < nearest_z[visible_pixels]
+            visible = visible[closer]
+            visible_pixels = visible_pixels[closer]
+            nearest_z[visible_pixels] = color_points[visible, 2]
+            nearest_xyz[visible_pixels] = depth_points[visible]
+            instance_ids[visible_pixels] = pointcloud_instance_mask[
                 projected_v[visible], projected_u[visible]]
-        marked = instance_ids > 0
+
+        visible_pixels = np.flatnonzero(instance_ids)
+        visible_xyz = nearest_xyz[visible_pixels]
+        visible_instance_ids = instance_ids[visible_pixels]
+        selected = []
+        for instance_id in np.unique(visible_instance_ids):
+            selected.append(
+                np.flatnonzero(visible_instance_ids == instance_id)[
+                    ::self.pointcloud_stride])
+        selected_indices = (
+            np.concatenate(selected) if selected
+            else np.empty(0, dtype=np.int64)
+        )
+        selected_indices.sort()
         self.publish_instance_points(
-            depth_msg, depth_frame, depth_points[marked], instance_ids[marked])
+            depth_msg, depth_frame, visible_xyz[selected_indices],
+            visible_instance_ids[selected_indices])
 
     def trim_instance_mask(self, instance_mask):
         if self.pointcloud_mask_trim_ratio <= 0.0:

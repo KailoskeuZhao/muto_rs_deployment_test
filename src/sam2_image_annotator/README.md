@@ -79,7 +79,9 @@ ros2 launch sam2_image_annotator object_centroid_recorder_launch.py
 
 It synchronizes `/sam2/instance_pointcloud` with `/sam2/segments`, computes the
 mean XYZ position for every `instance_id`, and transforms that centroid at the
-cloud timestamp into `target_frame` (default `map`). Same-label observations
+cloud timestamp into `target_frame` (default `map`). The recorder retains 30 seconds
+of dynamic TF history by default (`tf_cache_time`) and never substitutes the
+latest robot pose for a missing timestamped transform. Same-label observations
 within `duplicate_distance_threshold` (default `0.25` metres) update the same
 weighted centroid. A distinct object with an existing YOLO label receives a
 unique name such as `chair_2`. Different YOLO labels are never merged.

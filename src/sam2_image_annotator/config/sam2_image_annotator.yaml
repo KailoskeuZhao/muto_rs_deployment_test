@@ -6,10 +6,11 @@ object_centroid_recorder:
     output_yaml: ~/.ros/sam2_objects.yaml
     target_frame: map
     duplicate_distance_threshold: 0.25
-    metadata_sync_tolerance: 0.15
+    metadata_sync_tolerance: 0.2
     sync_queue_size: 10
     min_points: 20
     tf_timeout: 0.1
+    tf_cache_time: 30.0
 
 sam2_image_annotator:
   ros__parameters:

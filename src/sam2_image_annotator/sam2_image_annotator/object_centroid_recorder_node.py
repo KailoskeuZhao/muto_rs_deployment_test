@@ -38,13 +38,15 @@ class ObjectCentroidRecorderNode(Node):
         self.duplicate_distance_threshold = float(self.declare_parameter(
             "duplicate_distance_threshold", 0.25).value)
         self.metadata_sync_tolerance = float(self.declare_parameter(
-            "metadata_sync_tolerance", 0.15).value)
+            "metadata_sync_tolerance", 0.2).value)
         self.sync_queue_size = int(self.declare_parameter(
             "sync_queue_size", 10).value)
         self.min_points = int(self.declare_parameter(
             "min_points", 20).value)
         self.tf_timeout = float(self.declare_parameter(
             "tf_timeout", 0.1).value)
+        self.tf_cache_time = float(self.declare_parameter(
+            "tf_cache_time", 30.0).value)
 
         if not self.target_frame:
             self.get_logger().warn("target_frame is empty; using map")
@@ -55,8 +57,8 @@ class ObjectCentroidRecorderNode(Node):
             self.duplicate_distance_threshold = 0.25
         if self.metadata_sync_tolerance < 0.0:
             self.get_logger().warn(
-                "metadata_sync_tolerance must be non-negative; using 0.15")
-            self.metadata_sync_tolerance = 0.15
+                "metadata_sync_tolerance must be non-negative; using 0.2")
+            self.metadata_sync_tolerance = 0.2
         if self.sync_queue_size < 1:
             self.get_logger().warn("sync_queue_size must be positive; using 10")
             self.sync_queue_size = 10
@@ -66,13 +68,18 @@ class ObjectCentroidRecorderNode(Node):
         if self.tf_timeout < 0.0:
             self.get_logger().warn("tf_timeout must be non-negative; using 0.1")
             self.tf_timeout = 0.1
+        if self.tf_cache_time <= 0.0:
+            self.get_logger().warn(
+                "tf_cache_time must be positive; using 30.0")
+            self.tf_cache_time = 30.0
 
         self.output_path = Path(self.output_yaml).expanduser().resolve()
         self.objects = []
         self.database_error = ""
         self.pending_clouds = deque(maxlen=self.sync_queue_size)
         self.pending_segments = deque(maxlen=self.sync_queue_size)
-        self.tf_buffer = Buffer(node=self)
+        self.tf_buffer = Buffer(
+            cache_time=Duration(seconds=self.tf_cache_time), node=self)
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.load_database()

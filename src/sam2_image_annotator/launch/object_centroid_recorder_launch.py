@@ -39,7 +39,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "metadata_sync_tolerance",
-            default_value="0.15",
+            default_value="0.2",
             description="Maximum cloud/metadata timestamp offset in seconds.",
         ),
         DeclareLaunchArgument(
@@ -56,6 +56,11 @@ def generate_launch_description():
             "tf_timeout",
             default_value="0.1",
             description="Timestamped target-frame TF lookup timeout in seconds.",
+        ),
+        DeclareLaunchArgument(
+            "tf_cache_time",
+            default_value="30.0",
+            description="Dynamic TF history retained for exact-time lookups.",
         ),
     ]
 
@@ -88,6 +93,10 @@ def generate_launch_description():
             ),
             "tf_timeout": ParameterValue(
                 LaunchConfiguration("tf_timeout"),
+                value_type=float,
+            ),
+            "tf_cache_time": ParameterValue(
+                LaunchConfiguration("tf_cache_time"),
                 value_type=float,
             ),
         }],

@@ -74,7 +74,7 @@ Sensor mount transforms are published by `tf2_publisher`:
 | --- | --- | --- |
 | `base_frame -> lidar_frame` | `base_to_lidar_publisher` | Static TF. Translation `x=-0.02`, `y=0.0`, `z=0.0`; RPY roughly `(0, -pi, 0.20)`. |
 | `base_frame -> imu_link` | `base_to_imu_publisher` | Static TF. Translation `x=0.07`, `y=0.0`, `z=0.0`. |
-| `base_frame -> camera_link` | `base_to_camera_publisher` | Static TF. Translation `x=-0.018`, `y=0.0`, `z=0.16`. |
+| `base_frame -> camera_link` | `base_to_camera_publisher` | Static TF. Translation `x=0.13`, `y=0.0`, `z=0.115`; RPY `(0, 0.18325, 0)`. |
 
 The Orbbec SDK on the real robot is expected to publish the internal camera
 frame tree for camera optical/depth frames. The local camera publisher only owns

@@ -58,13 +58,13 @@ def generate_launch_description():
     )
     depth_sync_tolerance_arg = DeclareLaunchArgument(
         "depth_sync_tolerance",
-        default_value="0.1",
+        default_value="0.2",
         description="Maximum color/depth timestamp difference in seconds.",
     )
     pointcloud_stride_arg = DeclareLaunchArgument(
         "pointcloud_stride",
-        default_value="1",
-        description="Pixel sampling stride used to build the instance point cloud.",
+        default_value="6",
+        description="Retain every Nth masked depth point per instance.",
     )
     pointcloud_mask_trim_ratio_arg = DeclareLaunchArgument(
         "pointcloud_mask_trim_ratio",
@@ -122,7 +122,7 @@ def generate_launch_description():
     )
     yolo_confidence_arg = DeclareLaunchArgument(
         "yolo_confidence",
-        default_value="0.25",
+        default_value="0.4",
         description="Minimum YOLO detection confidence.",
     )
     yolo_iou_arg = DeclareLaunchArgument(

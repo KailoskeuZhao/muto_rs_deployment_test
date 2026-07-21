@@ -41,7 +41,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.prompt_mode = str(
             self.declare_parameter("prompt_mode", "yolo").value).strip().lower()
         self.yolo_model_path = self.declare_parameter(
-            "yolo_model", "yolo11n.pt").value
+            "yolo_model", "yolo11m.pt").value
         self.yolo_device = str(
             self.declare_parameter("yolo_device", "0").value).strip()
         self.yolo_confidence = float(

@@ -26,7 +26,7 @@ ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
 ros2 launch sam2_image_annotator sam2_image_annotator_launch.py
 ```
 
-The default detector is `yolo11n.pt`. Ultralytics downloads named weights if
+The default detector is `yolo11m.pt`. Ultralytics downloads named weights if
 they are not cached, or an existing weights path can be supplied:
 
 ```bash

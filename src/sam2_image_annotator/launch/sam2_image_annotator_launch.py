@@ -64,7 +64,7 @@ def generate_launch_description():
     )
     yolo_model_arg = DeclareLaunchArgument(
         "yolo_model",
-        default_value="yolo11n.pt",
+        default_value="yolo11m.pt",
         description="Ultralytics YOLO model name or weights path.",
     )
     yolo_device_arg = DeclareLaunchArgument(

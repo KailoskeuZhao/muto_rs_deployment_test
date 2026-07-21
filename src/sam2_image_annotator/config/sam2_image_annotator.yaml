@@ -16,7 +16,7 @@ sam2_image_annotator:
 
     # YOLO detects objects and supplies one box prompt per object to SAM 2.
     prompt_mode: yolo
-    yolo_model: yolo11n.pt
+    yolo_model: yolo11m.pt
     yolo_device: "0"
     yolo_confidence: 0.25
     yolo_iou: 0.7

@@ -66,6 +66,14 @@ def generate_launch_description():
         default_value="1",
         description="Pixel sampling stride used to build the instance point cloud.",
     )
+    pointcloud_mask_trim_ratio_arg = DeclareLaunchArgument(
+        "pointcloud_mask_trim_ratio",
+        default_value="0.1",
+        description=(
+            "Fraction of each instance mask minimum dimension trimmed inward "
+            "before point-cloud generation."
+        ),
+    )
     tf_timeout_arg = DeclareLaunchArgument(
         "tf_timeout",
         default_value="0.1",
@@ -181,6 +189,7 @@ def generate_launch_description():
         depth_scale_arg,
         depth_sync_tolerance_arg,
         pointcloud_stride_arg,
+        pointcloud_mask_trim_ratio_arg,
         tf_timeout_arg,
         checkpoint_arg,
         openblas_preload_arg,
@@ -232,6 +241,10 @@ def generate_launch_description():
                 "pointcloud_stride": ParameterValue(
                     LaunchConfiguration("pointcloud_stride"),
                     value_type=int,
+                ),
+                "pointcloud_mask_trim_ratio": ParameterValue(
+                    LaunchConfiguration("pointcloud_mask_trim_ratio"),
+                    value_type=float,
                 ),
                 "tf_timeout": ParameterValue(
                     LaunchConfiguration("tf_timeout"),

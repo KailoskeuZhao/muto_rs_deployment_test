@@ -90,4 +90,7 @@ the live TF tree, and projects each 3D depth point into the color mask with the
 color intrinsics and distortion coefficients. Only points landing on a nonzero
 instance ID are published. `depth_scale` converts uint16 values to metres,
 `depth_sync_tolerance` rejects stale color/depth pairs, `tf_timeout` controls TF
-lookup time, and `pointcloud_stride` can reduce the point count.
+lookup time, and `pointcloud_stride` can reduce the point count. Before selecting
+depth points, `pointcloud_mask_trim_ratio` trims the boundary of every instance
+mask inward by 10% of its smaller bounding-box dimension (set it to `0.0` to
+disable the filter). The published 2D instance mask is not modified.

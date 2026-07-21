@@ -12,6 +12,7 @@ sam2_image_annotator:
     depth_scale: 0.001
     depth_sync_tolerance: 0.1
     pointcloud_stride: 1
+    pointcloud_mask_trim_ratio: 0.1
     tf_timeout: 0.1
 
     # Relative paths are checked from both the launch working directory and the

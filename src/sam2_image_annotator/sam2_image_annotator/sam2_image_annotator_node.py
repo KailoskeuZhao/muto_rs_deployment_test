@@ -46,6 +46,8 @@ class Sam2ImageAnnotatorNode(Node):
             self.declare_parameter("depth_sync_tolerance", 0.1).value)
         self.pointcloud_stride = int(
             self.declare_parameter("pointcloud_stride", 1).value)
+        self.pointcloud_mask_trim_ratio = float(
+            self.declare_parameter("pointcloud_mask_trim_ratio", 0.1).value)
         self.tf_timeout = float(
             self.declare_parameter("tf_timeout", 0.1).value)
 
@@ -117,6 +119,10 @@ class Sam2ImageAnnotatorNode(Node):
         if self.pointcloud_stride < 1:
             self.get_logger().warn("pointcloud_stride must be positive; using 1")
             self.pointcloud_stride = 1
+        if not 0.0 <= self.pointcloud_mask_trim_ratio < 0.5:
+            self.get_logger().warn(
+                "pointcloud_mask_trim_ratio must be in [0.0, 0.5); using 0.1")
+            self.pointcloud_mask_trim_ratio = 0.1
         if self.tf_timeout < 0.0:
             self.get_logger().warn("tf_timeout must be non-negative; using 0.1")
             self.tf_timeout = 0.1
@@ -750,7 +756,8 @@ class Sam2ImageAnnotatorNode(Node):
                 throttle_duration_sec=10.0,
             )
             return
-        if not np.any(instance_mask):
+        pointcloud_instance_mask = self.trim_instance_mask(instance_mask)
+        if not np.any(pointcloud_instance_mask):
             self.publish_instance_points(
                 depth_msg, depth_frame, np.empty((0, 3), np.float32),
                 np.empty(0, np.uint16))
@@ -830,16 +837,16 @@ class Sam2ImageAnnotatorNode(Node):
         inside = np.logical_and.reduce((
             color_points[:, 2] > 0.0,
             projected_u >= 0,
-            projected_u < instance_mask.shape[1],
+            projected_u < pointcloud_instance_mask.shape[1],
             projected_v >= 0,
-            projected_v < instance_mask.shape[0],
+            projected_v < pointcloud_instance_mask.shape[0],
         ))
 
         instance_ids = np.zeros(depth_points.shape[0], dtype=np.uint16)
         candidates = np.flatnonzero(inside)
         if candidates.size:
             projected_index = (
-                projected_v[candidates] * instance_mask.shape[1]
+                projected_v[candidates] * pointcloud_instance_mask.shape[1]
                 + projected_u[candidates]
             )
             order = np.lexsort((color_points[candidates, 2], projected_index))
@@ -849,11 +856,40 @@ class Sam2ImageAnnotatorNode(Node):
                 sorted_index[1:] != sorted_index[:-1],
             ))
             visible = candidates[order[first_at_pixel]]
-            instance_ids[visible] = instance_mask[
+            instance_ids[visible] = pointcloud_instance_mask[
                 projected_v[visible], projected_u[visible]]
         marked = instance_ids > 0
         self.publish_instance_points(
             depth_msg, depth_frame, depth_points[marked], instance_ids[marked])
+
+    def trim_instance_mask(self, instance_mask):
+        if self.pointcloud_mask_trim_ratio <= 0.0:
+            return instance_mask
+
+        trimmed = np.zeros_like(instance_mask)
+        for instance_id in np.unique(instance_mask):
+            if instance_id == 0:
+                continue
+            rows, columns = np.nonzero(instance_mask == instance_id)
+            if rows.size == 0:
+                continue
+            top, bottom = int(rows.min()), int(rows.max()) + 1
+            left, right = int(columns.min()), int(columns.max()) + 1
+            instance_crop = (
+                instance_mask[top:bottom, left:right] == instance_id
+            ).astype(np.uint8)
+            padded = cv2.copyMakeBorder(
+                instance_crop, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+            distances = cv2.distanceTransform(
+                padded, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1]
+            trim_distance = self.pointcloud_mask_trim_ratio * min(
+                instance_crop.shape)
+            maximum_distance = float(distances.max())
+            cutoff = min(trim_distance, maximum_distance * 0.9)
+            kept = distances > cutoff
+            trimmed_crop = trimmed[top:bottom, left:right]
+            trimmed_crop[kept] = instance_id
+        return trimmed
 
     def lookup_depth_to_color_transform(
             self, depth_frame, color_frame, depth_stamp):

@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+
+import argparse
+import sys
+import time
+
+from nav_msgs.msg import OccupancyGrid, Odometry
+import rclpy
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
+from rclpy.utilities import remove_ros_args
+from sensor_msgs.msg import LaserScan
+from tf2_ros import Buffer, TransformListener
+
+
+MESSAGE_TYPES = {
+    'nav_msgs/msg/OccupancyGrid': OccupancyGrid,
+    'nav_msgs/msg/Odometry': Odometry,
+    'sensor_msgs/msg/LaserScan': LaserScan,
+}
+
+
+def parse_topic_spec(value):
+    try:
+        topic_name, type_name = value.split(':', 1)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            'topic must use TOPIC:TYPE syntax'
+        ) from exc
+
+    if not topic_name or type_name not in MESSAGE_TYPES:
+        supported = ', '.join(sorted(MESSAGE_TYPES))
+        raise argparse.ArgumentTypeError(
+            f'invalid topic specification; supported types: {supported}'
+        )
+    return topic_name, type_name
+
+
+def parse_transform_spec(value):
+    try:
+        target_frame, source_frame = value.split(':', 1)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            'transform must use TARGET:SOURCE syntax'
+        ) from exc
+
+    if not target_frame or not source_frame:
+        raise argparse.ArgumentTypeError('transform frames cannot be empty')
+    return target_frame, source_frame
+
+
+def make_qos(type_name):
+    if type_name == 'nav_msgs/msg/OccupancyGrid':
+        return QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+    return QoSProfile(
+        depth=1,
+        durability=DurabilityPolicy.VOLATILE,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+    )
+
+
+class PipelineReadinessGate(Node):
+    def __init__(self, stage, topics, transforms):
+        super().__init__('pipeline_readiness_gate')
+        self.stage = stage
+        self.received_topics = set()
+        self.required_topics = [topic_name for topic_name, _ in topics]
+        self.required_transforms = transforms
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self._message_subscriptions = []
+
+        for topic_name, type_name in topics:
+            subscription = self.create_subscription(
+                MESSAGE_TYPES[type_name],
+                topic_name,
+                self._topic_callback(topic_name),
+                make_qos(type_name),
+            )
+            self._message_subscriptions.append(subscription)
+
+    def _topic_callback(self, topic_name):
+        def callback(_message):
+            self.received_topics.add(topic_name)
+
+        return callback
+
+    def missing_requirements(self):
+        missing = [
+            f'topic {topic_name}'
+            for topic_name in self.required_topics
+            if topic_name not in self.received_topics
+        ]
+        for target_frame, source_frame in self.required_transforms:
+            if not self.tf_buffer.can_transform(
+                target_frame,
+                source_frame,
+                Time(),
+                timeout=Duration(seconds=0.0),
+            ):
+                missing.append(f'TF {target_frame} -> {source_frame}')
+        return missing
+
+
+def parse_arguments(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--stage', required=True)
+    parser.add_argument('--timeout', type=float, default=120.0)
+    parser.add_argument(
+        '--topic',
+        action='append',
+        default=[],
+        type=parse_topic_spec,
+    )
+    parser.add_argument(
+        '--transform',
+        action='append',
+        default=[],
+        type=parse_transform_spec,
+    )
+    return parser.parse_args(remove_ros_args(args=argv)[1:])
+
+
+def wait_until_ready(node, timeout):
+    start_time = time.monotonic()
+    next_report_time = start_time
+
+    while rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.1)
+        missing = node.missing_requirements()
+        if not missing:
+            node.get_logger().info(f'{node.stage} prerequisites are ready')
+            return 0
+
+        current_time = time.monotonic()
+        if timeout > 0.0 and current_time - start_time >= timeout:
+            node.get_logger().error(
+                f'{node.stage} readiness timed out; missing: {", ".join(missing)}'
+            )
+            return 2
+
+        if current_time >= next_report_time:
+            node.get_logger().info(
+                f'waiting for {node.stage}: {", ".join(missing)}'
+            )
+            next_report_time = current_time + 5.0
+
+    return 130
+
+
+def main(argv=None):
+    argv = sys.argv if argv is None else argv
+    args = parse_arguments(argv)
+    rclpy.init(args=argv)
+    node = PipelineReadinessGate(args.stage, args.topic, args.transform)
+    try:
+        return wait_until_ready(node, args.timeout)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

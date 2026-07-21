@@ -20,6 +20,7 @@ files invoke its installed `ekf_node`; this workspace does not keep
 
 | Launch file | What it starts | Usual role |
 | --- | --- | --- |
+| `muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Includes hardware, static sensor TF, LiDAR odometry/EKF, online async mapping, fused scan generation, and Nav2 planner/controller/action servers with minimum delays and topic/TF readiness gates. | One-shot full robot Nav2 pipeline. Use this for normal bringup once the robot dependencies are installed. |
 | `yahboomcar_bringup/launch/muto_hardware_launch.py` | `lidar_tg30/lidar_node`, Orbbec `astra_pro_plus.launch.py`, and `yahboomcar_bringup/muto_driver`. | Hardware source layer. Run first on the robot. |
 | `tf2_publisher/launch/all_tf2_publishers_launch.py` | Static TF publishers for `base_frame -> camera_link`, `base_frame -> lidar_frame`, and `base_frame -> imu_link`. Optional odom TF publisher is off by default. | Sensor TF layer. Needed before scan conversion, RF2O, mapping, and Nav2. |
 | `lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | Default path filters `/lidar/raw_laserscan` into `/lidar/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`, then runs RF2O and the odometry deadband/jump wrapper. | LiDAR odometry chain. Direct standalone launch lets the wrapper publish `odom -> base_frame` by default. |
@@ -67,12 +68,25 @@ normal EKF sequence, that node is the EKF.
 
 ## Normal Startup Sequence
 
-Use separate terminals and source the workspace in each one:
+Source the workspace before running either the one-shot launch or the layer-by-layer debug commands:
 
 ```bash
 cd ~/fast_vivo_deployment_ws
 . install/setup.bash
 ```
+
+Full one-shot pipeline:
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
+```
+
+The localization, mapping, and Nav2 includes start only after their required live
+topics and TF chains are available. The delay arguments are minimum offsets; the
+`*_readiness_timeout` arguments bound each wait and shut down the pipeline on
+failure.
+
+Layer-by-layer startup for debugging:
 
 Start hardware:
 

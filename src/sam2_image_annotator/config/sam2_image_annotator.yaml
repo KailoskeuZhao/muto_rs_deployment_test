@@ -24,7 +24,7 @@ sam2_image_annotator:
 
     # YOLO detects objects and supplies one box prompt per object to SAM 2.
     prompt_mode: yolo
-    yolo_model: yolo11m.pt
+    yolo_model: yolo26m.pt
     yolo_device: "0"
     yolo_confidence: 0.25
     yolo_iou: 0.7
@@ -49,5 +49,5 @@ sam2_image_annotator:
     contour_color_bgr: "0,255,255"
     draw_prompts: true
     publish_passthrough_on_error: true
-    max_publish_rate: 1.0
+    max_publish_rate: 3.0
     queue_size: 2

@@ -104,7 +104,7 @@ def generate_launch_description():
     )
     yolo_model_arg = DeclareLaunchArgument(
         "yolo_model",
-        default_value="yolo11m.pt",
+        default_value="yolo26m.pt",
         description="Ultralytics YOLO model name or weights path.",
     )
     yolo_device_arg = DeclareLaunchArgument(
@@ -164,7 +164,7 @@ def generate_launch_description():
     )
     max_publish_rate_arg = DeclareLaunchArgument(
         "max_publish_rate",
-        default_value="1.0",
+        default_value="3.0",
         description="Maximum processed image rate in Hz. Set 0.0 to process every image.",
     )
 

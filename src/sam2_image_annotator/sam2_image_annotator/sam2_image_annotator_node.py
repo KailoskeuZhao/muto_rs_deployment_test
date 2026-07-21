@@ -60,7 +60,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.prompt_mode = str(
             self.declare_parameter("prompt_mode", "yolo").value).strip().lower()
         self.yolo_model_path = self.declare_parameter(
-            "yolo_model", "yolo11m.pt").value
+            "yolo_model", "yolo26m.pt").value
         self.yolo_device = str(
             self.declare_parameter("yolo_device", "0").value).strip()
         self.yolo_confidence = float(
@@ -95,7 +95,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.draw_prompts = bool(self.declare_parameter("draw_prompts", True).value)
         self.publish_passthrough_on_error = bool(
             self.declare_parameter("publish_passthrough_on_error", True).value)
-        self.max_publish_rate = float(self.declare_parameter("max_publish_rate", 1.0).value)
+        self.max_publish_rate = float(self.declare_parameter("max_publish_rate", 3.0).value)
         self.queue_size = int(self.declare_parameter("queue_size", 2).value)
 
         if self.overlay_alpha < 0.0 or self.overlay_alpha > 1.0:

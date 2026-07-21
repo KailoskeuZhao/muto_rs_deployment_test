@@ -5,6 +5,14 @@ sam2_image_annotator:
     mask_topic: /sam2/mask
     instance_mask_topic: /sam2/instance_mask
     segments_topic: /sam2/segments
+    depth_topic: /camera/depth/image_raw
+    depth_camera_info_topic: /camera/depth/camera_info
+    color_camera_info_topic: /camera/color/camera_info
+    instance_pointcloud_topic: /sam2/instance_pointcloud
+    depth_scale: 0.001
+    depth_sync_tolerance: 0.1
+    pointcloud_stride: 1
+    tf_timeout: 0.1
 
     # Relative paths are checked from both the launch working directory and the
     # installed SAM 2 project root (for example, /opt/sam2).

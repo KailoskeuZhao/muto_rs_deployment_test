@@ -2,7 +2,9 @@
 
 This package subscribes to a camera image, detects objects with Ultralytics YOLO,
 and uses each detection box as a SAM 2 prompt. It publishes tagged object
-overlays, a binary union mask, an instance-ID mask, and per-object metadata.
+overlays, a binary union mask, an instance-ID mask, per-object metadata, and an
+instance-marked 3D point cloud.
+
 SAM 2 computes the image embedding once per frame and refines every YOLO box
 against that embedding.
 
@@ -69,11 +71,23 @@ Default topics:
 | Topic | Type | Role |
 | --- | --- | --- |
 | `/camera/color/image_raw` | `sensor_msgs/Image` | Input RGB image. |
+| `/camera/color/camera_info` | `sensor_msgs/CameraInfo` | Color intrinsics used to project depth points into the mask. |
+| `/camera/depth/image_raw` | `sensor_msgs/Image` | Input 16UC1 depth image. |
+| `/camera/depth/camera_info` | `sensor_msgs/CameraInfo` | Depth intrinsics used for back-projection. |
 | `/sam2/annotated_image` | `sensor_msgs/Image` | Tagged YOLO boxes and refined mask overlays. |
 | `/sam2/mask` | `sensor_msgs/Image` | Mono8 union of all refined masks. |
 | `/sam2/instance_mask` | `sensor_msgs/Image` | 16UC1 image; each nonzero value is an object instance ID. |
 | `/sam2/segments` | `std_msgs/String` | JSON metadata for every refined object. |
+| `/sam2/instance_pointcloud` | `sensor_msgs/PointCloud2` | Depth-frame XYZ points with `instance_id` and `rgb` fields. |
 
 Each object in `/sam2/segments` contains `instance_id`, `class_id`,
 `label`, YOLO `confidence`, `box_xyxy`, `sam_score`, and `mask_area`.
 The `instance_id` matches the pixel value in `/sam2/instance_mask`.
+
+For the instance point cloud, the node back-projects the raw depth image with
+the depth intrinsics, obtains the depth-optical to color-optical transform from
+the live TF tree, and projects each 3D depth point into the color mask with the
+color intrinsics and distortion coefficients. Only points landing on a nonzero
+instance ID are published. `depth_scale` converts uint16 values to metres,
+`depth_sync_tolerance` rejects stale color/depth pairs, `tf_timeout` controls TF
+lookup time, and `pointcloud_stride` can reduce the point count.

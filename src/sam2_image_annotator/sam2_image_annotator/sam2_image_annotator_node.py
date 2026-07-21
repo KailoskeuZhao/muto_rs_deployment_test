@@ -8,12 +8,15 @@ import cv2
 from cv_bridge import CvBridge
 import numpy as np
 import rclpy
+from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Image
-from std_msgs.msg import String
-
+from rclpy.time import Time
 from sam2_image_annotator.paths import resolve_checkpoint_path
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
+from std_msgs.msg import String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class Sam2ImageAnnotatorNode(Node):
@@ -29,6 +32,22 @@ class Sam2ImageAnnotatorNode(Node):
             "instance_mask_topic", "/sam2/instance_mask").value
         self.segments_topic = self.declare_parameter(
             "segments_topic", "/sam2/segments").value
+        self.depth_topic = self.declare_parameter(
+            "depth_topic", "/camera/depth/image_raw").value
+        self.depth_camera_info_topic = self.declare_parameter(
+            "depth_camera_info_topic", "/camera/depth/camera_info").value
+        self.color_camera_info_topic = self.declare_parameter(
+            "color_camera_info_topic", "/camera/color/camera_info").value
+        self.instance_pointcloud_topic = self.declare_parameter(
+            "instance_pointcloud_topic", "/sam2/instance_pointcloud").value
+        self.depth_scale = float(
+            self.declare_parameter("depth_scale", 0.001).value)
+        self.depth_sync_tolerance = float(
+            self.declare_parameter("depth_sync_tolerance", 0.1).value)
+        self.pointcloud_stride = int(
+            self.declare_parameter("pointcloud_stride", 1).value)
+        self.tf_timeout = float(
+            self.declare_parameter("tf_timeout", 0.1).value)
 
         self.checkpoint = self.declare_parameter(
             "checkpoint", "checkpoints/sam2.1_hiera_base_plus.pt").value
@@ -88,6 +107,19 @@ class Sam2ImageAnnotatorNode(Node):
         if self.queue_size < 1:
             self.get_logger().warn("queue_size must be positive; using 1")
             self.queue_size = 1
+        if self.depth_scale <= 0.0:
+            self.get_logger().warn("depth_scale must be positive; using 0.001")
+            self.depth_scale = 0.001
+        if self.depth_sync_tolerance < 0.0:
+            self.get_logger().warn(
+                "depth_sync_tolerance must be non-negative; using 0.1")
+            self.depth_sync_tolerance = 0.1
+        if self.pointcloud_stride < 1:
+            self.get_logger().warn("pointcloud_stride must be positive; using 1")
+            self.pointcloud_stride = 1
+        if self.tf_timeout < 0.0:
+            self.get_logger().warn("tf_timeout must be non-negative; using 0.1")
+            self.tf_timeout = 0.1
         if self.prompt_mode not in ("yolo", "manual"):
             self.get_logger().warn(
                 f"Unknown prompt_mode '{self.prompt_mode}'; using yolo")
@@ -116,6 +148,11 @@ class Sam2ImageAnnotatorNode(Node):
         self.detector_error = ""
         self.processing = False
         self.last_process_wall_time = 0.0
+        self.latest_depth_msg = None
+        self.depth_camera_info = None
+        self.color_camera_info = None
+        self.tf_buffer = Buffer(node=self)
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.load_predictor()
         if self.prompt_mode == "yolo":
@@ -134,13 +171,39 @@ class Sam2ImageAnnotatorNode(Node):
             Image, self.instance_mask_topic, output_qos)
         self.segments_pub = self.create_publisher(
             String, self.segments_topic, output_qos)
+        self.instance_pointcloud_pub = self.create_publisher(
+            PointCloud2, self.instance_pointcloud_topic, output_qos)
         self.image_sub = self.create_subscription(
             Image, self.image_topic, self.image_callback, input_qos)
+        self.depth_sub = self.create_subscription(
+            Image, self.depth_topic, self.depth_callback, input_qos)
+        self.depth_camera_info_sub = self.create_subscription(
+            CameraInfo,
+            self.depth_camera_info_topic,
+            self.depth_camera_info_callback,
+            input_qos,
+        )
+        self.color_camera_info_sub = self.create_subscription(
+            CameraInfo,
+            self.color_camera_info_topic,
+            self.color_camera_info_callback,
+            input_qos,
+        )
 
         self.get_logger().info(
             f"Subscribing to {self.image_topic} in {self.prompt_mode} mode; "
             f"publishing annotations on {self.annotated_topic}, masks on "
-            f"{self.mask_topic}, and object results on {self.segments_topic}")
+            f"{self.mask_topic}, object results on {self.segments_topic}, and "
+            f"instance point clouds on {self.instance_pointcloud_topic}")
+
+    def depth_callback(self, msg):
+        self.latest_depth_msg = msg
+
+    def depth_camera_info_callback(self, msg):
+        self.depth_camera_info = msg
+
+    def color_camera_info_callback(self, msg):
+        self.color_camera_info = msg
 
     def load_predictor(self):
         try:
@@ -207,6 +270,9 @@ class Sam2ImageAnnotatorNode(Node):
         if self.should_throttle():
             return
 
+        depth_msg = self.latest_depth_msg
+        depth_camera_info = self.depth_camera_info
+        color_camera_info = self.color_camera_info
         self.processing = True
         try:
             bgr_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -225,7 +291,15 @@ class Sam2ImageAnnotatorNode(Node):
                     self.compose_detection_outputs(bgr_image, segments)
                 )
                 self.publish_images(
-                    msg, annotated, mask, instance_mask, objects)
+                    msg,
+                    annotated,
+                    mask,
+                    instance_mask,
+                    objects,
+                    depth_msg,
+                    depth_camera_info,
+                    color_camera_info,
+                )
                 return
 
             point_coords, point_labels, box = self.build_prompts(bgr_image.shape)
@@ -240,7 +314,14 @@ class Sam2ImageAnnotatorNode(Node):
 
             mask = self.predict_mask(rgb_image, point_coords, point_labels, box)
             annotated = self.annotate_image(bgr_image, mask, point_coords, point_labels, box)
-            self.publish_images(msg, annotated, mask)
+            self.publish_images(
+                msg,
+                annotated,
+                mask,
+                depth_msg=depth_msg,
+                depth_camera_info=depth_camera_info,
+                color_camera_info=color_camera_info,
+            )
         except Exception as exc:
             self.get_logger().error(f"Failed to process image with SAM2: {exc}")
             if self.publish_passthrough_on_error:
@@ -548,7 +629,8 @@ class Sam2ImageAnnotatorNode(Node):
         return annotated
 
     def publish_images(
-            self, input_msg, annotated, mask, instance_mask=None, objects=None):
+            self, input_msg, annotated, mask, instance_mask=None, objects=None,
+            depth_msg=None, depth_camera_info=None, color_camera_info=None):
         annotated_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
         annotated_msg.header = input_msg.header
         self.annotated_pub.publish(annotated_msg)
@@ -564,6 +646,35 @@ class Sam2ImageAnnotatorNode(Node):
         instance_mask_msg.header = input_msg.header
         self.instance_mask_pub.publish(instance_mask_msg)
 
+        if (depth_msg is not None and depth_camera_info is not None and
+                color_camera_info is not None):
+            try:
+                self.publish_instance_pointcloud(
+                    input_msg,
+                    depth_msg,
+                    depth_camera_info,
+                    color_camera_info,
+                    instance_mask,
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Failed to build instance point cloud: {exc}",
+                    throttle_duration_sec=5.0,
+                )
+        else:
+            missing_inputs = []
+            if depth_msg is None:
+                missing_inputs.append(self.depth_topic)
+            if depth_camera_info is None:
+                missing_inputs.append(self.depth_camera_info_topic)
+            if color_camera_info is None:
+                missing_inputs.append(self.color_camera_info_topic)
+            self.get_logger().warn(
+                "Waiting to build instance point cloud; no message received "
+                f"yet on: {', '.join(missing_inputs)}",
+                throttle_duration_sec=10.0,
+            )
+
         payload = {
             "header": {
                 "stamp": {
@@ -577,6 +688,268 @@ class Sam2ImageAnnotatorNode(Node):
             "objects": objects if objects is not None else [],
         }
         self.segments_pub.publish(String(data=json.dumps(payload)))
+
+    def publish_instance_pointcloud(
+            self, color_msg, depth_msg, depth_camera_info,
+            color_camera_info, instance_mask):
+        if depth_msg.encoding != "16UC1":
+            self.get_logger().warn(
+                f"Cannot build instance point cloud from depth encoding "
+                f"{depth_msg.encoding!r}; expected 16UC1",
+                throttle_duration_sec=10.0,
+            )
+            return
+
+        time_offset = abs(
+            self.stamp_seconds(color_msg.header.stamp)
+            - self.stamp_seconds(depth_msg.header.stamp)
+        )
+        if time_offset > self.depth_sync_tolerance:
+            self.get_logger().warn(
+                f"Skipping instance point cloud: color/depth timestamp offset "
+                f"{time_offset:.3f}s exceeds {self.depth_sync_tolerance:.3f}s",
+                throttle_duration_sec=5.0,
+            )
+            return
+
+        depth = np.asarray(
+            self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough"))
+        if depth.ndim != 2 or depth.dtype != np.uint16:
+            self.get_logger().warn(
+                f"Cannot build instance point cloud from depth array "
+                f"shape={depth.shape}, dtype={depth.dtype}; expected uint16 HxW",
+                throttle_duration_sec=10.0,
+            )
+            return
+        if (depth_camera_info.width and depth_camera_info.width != depth.shape[1]) or (
+                depth_camera_info.height and depth_camera_info.height != depth.shape[0]):
+            self.get_logger().warn(
+                "Skipping instance point cloud: depth CameraInfo dimensions do "
+                "not match the depth image",
+                throttle_duration_sec=5.0,
+            )
+            return
+        if (color_camera_info.width and
+                color_camera_info.width != instance_mask.shape[1]) or (
+                color_camera_info.height and
+                color_camera_info.height != instance_mask.shape[0]):
+            self.get_logger().warn(
+                "Skipping instance point cloud: color CameraInfo dimensions do "
+                "not match the instance mask",
+                throttle_duration_sec=5.0,
+            )
+            return
+
+        depth_frame = (
+            depth_camera_info.header.frame_id or depth_msg.header.frame_id)
+        color_frame = (
+            color_camera_info.header.frame_id or color_msg.header.frame_id)
+        if not depth_frame or not color_frame:
+            self.get_logger().warn(
+                "Skipping instance point cloud: depth or color optical frame is empty",
+                throttle_duration_sec=10.0,
+            )
+            return
+        if not np.any(instance_mask):
+            self.publish_instance_points(
+                depth_msg, depth_frame, np.empty((0, 3), np.float32),
+                np.empty(0, np.uint16))
+            return
+
+        try:
+            depth_to_color = self.lookup_depth_to_color_transform(
+                depth_frame, color_frame, depth_msg.header.stamp)
+        except TransformException as exc:
+            self.get_logger().warn(
+                f"Skipping instance point cloud: cannot transform "
+                f"{depth_frame} to {color_frame}: {exc}",
+                throttle_duration_sec=5.0,
+            )
+            return
+
+        depth_matrix = np.asarray(
+            depth_camera_info.k, dtype=np.float64).reshape(3, 3)
+        color_matrix = np.asarray(
+            color_camera_info.k, dtype=np.float64).reshape(3, 3)
+        if (depth_matrix[0, 0] <= 0.0 or depth_matrix[1, 1] <= 0.0 or
+                color_matrix[0, 0] <= 0.0 or color_matrix[1, 1] <= 0.0):
+            self.get_logger().warn(
+                "Skipping instance point cloud: invalid camera intrinsics",
+                throttle_duration_sec=10.0,
+            )
+            return
+
+        stride = self.pointcloud_stride
+        sampled_depth = depth[::stride, ::stride]
+        sampled_v, sampled_u = np.nonzero(sampled_depth > 0)
+        if sampled_u.size == 0:
+            self.publish_instance_points(
+                depth_msg, depth_frame, np.empty((0, 3), np.float32),
+                np.empty(0, np.uint16))
+            return
+
+        raw_depth = sampled_depth[sampled_v, sampled_u].astype(np.float32)
+        z = raw_depth * self.depth_scale
+        depth_pixels = np.column_stack((
+            sampled_u.astype(np.float64) * stride,
+            sampled_v.astype(np.float64) * stride,
+        )).reshape(-1, 1, 2)
+        depth_distortion = np.asarray(depth_camera_info.d, dtype=np.float64)
+        normalized_depth_pixels = cv2.undistortPoints(
+            depth_pixels,
+            depth_matrix,
+            depth_distortion if depth_distortion.size else None,
+        ).reshape(-1, 2)
+        depth_points = np.column_stack((
+            normalized_depth_pixels[:, 0] * z,
+            normalized_depth_pixels[:, 1] * z,
+            z,
+        )).astype(np.float32, copy=False)
+
+        transform = depth_to_color.transform
+        rotation = self.quaternion_matrix(transform.rotation)
+        translation = np.array([
+            transform.translation.x,
+            transform.translation.y,
+            transform.translation.z,
+        ], dtype=np.float64)
+        rotation_vector, _ = cv2.Rodrigues(rotation)
+        color_distortion = np.asarray(
+            color_camera_info.d, dtype=np.float64)
+        projected, _ = cv2.projectPoints(
+            depth_points.astype(np.float64),
+            rotation_vector,
+            translation,
+            color_matrix,
+            color_distortion if color_distortion.size else None,
+        )
+        projected = projected.reshape(-1, 2)
+        color_points = depth_points.astype(np.float64) @ rotation.T + translation
+        projected_u = np.rint(projected[:, 0]).astype(np.int64)
+        projected_v = np.rint(projected[:, 1]).astype(np.int64)
+        inside = np.logical_and.reduce((
+            color_points[:, 2] > 0.0,
+            projected_u >= 0,
+            projected_u < instance_mask.shape[1],
+            projected_v >= 0,
+            projected_v < instance_mask.shape[0],
+        ))
+
+        instance_ids = np.zeros(depth_points.shape[0], dtype=np.uint16)
+        candidates = np.flatnonzero(inside)
+        if candidates.size:
+            projected_index = (
+                projected_v[candidates] * instance_mask.shape[1]
+                + projected_u[candidates]
+            )
+            order = np.lexsort((color_points[candidates, 2], projected_index))
+            sorted_index = projected_index[order]
+            first_at_pixel = np.concatenate((
+                np.array([True]),
+                sorted_index[1:] != sorted_index[:-1],
+            ))
+            visible = candidates[order[first_at_pixel]]
+            instance_ids[visible] = instance_mask[
+                projected_v[visible], projected_u[visible]]
+        marked = instance_ids > 0
+        self.publish_instance_points(
+            depth_msg, depth_frame, depth_points[marked], instance_ids[marked])
+
+    def lookup_depth_to_color_transform(
+            self, depth_frame, color_frame, depth_stamp):
+        try:
+            return self.tf_buffer.lookup_transform(
+                color_frame,
+                depth_frame,
+                Time.from_msg(depth_stamp),
+                timeout=Duration(seconds=self.tf_timeout),
+            )
+        except TransformException as timestamp_error:
+            try:
+                return self.tf_buffer.lookup_transform(
+                    color_frame,
+                    depth_frame,
+                    Time(),
+                    timeout=Duration(seconds=self.tf_timeout),
+                )
+            except TransformException as latest_error:
+                raise TransformException(
+                    f"timestamped lookup failed ({timestamp_error}); latest "
+                    f"lookup also failed ({latest_error})"
+                ) from latest_error
+
+    def publish_instance_points(
+            self, depth_msg, depth_frame, xyz, instance_ids):
+        point_dtype = np.dtype({
+            "names": ("x", "y", "z", "instance_id", "rgb"),
+            "formats": ("<f4", "<f4", "<f4", "<u2", "<u4"),
+            "offsets": (0, 4, 8, 12, 16),
+            "itemsize": 20,
+        })
+        points = np.zeros(instance_ids.size, dtype=point_dtype)
+        points["x"] = xyz[:, 0]
+        points["y"] = xyz[:, 1]
+        points["z"] = xyz[:, 2]
+        points["instance_id"] = instance_ids
+        palette_rgb = np.asarray([
+            self.pack_instance_rgb(instance_id)
+            for instance_id in range(1, 9)
+        ], dtype=np.uint32)
+        points["rgb"] = palette_rgb[(instance_ids.astype(np.int64) - 1) % 8]
+
+        cloud = PointCloud2()
+        cloud.header.stamp = depth_msg.header.stamp
+        cloud.header.frame_id = depth_frame
+        cloud.height = 1
+        cloud.width = int(points.size)
+        cloud.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(
+                name="instance_id",
+                offset=12,
+                datatype=PointField.UINT16,
+                count=1,
+            ),
+            PointField(name="rgb", offset=16, datatype=PointField.UINT32, count=1),
+        ]
+        cloud.is_bigendian = False
+        cloud.point_step = point_dtype.itemsize
+        cloud.row_step = cloud.point_step * cloud.width
+        cloud.data = points.tobytes()
+        cloud.is_dense = True
+        self.instance_pointcloud_pub.publish(cloud)
+
+    @staticmethod
+    def quaternion_matrix(quaternion):
+        x = float(quaternion.x)
+        y = float(quaternion.y)
+        z = float(quaternion.z)
+        w = float(quaternion.w)
+        norm = x * x + y * y + z * z + w * w
+        if norm < np.finfo(float).eps:
+            return np.eye(3, dtype=np.float64)
+        scale = 2.0 / norm
+        return np.array([
+            [1.0 - scale * (y * y + z * z),
+             scale * (x * y - z * w),
+             scale * (x * z + y * w)],
+            [scale * (x * y + z * w),
+             1.0 - scale * (x * x + z * z),
+             scale * (y * z - x * w)],
+            [scale * (x * z - y * w),
+             scale * (y * z + x * w),
+             1.0 - scale * (x * x + y * y)],
+        ], dtype=np.float64)
+
+    @staticmethod
+    def stamp_seconds(stamp):
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+    def pack_instance_rgb(self, instance_id):
+        blue, green, red = self.instance_color(int(instance_id))
+        return (red << 16) | (green << 8) | blue
 
     def publish_unavailable_image(self, input_msg, bgr_image):
         if not self.publish_passthrough_on_error:
@@ -701,9 +1074,12 @@ class Sam2ImageAnnotatorNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = Sam2ImageAnnotatorNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

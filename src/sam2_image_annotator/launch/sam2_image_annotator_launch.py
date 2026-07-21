@@ -31,6 +31,46 @@ def generate_launch_description():
         default_value="/sam2/segments",
         description="Output JSON object-segmentation results topic.",
     )
+    depth_topic_arg = DeclareLaunchArgument(
+        "depth_topic",
+        default_value="/camera/depth/image_raw",
+        description="Raw 16UC1 depth image topic.",
+    )
+    depth_camera_info_topic_arg = DeclareLaunchArgument(
+        "depth_camera_info_topic",
+        default_value="/camera/depth/camera_info",
+        description="CameraInfo topic matching the depth image.",
+    )
+    color_camera_info_topic_arg = DeclareLaunchArgument(
+        "color_camera_info_topic",
+        default_value="/camera/color/camera_info",
+        description="CameraInfo topic matching the color instance mask.",
+    )
+    instance_pointcloud_topic_arg = DeclareLaunchArgument(
+        "instance_pointcloud_topic",
+        default_value="/sam2/instance_pointcloud",
+        description="Output PointCloud2 with per-point instance IDs.",
+    )
+    depth_scale_arg = DeclareLaunchArgument(
+        "depth_scale",
+        default_value="0.001",
+        description="Metres represented by one uint16 depth unit.",
+    )
+    depth_sync_tolerance_arg = DeclareLaunchArgument(
+        "depth_sync_tolerance",
+        default_value="0.1",
+        description="Maximum color/depth timestamp difference in seconds.",
+    )
+    pointcloud_stride_arg = DeclareLaunchArgument(
+        "pointcloud_stride",
+        default_value="1",
+        description="Pixel sampling stride used to build the instance point cloud.",
+    )
+    tf_timeout_arg = DeclareLaunchArgument(
+        "tf_timeout",
+        default_value="0.1",
+        description="Timeout in seconds for depth-to-color TF lookup.",
+    )
     checkpoint_arg = DeclareLaunchArgument(
         "checkpoint",
         default_value="checkpoints/sam2.1_hiera_base_plus.pt",
@@ -134,6 +174,14 @@ def generate_launch_description():
         mask_topic_arg,
         instance_mask_topic_arg,
         segments_topic_arg,
+        depth_topic_arg,
+        depth_camera_info_topic_arg,
+        color_camera_info_topic_arg,
+        instance_pointcloud_topic_arg,
+        depth_scale_arg,
+        depth_sync_tolerance_arg,
+        pointcloud_stride_arg,
+        tf_timeout_arg,
         checkpoint_arg,
         openblas_preload_arg,
         model_cfg_arg,
@@ -166,6 +214,29 @@ def generate_launch_description():
                 "mask_topic": LaunchConfiguration("mask_topic"),
                 "instance_mask_topic": LaunchConfiguration("instance_mask_topic"),
                 "segments_topic": LaunchConfiguration("segments_topic"),
+                "depth_topic": LaunchConfiguration("depth_topic"),
+                "depth_camera_info_topic": LaunchConfiguration(
+                    "depth_camera_info_topic"),
+                "color_camera_info_topic": LaunchConfiguration(
+                    "color_camera_info_topic"),
+                "instance_pointcloud_topic": LaunchConfiguration(
+                    "instance_pointcloud_topic"),
+                "depth_scale": ParameterValue(
+                    LaunchConfiguration("depth_scale"),
+                    value_type=float,
+                ),
+                "depth_sync_tolerance": ParameterValue(
+                    LaunchConfiguration("depth_sync_tolerance"),
+                    value_type=float,
+                ),
+                "pointcloud_stride": ParameterValue(
+                    LaunchConfiguration("pointcloud_stride"),
+                    value_type=int,
+                ),
+                "tf_timeout": ParameterValue(
+                    LaunchConfiguration("tf_timeout"),
+                    value_type=float,
+                ),
                 "checkpoint": LaunchConfiguration("checkpoint"),
                 "model_cfg": LaunchConfiguration("model_cfg"),
                 "device": LaunchConfiguration("device"),

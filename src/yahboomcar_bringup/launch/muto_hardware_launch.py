@@ -53,6 +53,16 @@ def generate_launch_description():
         default_value="lidar/PointCloud",
         description="Legacy TG30 PointCloud2 topic.",
     )
+    camera_width_arg = DeclareLaunchArgument(
+        "camera_width",
+        default_value="640",
+        description="Width in pixels for the Orbbec color and depth streams.",
+    )
+    camera_height_arg = DeclareLaunchArgument(
+        "camera_height",
+        default_value="480",
+        description="Height in pixels for the Orbbec color and depth streams.",
+    )
 
     lidar_node = Node(
         package="lidar_tg30",
@@ -80,7 +90,13 @@ def generate_launch_description():
                 "launch",
                 "astra_pro_plus.launch.py",
             ])
-        )
+        ),
+        launch_arguments={
+            "color_width": LaunchConfiguration("camera_width"),
+            "color_height": LaunchConfiguration("camera_height"),
+            "depth_width": LaunchConfiguration("camera_width"),
+            "depth_height": LaunchConfiguration("camera_height"),
+        }.items(),
     )
 
     driver_node = Node(
@@ -122,6 +138,8 @@ def generate_launch_description():
         lidar_scan_topic_arg,
         lidar_publish_pointcloud_arg,
         lidar_pointcloud_topic_arg,
+        camera_width_arg,
+        camera_height_arg,
         lidar_node,
         camera_launch,
         driver_node,

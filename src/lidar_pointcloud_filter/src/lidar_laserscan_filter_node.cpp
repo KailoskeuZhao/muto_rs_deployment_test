@@ -131,7 +131,9 @@ private:
 
     FilterStats no_downsample_stats;
     sensor_msgs::msg::LaserScan full_resolution_scan;
-    if (!buildFilteredScan(*msg, no_downsample_range_max_, full_resolution_scan, no_downsample_stats)) {
+    if (!buildFilteredScan(*msg, no_downsample_range_max_, full_resolution_scan,
+      no_downsample_stats))
+    {
       return;
     }
     if (restamp_output_) {
@@ -244,7 +246,9 @@ private:
     const sensor_msgs::msg::LaserScan & input,
     sensor_msgs::msg::LaserScan & output) const
   {
-    if (downsample_factor_ <= 1 || input.ranges.size() < static_cast<std::size_t>(downsample_factor_)) {
+    if (downsample_factor_ <= 1 ||
+      input.ranges.size() < static_cast<std::size_t>(downsample_factor_))
+    {
       output = input;
       return;
     }

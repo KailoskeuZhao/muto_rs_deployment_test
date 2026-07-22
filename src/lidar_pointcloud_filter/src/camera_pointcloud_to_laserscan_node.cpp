@@ -4,7 +4,6 @@
 #include <functional>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -26,19 +25,14 @@ public:
   : Node("camera_pointcloud_to_laserscan_node")
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/camera/depth/points");
-    lidar_topic_ = declare_parameter<std::string>(
-      "lidar_topic", "/lidar/PointCloudFilteredNoDownsample");
-    output_topic_ = declare_parameter<std::string>("output_topic", "/fused/laserscan");
+    output_topic_ = declare_parameter<std::string>("output_topic", "/camera/filtered_laserscan");
     processing_frame_ = declare_parameter<std::string>("processing_frame", "camera_link");
-    use_lidar_ = declare_parameter<bool>("use_lidar", true);
 
     min_z_ = declare_parameter<double>("min_z", -0.2);
     max_z_ = declare_parameter<double>("max_z", 0.05);
     camera_min_x_ = declare_parameter<double>("camera_min_x", -100.0);
     range_min_ = declare_parameter<double>("range_min", 0.05);
     range_max_ = declare_parameter<double>("range_max", 3.0);
-    lidar_range_min_ = declare_parameter<double>("lidar_range_min", range_min_);
-    lidar_range_max_ = declare_parameter<double>("lidar_range_max", 15.0);
 
     angle_min_ = declare_parameter<double>("angle_min", -M_PI);
     angle_max_ = declare_parameter<double>("angle_max", M_PI);
@@ -49,8 +43,6 @@ public:
     queue_size_ = declare_parameter<int>("queue_size", 5);
     max_publish_rate_ = declare_parameter<double>("max_publish_rate", 0.0);
     input_point_stride_ = declare_parameter<int>("input_point_stride", 8);
-    lidar_point_stride_ = declare_parameter<int>("lidar_point_stride", 1);
-    max_lidar_age_ = declare_parameter<double>("max_lidar_age", 0.5);
     restamp_output_ = declare_parameter<bool>("restamp_output", false);
     input_stamp_warning_age_ = declare_parameter<double>("input_stamp_warning_age", 1.0);
     max_input_age_ = declare_parameter<double>("max_input_age", 2.0);
@@ -72,12 +64,6 @@ public:
       input_topic_, input_qos,
       std::bind(
         &CameraPointCloudToLaserScanNode::cameraPointCloudCallback, this, std::placeholders::_1));
-    if (use_lidar_) {
-      lidar_subscriber_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-        lidar_topic_, input_qos,
-        std::bind(
-          &CameraPointCloudToLaserScanNode::lidarPointCloudCallback, this, std::placeholders::_1));
-    }
 
     RCLCPP_INFO(
       get_logger(),
@@ -87,17 +73,10 @@ public:
       processing_frame_.empty() ? "<input frame>" : processing_frame_.c_str(),
       min_z_, max_z_, camera_min_x_, range_min_, range_max_,
       restamp_output_ ? "true" : "false");
-    if (max_publish_rate_ > 0.0 || input_point_stride_ > 1 || lidar_point_stride_ > 1) {
+    if (max_publish_rate_ > 0.0 || input_point_stride_ > 1) {
       RCLCPP_INFO(
-        get_logger(), "Cost controls: max_publish_rate=%.3f Hz, input_point_stride=%d, "
-        "lidar_point_stride=%d",
-        max_publish_rate_, input_point_stride_, lidar_point_stride_);
-    }
-    if (use_lidar_) {
-      RCLCPP_INFO(
-        get_logger(),
-        "Merging latest %s into each scan with TF into the processing frame, lidar range[%.3f, %.3f]",
-        lidar_topic_.c_str(), lidar_range_min_, lidar_range_max_);
+        get_logger(), "Cost controls: max_publish_rate=%.3f Hz, input_point_stride=%d",
+        max_publish_rate_, input_point_stride_);
     }
   }
 
@@ -126,10 +105,6 @@ private:
       RCLCPP_WARN(get_logger(), "input_point_stride must be positive; using 1");
       input_point_stride_ = 1;
     }
-    if (lidar_point_stride_ < 1) {
-      RCLCPP_WARN(get_logger(), "lidar_point_stride must be positive; using 1");
-      lidar_point_stride_ = 1;
-    }
     if (min_z_ > max_z_) {
       RCLCPP_WARN(get_logger(), "min_z is greater than max_z; swapping them");
       std::swap(min_z_, max_z_);
@@ -142,15 +117,6 @@ private:
       RCLCPP_WARN(get_logger(), "range_max is smaller than range_min; swapping them");
       std::swap(range_max_, range_min_);
     }
-    if (lidar_range_min_ < 0.0) {
-      RCLCPP_WARN(get_logger(), "lidar_range_min must be non-negative; using 0.0");
-      lidar_range_min_ = 0.0;
-    }
-    if (lidar_range_max_ < lidar_range_min_) {
-      RCLCPP_WARN(
-        get_logger(), "lidar_range_max is smaller than lidar_range_min; swapping them");
-      std::swap(lidar_range_max_, lidar_range_min_);
-    }
     if (angle_max_ < angle_min_) {
       RCLCPP_WARN(get_logger(), "angle_max is smaller than angle_min; swapping them");
       std::swap(angle_max_, angle_min_);
@@ -158,10 +124,6 @@ private:
     if (angle_increment_ <= 0.0) {
       RCLCPP_WARN(get_logger(), "angle_increment must be positive; using 0.25 degrees");
       angle_increment_ = M_PI / 720.0;
-    }
-    if (max_lidar_age_ < 0.0) {
-      RCLCPP_WARN(get_logger(), "max_lidar_age must be non-negative; using 0.0");
-      max_lidar_age_ = 0.0;
     }
     if (input_stamp_warning_age_ < 0.0) {
       RCLCPP_WARN(get_logger(), "input_stamp_warning_age must be non-negative; using 0.0");
@@ -178,24 +140,6 @@ private:
     if (processing_frame_.empty()) {
       RCLCPP_WARN(get_logger(), "processing_frame is empty; using each input cloud frame");
     }
-  }
-
-  void lidarPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
-  {
-    warnIfStampFarFromNow(*msg, "lidar");
-    if (isStampTooFarFromNow(*msg, "lidar")) {
-      return;
-    }
-
-    if (!received_lidar_cloud_) {
-      received_lidar_cloud_ = true;
-      RCLCPP_INFO(
-        get_logger(), "Received first lidar cloud on %s with frame_id '%s'",
-        lidar_topic_.c_str(), msg->header.frame_id.c_str());
-    }
-
-    std::lock_guard<std::mutex> lock(latest_lidar_mutex_);
-    latest_lidar_cloud_ = msg;
   }
 
   void cameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -229,22 +173,14 @@ private:
       initializeScan(*msg, scan_frame, scan);
 
       FilterStats camera_stats;
-      FilterStats lidar_stats;
-      const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
-      if (use_lidar_ && !lidar_used) {
-        return;
-      }
-
       publisher_->publish(scan);
-      warnIfProcessingWasSlow(processing_start, *msg, camera_stats, lidar_stats, lidar_used);
+      warnIfProcessingWasSlow(processing_start, *msg, camera_stats);
 
       if (log_filter_stats_) {
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "Converted empty input cloud to empty scan: camera_input=%u lidar_used=%s "
-          "lidar_kept=%zu bins=%zu",
-          msg->width * msg->height, lidar_used ? "true" : "false", lidar_stats.kept,
-          scan.ranges.size());
+          "Converted empty camera cloud to empty scan: input=%u bins=%zu",
+          msg->width * msg->height, scan.ranges.size());
       }
       return;
     }
@@ -272,23 +208,16 @@ private:
       *msg, camera_transform, scan, camera_stats, camera_min_x_, range_min_, range_max_,
       input_point_stride_);
 
-    FilterStats lidar_stats;
-    const bool lidar_used = addLatestLidarCloudToScan(scan, *msg, lidar_stats);
-    if (use_lidar_ && !lidar_used) {
-      return;
-    }
-
     publisher_->publish(scan);
-    warnIfProcessingWasSlow(processing_start, *msg, camera_stats, lidar_stats, lidar_used);
+    warnIfProcessingWasSlow(processing_start, *msg, camera_stats);
 
     if (log_filter_stats_) {
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Converted clouds to scan: camera_input=%u camera_kept=%zu lidar_used=%s lidar_kept=%zu "
-        "camera_x_filtered=%zu camera_z_filtered=%zu lidar_z_filtered=%zu bins=%zu",
-        msg->width * msg->height, camera_stats.kept, lidar_used ? "true" : "false",
-        lidar_stats.kept, camera_stats.x_filtered, camera_stats.z_filtered,
-        lidar_stats.z_filtered, scan.ranges.size());
+        "Converted camera cloud to scan: input=%u kept=%zu x_filtered=%zu "
+        "z_filtered=%zu bins=%zu",
+        msg->width * msg->height, camera_stats.kept, camera_stats.x_filtered,
+        camera_stats.z_filtered, scan.ranges.size());
     }
   }
 
@@ -323,69 +252,10 @@ private:
     scan.angle_increment = static_cast<float>(angle_increment_);
     scan.time_increment = static_cast<float>(time_increment_);
     scan.scan_time = static_cast<float>(scan_time_);
-    const double scan_range_min = use_lidar_ ? std::min(range_min_, lidar_range_min_) : range_min_;
-    const double scan_range_max = use_lidar_ ? std::max(range_max_, lidar_range_max_) : range_max_;
-    scan.range_min = static_cast<float>(scan_range_min);
-    scan.range_max = static_cast<float>(scan_range_max);
+    scan.range_min = static_cast<float>(range_min_);
+    scan.range_max = static_cast<float>(range_max_);
     scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
     scan.intensities.clear();
-  }
-
-  bool addLatestLidarCloudToScan(
-    sensor_msgs::msg::LaserScan & scan,
-    const sensor_msgs::msg::PointCloud2 & camera_msg,
-    FilterStats & stats)
-  {
-    if (!use_lidar_) {
-      return false;
-    }
-
-    sensor_msgs::msg::PointCloud2::SharedPtr lidar_msg;
-    {
-      std::lock_guard<std::mutex> lock(latest_lidar_mutex_);
-      lidar_msg = latest_lidar_cloud_;
-    }
-
-    if (!lidar_msg) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "No lidar cloud received yet on %s; waiting before publishing scan", lidar_topic_.c_str());
-      return false;
-    }
-    if (lidar_msg->header.frame_id.empty()) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Latest lidar cloud has an empty frame_id; waiting before publishing scan");
-      return false;
-    }
-    if (!hasField(*lidar_msg, "x") || !hasField(*lidar_msg, "y") || !hasField(*lidar_msg, "z")) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Latest lidar cloud is missing x/y/z fields; waiting before publishing scan");
-      return false;
-    }
-
-    if (max_lidar_age_ > 0.0) {
-      const double age = std::abs(
-        (rclcpp::Time(camera_msg.header.stamp) - rclcpp::Time(lidar_msg->header.stamp)).seconds());
-      if (age > max_lidar_age_) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "Latest lidar cloud is %.3f seconds from the camera cloud; waiting before publishing scan",
-          age);
-        return false;
-      }
-    }
-
-    tf2::Transform lidar_transform;
-    if (!lookupCloudTransform(*lidar_msg, scan.header.frame_id, "lidar", lidar_transform)) {
-      return false;
-    }
-
-    addCloudToScan(
-      *lidar_msg, lidar_transform, scan, stats, -std::numeric_limits<double>::infinity(),
-      lidar_range_min_, lidar_range_max_, lidar_point_stride_);
-    return true;
   }
 
   bool lookupCloudTransform(
@@ -515,9 +385,7 @@ private:
   void warnIfProcessingWasSlow(
     const std::chrono::steady_clock::time_point & processing_start,
     const sensor_msgs::msg::PointCloud2 & input_msg,
-    const FilterStats & camera_stats,
-    const FilterStats & lidar_stats,
-    bool lidar_used)
+    const FilterStats & camera_stats)
   {
     if (processing_time_warning_ <= 0.0) {
       return;
@@ -531,10 +399,8 @@ private:
 
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 2000,
-      "Fused scan conversion took %.3f s for %u input points; kept camera=%zu lidar_used=%s "
-      "lidar=%zu",
-      elapsed_s, input_msg.width * input_msg.height, camera_stats.kept,
-      lidar_used ? "true" : "false", lidar_stats.kept);
+      "Camera scan conversion took %.3f s for %u input points; kept=%zu",
+      elapsed_s, input_msg.width * input_msg.height, camera_stats.kept);
   }
 
   void warnIfStampFarFromNow(const sensor_msgs::msg::PointCloud2 & msg, const char * cloud_name)
@@ -579,17 +445,13 @@ private:
   }
 
   std::string input_topic_;
-  std::string lidar_topic_;
   std::string output_topic_;
   std::string processing_frame_;
-  bool use_lidar_;
   double min_z_;
   double max_z_;
   double camera_min_x_;
   double range_min_;
   double range_max_;
-  double lidar_range_min_;
-  double lidar_range_max_;
   double angle_min_;
   double angle_max_;
   double angle_increment_;
@@ -598,22 +460,16 @@ private:
   int queue_size_;
   double max_publish_rate_;
   int input_point_stride_;
-  int lidar_point_stride_;
-  double max_lidar_age_;
   bool restamp_output_;
   double input_stamp_warning_age_;
   double max_input_age_;
   double processing_time_warning_;
   rclcpp::Duration transform_timeout_{0, 0};
   bool log_filter_stats_;
-  bool received_lidar_cloud_{false};
   rclcpp::Time last_process_time_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr camera_subscriber_;
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_subscriber_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr publisher_;
-  std::mutex latest_lidar_mutex_;
-  sensor_msgs::msg::PointCloud2::SharedPtr latest_lidar_cloud_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };

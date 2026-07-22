@@ -5,6 +5,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
+    GroupAction,
     IncludeLaunchDescription,
     RegisterEventHandler,
     TimerAction,
@@ -25,6 +26,16 @@ def launch_file(package_name, launch_name):
     )
 
 
+def scoped_include(package_name, launch_name, launch_arguments=None, condition=None):
+    """Include one subsystem without leaking its launch configurations."""
+    include = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(launch_file(package_name, launch_name)),
+        launch_arguments=(launch_arguments or {}).items(),
+        condition=condition,
+    )
+    return GroupAction(actions=[include], scoped=True)
+
+
 def delayed_include(
     delay_arg,
     enabled_arg,
@@ -32,10 +43,7 @@ def delayed_include(
     launch_name,
     launch_arguments=None,
 ):
-    include = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(launch_file(package_name, launch_name)),
-        launch_arguments=(launch_arguments or {}).items(),
-    )
+    include = scoped_include(package_name, launch_name, launch_arguments)
     return TimerAction(
         period=LaunchConfiguration(delay_arg),
         actions=[include],
@@ -74,10 +82,7 @@ def readiness_gated_include(
         output='screen',
         arguments=gate_arguments,
     )
-    include = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(launch_file(package_name, launch_name)),
-        launch_arguments=(launch_arguments or {}).items(),
-    )
+    include = scoped_include(package_name, launch_name, launch_arguments)
 
     def handle_gate_exit(event, _context):
         if event.returncode == 0:
@@ -293,10 +298,9 @@ def generate_launch_description():
             'all_tf2_publishers_launch.py',
             {'publish_odom_tf': 'false'},
         ),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                launch_file('yahboomcar_bringup', 'muto_hardware_launch.py')
-            ),
+        scoped_include(
+            'yahboomcar_bringup',
+            'muto_hardware_launch.py',
             condition=IfCondition(LaunchConfiguration('launch_hardware')),
         ),
         *localization_actions,

@@ -2,10 +2,20 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+
+
+def scoped_include(launch_path, launch_arguments, condition=None):
+    """Include a component launch without exporting its generic arguments."""
+    include = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(launch_path),
+        launch_arguments=launch_arguments,
+        condition=condition,
+    )
+    return GroupAction(actions=[include], scoped=True)
 
 
 def generate_launch_description():
@@ -38,13 +48,18 @@ def generate_launch_description():
             "the filtered no-downsample LiDAR LaserScan."
         ),
     )
+    camera_pointcloud_topic_arg = DeclareLaunchArgument(
+        "camera_pointcloud_topic",
+        default_value="/camera/depth/points",
+        description="Depth-camera PointCloud2 topic converted into the camera LaserScan.",
+    )
     camera_scan_topic_arg = DeclareLaunchArgument(
         "camera_scan_topic",
         default_value="/camera/filtered_laserscan",
         description="Intermediate downsampled camera LaserScan topic.",
     )
-    lidar_scan_topic_arg = DeclareLaunchArgument(
-        "lidar_scan_topic",
+    fusion_lidar_scan_topic_arg = DeclareLaunchArgument(
+        "fusion_lidar_scan_topic",
         default_value="/lidar/filtered_laserscan_no_downsample",
         description="Filtered full-resolution LiDAR LaserScan topic used by scan fusion.",
     )
@@ -128,8 +143,9 @@ def generate_launch_description():
     return LaunchDescription([
         slam_params_file_arg,
         launch_fused_laserscan_arg,
+        camera_pointcloud_topic_arg,
         camera_scan_topic_arg,
-        lidar_scan_topic_arg,
+        fusion_lidar_scan_topic_arg,
         fused_scan_frame_arg,
         depth_min_z_arg,
         depth_max_z_arg,
@@ -144,15 +160,13 @@ def generate_launch_description():
         camera_scan_angle_increment_arg,
         fused_scan_angle_increment_arg,
         fused_scan_processing_time_warning_arg,
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(fused_laserscan_launch),
+        scoped_include(
+            fused_laserscan_launch,
             condition=IfCondition(LaunchConfiguration("launch_fused_laserscan")),
             launch_arguments={
-                "publish_fused_scan": "true",
-                "publish_camera_scan": "true",
-                "publish_filtered_lidar_scan": "false",
+                "input_topic": LaunchConfiguration("camera_pointcloud_topic"),
                 "camera_scan_topic": LaunchConfiguration("camera_scan_topic"),
-                "lidar_scan_topic": LaunchConfiguration("lidar_scan_topic"),
+                "lidar_scan_topic": LaunchConfiguration("fusion_lidar_scan_topic"),
                 "fused_scan_frame": LaunchConfiguration("fused_scan_frame"),
                 "processing_frame": LaunchConfiguration("fused_scan_frame"),
                 "min_z": LaunchConfiguration("depth_min_z"),
@@ -172,8 +186,8 @@ def generate_launch_description():
                 ),
             }.items(),
         ),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(slam_toolbox_launch),
+        scoped_include(
+            slam_toolbox_launch,
             launch_arguments={
                 "slam_params_file": LaunchConfiguration("slam_params_file"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),

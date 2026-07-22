@@ -56,7 +56,7 @@ pipeline.
 | --- | --- |
 | [`src/yahboomcar_bringup/launch/muto_hardware_launch.py`](../src/yahboomcar_bringup/launch/muto_hardware_launch.py) | Starts the TG30 LiDAR, Orbbec camera launch, and Muto base driver/IMU publisher. |
 | [`src/tf2_publisher/launch/all_tf2_publishers_launch.py`](../src/tf2_publisher/launch/all_tf2_publishers_launch.py) | Starts static sensor TF publishers; optional odom TF publisher is disabled by default. |
-| [`src/lidar_tg30/src/lidar_node.cpp`](../src/lidar_tg30/src/lidar_node.cpp) | Publishes raw TG30 LaserScan and optional legacy PointCloud2. |
+| [`src/lidar_tg30/src/lidar_node.cpp`](../src/lidar_tg30/src/lidar_node.cpp) | Publishes the raw TG30 LaserScan. |
 | [`src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py`](../src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py) | Starts LiDAR scan filtering, RF2O, and the odometry deadband wrapper. |
 | [`src/lidar_pointcloud_filter/src/lidar_laserscan_filter_node.cpp`](../src/lidar_pointcloud_filter/src/lidar_laserscan_filter_node.cpp) | Filters raw LiDAR LaserScan into RF2O and fusion scan topics. |
 | [`src/lidar_pointcloud_filter/src/odometry_translation_deadband_node.cpp`](../src/lidar_pointcloud_filter/src/odometry_translation_deadband_node.cpp) | Applies RF2O deadbands and jump rejection before publishing `scan_odom`. |
@@ -87,22 +87,15 @@ frame tree for camera optical/depth frames. The local camera publisher only owns
 
 ## LiDAR Input
 
-`muto_hardware_launch.py` starts `lidar_tg30/lidar_node`. The TG30 node can
-publish both:
-
-| Topic | Type | Frame | Current role |
-| --- | --- | --- | --- |
-| `/lidar/raw_laserscan` | `sensor_msgs/LaserScan` | `lidar_frame` | Normal RF2O input before filtering. |
-| `lidar/PointCloud` | `sensor_msgs/PointCloud2` | `lidar_frame` | Legacy point-cloud path. |
-
-The LaserScan path is the current default. The point-cloud path remains
-available for comparison and older experiments.
+`muto_hardware_launch.py` starts `lidar_tg30/lidar_node`. The driver publishes
+`/lidar/raw_laserscan` as `sensor_msgs/LaserScan` in `lidar_frame`. This is
+the only TG30 data path; downstream filtering produces the two scans needed by
+RF2O and fusion.
 
 ## LiDAR Scan Filtering
 
 `filter_lidar_odometry_launch.py` starts
-`lidar_pointcloud_filter/lidar_laserscan_filter_node` when
-`use_laserscan_pipeline:=true`, which is the default.
+`lidar_pointcloud_filter/lidar_laserscan_filter_node` unconditionally.
 
 It consumes `/lidar/raw_laserscan` and publishes two scans:
 
@@ -114,16 +107,6 @@ It consumes `/lidar/raw_laserscan` and publishes two scans:
 The node preserves input timestamps by default. `scan_restamp_output:=false` is
 intentional; restamping should only be used when a driver is known to publish bad
 timestamps while the data itself is fresh.
-
-The older point-cloud branch can be selected with:
-
-```bash
-ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py use_laserscan_pipeline:=false
-```
-
-That branch transforms `lidar/PointCloud` into `base_frame`, filters it with PCL,
-and converts the filtered point cloud into a LaserScan for RF2O. It is not the
-normal startup path.
 
 ## RF2O LiDAR Odometry
 
@@ -274,12 +257,12 @@ comes from the IMU. The node is launched with `publish_tf:=false`.
 a wiring test for `/imu/data_processed`, but it is not a complete mobile-base
 odometry source because it has no translational input and no absolute yaw input.
 
-## Removed Legacy LiDAR Odometry Package
+## Removed Legacy LiDAR Paths
 
-`src/Simple-2D-LiDAR-Odometry` was removed from the active workspace. The
-current odometry pipeline is the TG30 `LaserScan` path through
-`lidar_pointcloud_filter`, `rf2o_laser_odometry`, the deadband wrapper, and the
-EKF.
+`src/Simple-2D-LiDAR-Odometry` and the TG30/PCL PointCloud2 odometry branch
+were removed from the active workspace. The current odometry pipeline is the
+TG30 `LaserScan` path through `lidar_pointcloud_filter`,
+`rf2o_laser_odometry`, the deadband wrapper, and the EKF.
 
 ## Mapping And Nav2 Relationship
 

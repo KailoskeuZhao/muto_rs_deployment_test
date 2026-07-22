@@ -33,25 +33,10 @@ def generate_launch_description():
         default_value="3600",
         description="Maximum startup IMU read attempts while collecting calibration samples.",
     )
-    lidar_publish_laserscan_arg = DeclareLaunchArgument(
-        "lidar_publish_laserscan",
-        default_value="true",
-        description="Whether the TG30 driver publishes raw sensor_msgs/LaserScan.",
-    )
     lidar_scan_topic_arg = DeclareLaunchArgument(
         "lidar_scan_topic",
         default_value="lidar/raw_laserscan",
         description="Raw TG30 LaserScan topic.",
-    )
-    lidar_publish_pointcloud_arg = DeclareLaunchArgument(
-        "lidar_publish_pointcloud",
-        default_value="true",
-        description="Whether the TG30 driver also publishes the legacy PointCloud2 topic.",
-    )
-    lidar_pointcloud_topic_arg = DeclareLaunchArgument(
-        "lidar_pointcloud_topic",
-        default_value="lidar/PointCloud",
-        description="Legacy TG30 PointCloud2 topic.",
     )
     camera_width_arg = DeclareLaunchArgument(
         "camera_width",
@@ -95,16 +80,7 @@ def generate_launch_description():
         name="lidar_node",
         output="screen",
         parameters=[{
-            "publish_laserscan": ParameterValue(
-                LaunchConfiguration("lidar_publish_laserscan"),
-                value_type=bool,
-            ),
             "scan_topic": LaunchConfiguration("lidar_scan_topic"),
-            "publish_pointcloud": ParameterValue(
-                LaunchConfiguration("lidar_publish_pointcloud"),
-                value_type=bool,
-            ),
-            "pointcloud_topic": LaunchConfiguration("lidar_pointcloud_topic"),
         }],
     )
 
@@ -162,10 +138,7 @@ def generate_launch_description():
         imu_publish_rate_hz_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,
-        lidar_publish_laserscan_arg,
         lidar_scan_topic_arg,
-        lidar_publish_pointcloud_arg,
-        lidar_pointcloud_topic_arg,
         camera_width_arg,
         camera_height_arg,
         color_fps_arg,

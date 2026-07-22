@@ -8,7 +8,6 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(ydlidar_sdk REQUIRED)
 
@@ -24,7 +23,6 @@ target_link_libraries(lidar_node
 
 ament_target_dependencies(lidar_node
 	rclcpp
-	std_msgs
 	sensor_msgs
 )
 

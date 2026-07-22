@@ -10,8 +10,6 @@
 #include "builtin_interfaces/msg/time.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
-#include "sensor_msgs/msg/point_cloud2.hpp"
-#include "sensor_msgs/msg/point_field.hpp"
 
 #include "CYdLidar.h"
 
@@ -21,13 +19,6 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kRadToDeg = 180.0 / kPi;
 constexpr std::int64_t kNanosecondsPerSecond = 1000000000LL;
 
-struct PointXYZ
-{
-  float x;
-  float y;
-  float z;
-};
-
 builtin_interfaces::msg::Time toBuiltinTime(const rclcpp::Time & time)
 {
   builtin_interfaces::msg::Time stamp;
@@ -35,53 +26,6 @@ builtin_interfaces::msg::Time toBuiltinTime(const rclcpp::Time & time)
   stamp.sec = static_cast<std::int32_t>(nanoseconds / kNanosecondsPerSecond);
   stamp.nanosec = static_cast<std::uint32_t>(nanoseconds % kNanosecondsPerSecond);
   return stamp;
-}
-
-void packPointCloudMsg(
-  const LaserScan & scan,
-  const std::string & frame_id,
-  const builtin_interfaces::msg::Time & stamp,
-  sensor_msgs::msg::PointCloud2 & cloud)
-{
-  cloud.header.frame_id = frame_id;
-  cloud.header.stamp = stamp;
-
-  cloud.height = 1;
-  cloud.width = static_cast<std::uint32_t>(scan.points.size());
-
-  sensor_msgs::msg::PointField field_x;
-  field_x.name = "x";
-  field_x.offset = 0;
-  field_x.datatype = sensor_msgs::msg::PointField::FLOAT32;
-  field_x.count = 1;
-
-  sensor_msgs::msg::PointField field_y;
-  field_y.name = "y";
-  field_y.offset = 4;
-  field_y.datatype = sensor_msgs::msg::PointField::FLOAT32;
-  field_y.count = 1;
-
-  sensor_msgs::msg::PointField field_z;
-  field_z.name = "z";
-  field_z.offset = 8;
-  field_z.datatype = sensor_msgs::msg::PointField::FLOAT32;
-  field_z.count = 1;
-
-  cloud.fields = {field_x, field_y, field_z};
-  cloud.point_step = 12;
-  cloud.row_step = cloud.point_step * cloud.width;
-  cloud.data.resize(cloud.row_step);
-
-  for (std::size_t i = 0; i < scan.points.size(); ++i) {
-    auto * p = reinterpret_cast<PointXYZ *>(&cloud.data[i * cloud.point_step]);
-    const LaserPoint & point = scan.points[i];
-    p->x = static_cast<float>(std::cos(point.angle) * point.range);
-    p->y = static_cast<float>(std::sin(point.angle) * point.range);
-    p->z = 0.0F;
-  }
-
-  cloud.is_bigendian = false;
-  cloud.is_dense = true;
 }
 
 void packLaserScanMsg(
@@ -138,10 +82,7 @@ public:
   : Node("lidar_node")
   {
     frame_id_ = declare_parameter<std::string>("frame_id", "lidar_frame");
-    pointcloud_topic_ = declare_parameter<std::string>("pointcloud_topic", "lidar/PointCloud");
     scan_topic_ = declare_parameter<std::string>("scan_topic", "lidar/raw_laserscan");
-    publish_pointcloud_ = declare_parameter<bool>("publish_pointcloud", true);
-    publish_laserscan_ = declare_parameter<bool>("publish_laserscan", true);
     queue_size_ = declare_parameter<int>("queue_size", 5);
     range_min_ = declare_parameter<double>("range_min", 0.05);
     range_max_ = declare_parameter<double>("range_max", 64.0);
@@ -176,17 +117,8 @@ public:
       scan_frequency_ = 16.0;
     }
 
-    if (publish_pointcloud_) {
-      pointcloud_publisher_ =
-        create_publisher<sensor_msgs::msg::PointCloud2>(pointcloud_topic_, queue_size_);
-    }
-    if (publish_laserscan_) {
-      auto qos = rclcpp::QoS(rclcpp::KeepLast(queue_size_)).best_effort().durability_volatile();
-      scan_publisher_ = create_publisher<sensor_msgs::msg::LaserScan>(scan_topic_, qos);
-    }
-    if (!publish_pointcloud_ && !publish_laserscan_) {
-      RCLCPP_WARN(get_logger(), "Both publish_pointcloud and publish_laserscan are false");
-    }
+    auto qos = rclcpp::QoS(rclcpp::KeepLast(queue_size_)).best_effort().durability_volatile();
+    scan_publisher_ = create_publisher<sensor_msgs::msg::LaserScan>(scan_topic_, qos);
 
     ydlidar::os_init();
     configureLidar();
@@ -273,12 +205,6 @@ private:
     }
 
     const auto stamp = toBuiltinTime(get_clock()->now());
-    if (pointcloud_publisher_) {
-      sensor_msgs::msg::PointCloud2 pointcloud_msg;
-      packPointCloudMsg(scan_, frame_id_, stamp, pointcloud_msg);
-      pointcloud_publisher_->publish(pointcloud_msg);
-    }
-
     if (scan_publisher_) {
       sensor_msgs::msg::LaserScan scan_msg;
       packLaserScanMsg(
@@ -289,15 +215,11 @@ private:
   }
 
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
   CYdLidar laser_;
   LaserScan scan_;
   std::string frame_id_;
-  std::string pointcloud_topic_;
   std::string scan_topic_;
-  bool publish_pointcloud_;
-  bool publish_laserscan_;
   int queue_size_;
   double range_min_;
   double range_max_;

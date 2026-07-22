@@ -3,7 +3,7 @@
 <package format="3">
   <name>lidar_tg30</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>TG30 driver publishing the raw planar LaserScan used by the navigation pipeline.</description>
   <maintainer email="root@todo.todo">root</maintainer>
   <license>MIT</license>
 
@@ -17,7 +17,6 @@
   </export>
 
   <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>ydlidar</depend>
 

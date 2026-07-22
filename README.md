@@ -81,6 +81,15 @@ This launch starts:
 - `orbbec_camera/astra_pro_plus.launch.py`
 - `yahboomcar_bringup/muto_driver`
 
+The TG30 driver publishes only `/lidar/raw_laserscan`; downstream nodes own
+filtering, downsampling, and fusion.
+
+The Astra Pro Plus defaults to the device-advertised exact profiles: color
+`640x480 @ 30 FPS` and depth `1280x1024 @ 7 FPS`, with IR disabled. The SAM2
+node does not hard-code either image size; it consumes the live color and depth
+`CameraInfo` messages and rejects a 3D frame if calibration dimensions do not
+match the images.
+
 Start the sensor TF publishers:
 
 ```bash
@@ -173,12 +182,6 @@ near zero, and yaw filters apply while commanded yaw is near zero.
 Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
 `rf2o_publish_tf:=false` when an EKF or another localization node owns odom TF.
 
-To force the older PointCloud2 odom path for comparison:
-
-```bash
-ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py use_laserscan_pipeline:=false
-```
-
 Directly test camera scan conversion plus scan fusion:
 
 ```bash
@@ -211,9 +214,6 @@ To test the EKF with only `/imu/data_processed` and no LiDAR or foot odometry:
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py imu_only:=true
 ```
 
-The smaller `nav2_costmap_params.yaml` is still kept and can be passed to Nav2
-with `params_file:=...` if needed.
-
 YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` are parameter files, not launch files. Launch the matching `.py` file and let it load the YAML.
 
 ## Main Topics
@@ -223,9 +223,6 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | `/lidar/raw_laserscan` | Raw TG30 `LaserScan`; default input to LiDAR scan filtering. |
 | `/lidar/filtered_laserscan` | Downsampled filtered LiDAR `LaserScan`; default input to RF2O. |
 | `/lidar/filtered_laserscan_no_downsample` | Full-resolution filtered LiDAR `LaserScan`; default LiDAR input for scan fusion. |
-| `/lidar/PointCloud` | Legacy raw LiDAR `PointCloud2`, still published by default for compatibility. |
-| `/lidar/PointCloudFiltered` | Legacy filtered and voxel-downsampled LiDAR `PointCloud2`. |
-| `/lidar/PointCloudFilteredNoDownsample` | Legacy filtered LiDAR `PointCloud2` before voxel downsampling. |
 | `/camera/depth/points` | Depth camera `PointCloud2`. |
 | `/camera/filtered_laserscan` | Intermediate camera `LaserScan` generated from `/camera/depth/points`. |
 | `/fused/laserscan` | Fused `LaserScan` generated from `/camera/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`. |
@@ -277,7 +274,7 @@ The current TF setup expects robot sensor frames such as:
 | `base_frame` | Robot base frame used by several launch/config files. |
 | `camera_link` | Camera body frame used for depth-cloud processing. |
 | `camera_depth_optical_frame` | Depth camera optical frame where depth points may originate. |
-| `lidar_frame` | LiDAR frame used by the TG30 point cloud. |
+| `lidar_frame` | LiDAR frame used by the TG30 LaserScan. |
 | `imu_link` | IMU frame. |
 
 The depth camera point cloud may arrive in `camera_depth_optical_frame`. The

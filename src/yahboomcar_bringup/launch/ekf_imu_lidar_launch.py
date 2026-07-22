@@ -36,14 +36,6 @@ def generate_launch_description():
         default_value="true",
         description="Whether to launch LiDAR filtering and odometry for /scan_odom.",
     )
-    use_laserscan_pipeline_arg = DeclareLaunchArgument(
-        "use_laserscan_pipeline",
-        default_value="true",
-        description=(
-            "Use raw LiDAR LaserScan filtering for RF2O. Set false for the legacy "
-            "PointCloud2 filter/conversion path."
-        ),
-    )
     raw_scan_topic_arg = DeclareLaunchArgument(
         "raw_scan_topic",
         default_value="/lidar/raw_laserscan",
@@ -168,7 +160,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         launch_lidar_odometry_arg,
-        use_laserscan_pipeline_arg,
         raw_scan_topic_arg,
         scan_downsample_factor_arg,
         use_sim_time_arg,
@@ -190,7 +181,6 @@ def generate_launch_description():
             condition=IfCondition(use_lidar_odometry),
             launch_arguments={
                 "rf2o_publish_tf": "false",
-                "use_laserscan_pipeline": LaunchConfiguration("use_laserscan_pipeline"),
                 "raw_scan_topic": LaunchConfiguration("raw_scan_topic"),
                 "scan_downsample_factor": LaunchConfiguration("scan_downsample_factor"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),

@@ -1,0 +1,4 @@
+string name
+string label
+---
+sam2_object_registry/StoredObjectArray result

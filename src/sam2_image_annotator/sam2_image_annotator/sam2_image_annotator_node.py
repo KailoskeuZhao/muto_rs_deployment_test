@@ -14,6 +14,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sam2_image_annotator.paths import resolve_checkpoint_path
+from sam2_object_registry.msg import DetectedObject, DetectedObjectArray
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -32,6 +33,8 @@ class Sam2ImageAnnotatorNode(Node):
             "instance_mask_topic", "/sam2/instance_mask").value
         self.segments_topic = self.declare_parameter(
             "segments_topic", "/sam2/segments").value
+        self.detections_topic = self.declare_parameter(
+            "detections_topic", "/sam2/detections").value
         self.depth_topic = self.declare_parameter(
             "depth_topic", "/camera/depth/image_raw").value
         self.depth_camera_info_topic = self.declare_parameter(
@@ -152,6 +155,8 @@ class Sam2ImageAnnotatorNode(Node):
         self.torch = None
         self.predictor_error = ""
         self.detector_error = ""
+        self.yolo_rejected_low_confidence_total = 0
+        self.yolo_rejected_invalid_confidence_total = 0
         self.processing = False
         self.last_process_wall_time = 0.0
         self.latest_depth_msg = None
@@ -177,6 +182,8 @@ class Sam2ImageAnnotatorNode(Node):
             Image, self.instance_mask_topic, output_qos)
         self.segments_pub = self.create_publisher(
             String, self.segments_topic, output_qos)
+        self.detections_pub = self.create_publisher(
+            DetectedObjectArray, self.detections_topic, output_qos)
         self.instance_pointcloud_pub = self.create_publisher(
             PointCloud2, self.instance_pointcloud_topic, output_qos)
         self.image_sub = self.create_subscription(
@@ -199,7 +206,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.get_logger().info(
             f"Subscribing to {self.image_topic} in {self.prompt_mode} mode; "
             f"publishing annotations on {self.annotated_topic}, masks on "
-            f"{self.mask_topic}, object results on {self.segments_topic}, and "
+            f"{self.mask_topic}, typed detections on {self.detections_topic}, and "
             f"instance point clouds on {self.instance_pointcloud_topic}")
 
     def depth_callback(self, msg):
@@ -355,7 +362,7 @@ class Sam2ImageAnnotatorNode(Node):
             quantize = None
         results = self.detector.predict(
             source=bgr_image,
-            conf=self.yolo_confidence,
+            conf=0.0,
             iou=self.yolo_iou,
             imgsz=self.yolo_imgsz,
             max_det=self.yolo_max_detections,
@@ -374,12 +381,17 @@ class Sam2ImageAnnotatorNode(Node):
         names = result.names if result.names is not None else self.detector.names
         height, width = bgr_image.shape[:2]
         detections = []
+        rejected_scores = []
+        rejected_invalid = 0
 
         for box, confidence, class_index in zip(
                 boxes, confidences, class_indices):
             confidence = float(confidence)
-            if (not np.isfinite(confidence) or
-                    confidence < self.yolo_confidence):
+            if not np.isfinite(confidence):
+                rejected_invalid += 1
+                continue
+            if confidence < self.yolo_confidence:
+                rejected_scores.append(confidence)
                 continue
             box = np.asarray(box, dtype=np.float32).reshape(4)
             box[0::2] = np.clip(box[0::2], 0, max(width - 1, 0))
@@ -400,6 +412,29 @@ class Sam2ImageAnnotatorNode(Node):
                 "confidence": confidence,
                 "box": box,
             })
+
+        if rejected_scores or rejected_invalid:
+            self.yolo_rejected_low_confidence_total += len(rejected_scores)
+            self.yolo_rejected_invalid_confidence_total += rejected_invalid
+            displayed_scores = ", ".join(
+                f"{score:.4f}" for score in rejected_scores[:8])
+            if len(rejected_scores) > 8:
+                displayed_scores += ", ..."
+            details = []
+            if rejected_scores:
+                details.append(f"scores=[{displayed_scores}]")
+            if rejected_invalid:
+                details.append(f"invalid={rejected_invalid}")
+            self.get_logger().info(
+                "YOLO confidence guard intercepted "
+                f"{len(rejected_scores) + rejected_invalid} box(es) before "
+                f"SAM/point-cloud stages at threshold "
+                f"{self.yolo_confidence:.3f} ({'; '.join(details)}); "
+                f"cumulative low-confidence="
+                f"{self.yolo_rejected_low_confidence_total}, invalid="
+                f"{self.yolo_rejected_invalid_confidence_total}",
+                throttle_duration_sec=1.0,
+            )
 
         return detections
 
@@ -698,6 +733,22 @@ class Sam2ImageAnnotatorNode(Node):
             "objects": objects if objects is not None else [],
         }
         self.segments_pub.publish(String(data=json.dumps(payload)))
+
+        detections_msg = DetectedObjectArray()
+        detections_msg.header = input_msg.header
+        detections_msg.image_width = int(annotated.shape[1])
+        detections_msg.image_height = int(annotated.shape[0])
+        for item in objects if objects is not None else []:
+            detection = DetectedObject()
+            detection.instance_id = int(item["instance_id"])
+            detection.class_id = int(item["class_id"])
+            detection.label = str(item["label"])
+            detection.confidence = float(item["confidence"])
+            detection.box_xyxy = [float(value) for value in item["box_xyxy"]]
+            detection.sam_score = float(item["sam_score"])
+            detection.mask_area = int(item["mask_area"])
+            detections_msg.objects.append(detection)
+        self.detections_pub.publish(detections_msg)
 
     def publish_instance_pointcloud(
             self, color_msg, depth_msg, depth_camera_info,

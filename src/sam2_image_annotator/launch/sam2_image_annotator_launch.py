@@ -31,6 +31,11 @@ def generate_launch_description():
         default_value="/sam2/segments",
         description="Output JSON object-segmentation results topic.",
     )
+    detections_topic_arg = DeclareLaunchArgument(
+        "detections_topic",
+        default_value="/sam2/detections",
+        description="Output typed object-detection results topic.",
+    )
     depth_topic_arg = DeclareLaunchArgument(
         "depth_topic",
         default_value="/camera/depth/image_raw",
@@ -182,6 +187,7 @@ def generate_launch_description():
         mask_topic_arg,
         instance_mask_topic_arg,
         segments_topic_arg,
+        detections_topic_arg,
         depth_topic_arg,
         depth_camera_info_topic_arg,
         color_camera_info_topic_arg,
@@ -223,6 +229,7 @@ def generate_launch_description():
                 "mask_topic": LaunchConfiguration("mask_topic"),
                 "instance_mask_topic": LaunchConfiguration("instance_mask_topic"),
                 "segments_topic": LaunchConfiguration("segments_topic"),
+                "detections_topic": LaunchConfiguration("detections_topic"),
                 "depth_topic": LaunchConfiguration("depth_topic"),
                 "depth_camera_info_topic": LaunchConfiguration(
                     "depth_camera_info_topic"),

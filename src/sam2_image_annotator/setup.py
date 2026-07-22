@@ -25,7 +25,6 @@ setup(
     entry_points={
         "console_scripts": [
             "sam2_image_annotator_node = sam2_image_annotator.sam2_image_annotator_node:main",
-            "object_centroid_recorder_node = sam2_image_annotator.object_centroid_recorder_node:main",
         ],
     },
 )

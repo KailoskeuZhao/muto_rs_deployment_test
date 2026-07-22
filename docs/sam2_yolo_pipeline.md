@@ -155,8 +155,8 @@ chunks to limit temporary allocations at high resolution.
 
 Each mask is trimmed inward by `pointcloud_mask_trim_ratio` before 3D
 selection. This reduces boundary depth contamination and does not alter the
-published 2D mask. Remaining points are sampled independently per instance
-using `pointcloud_stride`.
+published 2D mask. The stable depth grid is sampled using `pointcloud_stride`
+before intrinsic and projection work.
 
 The unorganized cloud has `height=1`, `point_step=20`, and these fields:
 
@@ -186,7 +186,7 @@ The unorganized cloud has `height=1`, `point_step=20`, and these fields:
 | `max_publish_rate` | `3.0` | Maximum processed frames per second. |
 | `depth_scale` | `0.001` | Converts depth units to metres. |
 | `depth_sync_tolerance` | `0.2` | Maximum color/depth offset in seconds. |
-| `pointcloud_stride` | `6` | Keeps every sixth point per instance. |
+| `pointcloud_stride` | `6` | Selects every sixth stable depth-grid pixel before intrinsic and projection work. |
 | `pointcloud_mask_trim_ratio` | `0.1` | Trims boundaries for 3D selection. |
 | `tf_timeout` | `0.1` | TF timeout in seconds. |
 | `queue_size` | `2` | Input queue depth. |

@@ -32,7 +32,7 @@ def generate_launch_description():
     fused_laserscan_launch = os.path.join(
         get_package_share_directory("lidar_pointcloud_filter"),
         "launch",
-        "camera_pointcloud_to_laserscan_launch.py",
+        "camera_depth_to_laserscan_launch.py",
     )
 
     slam_params_file_arg = DeclareLaunchArgument(
@@ -44,14 +44,19 @@ def generate_launch_description():
         "launch_fused_laserscan",
         default_value="true",
         description=(
-            "Whether to launch camera PointCloud2 to LaserScan conversion and fuse it with "
+            "Whether to launch camera depth-image to LaserScan conversion and fuse it with "
             "the filtered no-downsample LiDAR LaserScan."
         ),
     )
-    camera_pointcloud_topic_arg = DeclareLaunchArgument(
-        "camera_pointcloud_topic",
-        default_value="/camera/depth/points",
-        description="Depth-camera PointCloud2 topic converted into the camera LaserScan.",
+    camera_depth_image_topic_arg = DeclareLaunchArgument(
+        "camera_depth_image_topic",
+        default_value="/camera/depth/image_raw",
+        description="16UC1 depth image converted into the camera LaserScan.",
+    )
+    camera_depth_info_topic_arg = DeclareLaunchArgument(
+        "camera_depth_info_topic",
+        default_value="/camera/depth/camera_info",
+        description="Depth CameraInfo used to back-project sampled pixels.",
     )
     camera_scan_topic_arg = DeclareLaunchArgument(
         "camera_scan_topic",
@@ -99,13 +104,13 @@ def generate_launch_description():
     input_stamp_warning_age_arg = DeclareLaunchArgument(
         "input_stamp_warning_age",
         default_value="1.0",
-        description="Warn when camera cloud or scan stamps differ from this node clock by more seconds.",
+        description="Warn when depth-image or scan stamps differ from this node clock by more seconds.",
     )
     max_input_age_arg = DeclareLaunchArgument(
         "max_input_age",
         default_value="2.0",
         description=(
-            "Drop camera clouds/scans whose stamps differ from this node clock by more seconds. "
+            "Drop depth images/scans whose stamps differ from this node clock by more seconds. "
             "Set 0.0 only for intentional non-live stamps."
         ),
     )
@@ -119,10 +124,15 @@ def generate_launch_description():
         default_value="10.0",
         description="Maximum /fused/laserscan publish rate in Hz. Set 0.0 to process every cloud.",
     )
-    fused_scan_input_point_stride_arg = DeclareLaunchArgument(
-        "fused_scan_input_point_stride",
-        default_value="8",
-        description="Process every Nth depth-camera point when building the camera scan.",
+    fused_scan_pixel_stride_x_arg = DeclareLaunchArgument(
+        "fused_scan_pixel_stride_x",
+        default_value="4",
+        description="Depth block width; project only its nearest valid pixel.",
+    )
+    fused_scan_pixel_stride_y_arg = DeclareLaunchArgument(
+        "fused_scan_pixel_stride_y",
+        default_value="4",
+        description="Depth block height; project only its nearest valid pixel.",
     )
     camera_scan_angle_increment_arg = DeclareLaunchArgument(
         "camera_scan_angle_increment",
@@ -143,7 +153,8 @@ def generate_launch_description():
     return LaunchDescription([
         slam_params_file_arg,
         launch_fused_laserscan_arg,
-        camera_pointcloud_topic_arg,
+        camera_depth_image_topic_arg,
+        camera_depth_info_topic_arg,
         camera_scan_topic_arg,
         fusion_lidar_scan_topic_arg,
         fused_scan_frame_arg,
@@ -156,7 +167,8 @@ def generate_launch_description():
         max_input_age_arg,
         fused_scan_queue_size_arg,
         fused_scan_max_publish_rate_arg,
-        fused_scan_input_point_stride_arg,
+        fused_scan_pixel_stride_x_arg,
+        fused_scan_pixel_stride_y_arg,
         camera_scan_angle_increment_arg,
         fused_scan_angle_increment_arg,
         fused_scan_processing_time_warning_arg,
@@ -164,7 +176,8 @@ def generate_launch_description():
             fused_laserscan_launch,
             condition=IfCondition(LaunchConfiguration("launch_fused_laserscan")),
             launch_arguments={
-                "input_topic": LaunchConfiguration("camera_pointcloud_topic"),
+                "depth_image_topic": LaunchConfiguration("camera_depth_image_topic"),
+                "camera_info_topic": LaunchConfiguration("camera_depth_info_topic"),
                 "camera_scan_topic": LaunchConfiguration("camera_scan_topic"),
                 "lidar_scan_topic": LaunchConfiguration("fusion_lidar_scan_topic"),
                 "fused_scan_frame": LaunchConfiguration("fused_scan_frame"),
@@ -178,7 +191,8 @@ def generate_launch_description():
                 "max_input_age": LaunchConfiguration("max_input_age"),
                 "queue_size": LaunchConfiguration("fused_scan_queue_size"),
                 "max_publish_rate": LaunchConfiguration("fused_scan_max_publish_rate"),
-                "input_point_stride": LaunchConfiguration("fused_scan_input_point_stride"),
+                "pixel_stride_x": LaunchConfiguration("fused_scan_pixel_stride_x"),
+                "pixel_stride_y": LaunchConfiguration("fused_scan_pixel_stride_y"),
                 "camera_angle_increment": LaunchConfiguration("camera_scan_angle_increment"),
                 "fused_angle_increment": LaunchConfiguration("fused_scan_angle_increment"),
                 "processing_time_warning": LaunchConfiguration(

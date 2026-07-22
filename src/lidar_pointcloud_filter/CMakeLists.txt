@@ -14,11 +14,11 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
 add_executable(lidar_laserscan_filter_node src/lidar_laserscan_filter_node.cpp)
-add_executable(camera_pointcloud_to_laserscan_node src/camera_pointcloud_to_laserscan_node.cpp)
+add_executable(camera_depth_to_laserscan_node src/camera_depth_to_laserscan_node.cpp)
 add_executable(laserscan_fusion_node src/laserscan_fusion_node.cpp)
 add_executable(odometry_translation_deadband_node src/odometry_translation_deadband_node.cpp)
 
-ament_target_dependencies(camera_pointcloud_to_laserscan_node
+ament_target_dependencies(camera_depth_to_laserscan_node
   rclcpp
   sensor_msgs
   geometry_msgs
@@ -48,7 +48,7 @@ ament_target_dependencies(odometry_translation_deadband_node
 
 install(TARGETS
   lidar_laserscan_filter_node
-  camera_pointcloud_to_laserscan_node
+  camera_depth_to_laserscan_node
   laserscan_fusion_node
   odometry_translation_deadband_node
   DESTINATION lib/${PROJECT_NAME}

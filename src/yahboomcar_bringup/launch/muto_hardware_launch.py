@@ -68,6 +68,14 @@ def generate_launch_description():
         default_value="7",
         description="Frame rate in Hz for the Orbbec depth stream.",
     )
+    enable_point_cloud_arg = DeclareLaunchArgument(
+        "enable_point_cloud",
+        default_value="false",
+        description=(
+            "Publish the Orbbec XYZ PointCloud2. Disabled because fusion consumes "
+            "the raw depth image directly."
+        ),
+    )
     enable_ir_arg = DeclareLaunchArgument(
         "enable_ir",
         default_value="false",
@@ -99,6 +107,8 @@ def generate_launch_description():
             "depth_width": LaunchConfiguration("depth_width"),
             "depth_height": LaunchConfiguration("depth_height"),
             "depth_fps": LaunchConfiguration("depth_fps"),
+            "enable_point_cloud": LaunchConfiguration("enable_point_cloud"),
+            "enable_colored_point_cloud": "false",
             "enable_ir": LaunchConfiguration("enable_ir"),
         }.items(),
     )
@@ -145,6 +155,7 @@ def generate_launch_description():
         depth_width_arg,
         depth_height_arg,
         depth_fps_arg,
+        enable_point_cloud_arg,
         enable_ir_arg,
         lidar_node,
         camera_launch,

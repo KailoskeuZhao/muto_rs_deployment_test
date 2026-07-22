@@ -127,8 +127,9 @@ color intrinsics and distortion coefficients. High-resolution depth frames are
 processed in bounded row chunks to avoid full-frame projection allocations. Only points landing on a nonzero
 instance ID are published. `depth_scale` converts uint16 values to metres,
 `depth_sync_tolerance` rejects stale color/depth pairs, `tf_timeout` controls TF
-lookup time, and `pointcloud_stride` retains every Nth masked depth point for
-each instance (default `6`, or approximately one-sixth of each cloud). Before selecting
+lookup time, and `pointcloud_stride` selects every Nth stable depth-grid pixel
+before undistortion, back-projection, depth-to-color projection, and visibility
+sorting (default `6`, or approximately one-sixth of the depth grid). Before selecting
 depth points, `pointcloud_mask_trim_ratio` trims the boundary of every instance
 mask inward by 10% of its smaller bounding-box dimension (set it to `0.0` to
 disable the filter). The published 2D instance mask is not modified.

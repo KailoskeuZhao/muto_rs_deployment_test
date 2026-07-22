@@ -6,10 +6,15 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    input_topic_arg = DeclareLaunchArgument(
-        'input_topic',
-        default_value='/camera/depth/points',
-        description='Input camera depth PointCloud2 topic.',
+    depth_image_topic_arg = DeclareLaunchArgument(
+        'depth_image_topic',
+        default_value='/camera/depth/image_raw',
+        description='Input 16UC1 camera depth image topic.',
+    )
+    camera_info_topic_arg = DeclareLaunchArgument(
+        'camera_info_topic',
+        default_value='/camera/depth/camera_info',
+        description='Depth camera CameraInfo topic used for back-projection.',
     )
     output_topic_arg = DeclareLaunchArgument(
         'output_topic',
@@ -94,20 +99,30 @@ def generate_launch_description():
     queue_size_arg = DeclareLaunchArgument(
         'queue_size',
         default_value='1',
-        description='Point cloud and scan queue size.',
+        description='Depth image, CameraInfo, and scan queue size.',
     )
     max_publish_rate_arg = DeclareLaunchArgument(
         'max_publish_rate',
         default_value='0.0',
         description=(
             'Maximum generated LaserScan rate in Hz. Set 0.0 to process every '
-            'input cloud.'
+            'input depth image.'
         ),
     )
-    input_point_stride_arg = DeclareLaunchArgument(
-        'input_point_stride',
-        default_value='8',
-        description='Process every Nth point from the primary input cloud.',
+    pixel_stride_x_arg = DeclareLaunchArgument(
+        'pixel_stride_x',
+        default_value='4',
+        description='Depth-image block width; only the nearest valid pixel is projected.',
+    )
+    pixel_stride_y_arg = DeclareLaunchArgument(
+        'pixel_stride_y',
+        default_value='4',
+        description='Depth-image block height; only the nearest valid pixel is projected.',
+    )
+    depth_scale_arg = DeclareLaunchArgument(
+        'depth_scale',
+        default_value='0.001',
+        description='Scale from 16UC1 depth units to meters.',
     )
     max_lidar_age_arg = DeclareLaunchArgument(
         'max_lidar_age',
@@ -126,7 +141,7 @@ def generate_launch_description():
         'input_stamp_warning_age',
         default_value='1.0',
         description=(
-            'Warn when an input cloud/scan stamp differs from this node clock '
+            'Warn when an input depth-image/scan stamp differs from this node clock '
             'by more seconds.'
         ),
     )
@@ -134,7 +149,7 @@ def generate_launch_description():
         'max_input_age',
         default_value='2.0',
         description=(
-            'Drop input clouds/scans whose stamp differs from this node clock by more seconds. '
+            'Drop input depth images/scans whose stamp differs from this node clock by more seconds. '
             'Set 0.0 only when using intentionally non-live stamps.'
         ),
     )
@@ -150,7 +165,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        input_topic_arg,
+        depth_image_topic_arg,
+        camera_info_topic_arg,
         output_topic_arg,
         camera_scan_topic_arg,
         lidar_scan_topic_arg,
@@ -169,7 +185,9 @@ def generate_launch_description():
         fused_angle_increment_arg,
         queue_size_arg,
         max_publish_rate_arg,
-        input_point_stride_arg,
+        pixel_stride_x_arg,
+        pixel_stride_y_arg,
+        depth_scale_arg,
         max_lidar_age_arg,
         restamp_output_arg,
         input_stamp_warning_age_arg,
@@ -178,11 +196,12 @@ def generate_launch_description():
         transform_timeout_arg,
         Node(
             package='lidar_pointcloud_filter',
-            executable='camera_pointcloud_to_laserscan_node',
-            name='camera_pointcloud_to_laserscan_node',
+            executable='camera_depth_to_laserscan_node',
+            name='camera_depth_to_laserscan_node',
             output='screen',
             parameters=[{
-                'input_topic': LaunchConfiguration('input_topic'),
+                'depth_image_topic': LaunchConfiguration('depth_image_topic'),
+                'camera_info_topic': LaunchConfiguration('camera_info_topic'),
                 'output_topic': LaunchConfiguration('camera_scan_topic'),
                 'processing_frame': LaunchConfiguration('processing_frame'),
                 'use_sim_time': ParameterValue(
@@ -207,9 +226,17 @@ def generate_launch_description():
                     LaunchConfiguration('max_publish_rate'),
                     value_type=float,
                 ),
-                'input_point_stride': ParameterValue(
-                    LaunchConfiguration('input_point_stride'),
+                'pixel_stride_x': ParameterValue(
+                    LaunchConfiguration('pixel_stride_x'),
                     value_type=int,
+                ),
+                'pixel_stride_y': ParameterValue(
+                    LaunchConfiguration('pixel_stride_y'),
+                    value_type=int,
+                ),
+                'depth_scale': ParameterValue(
+                    LaunchConfiguration('depth_scale'),
+                    value_type=float,
                 ),
                 'restamp_output': ParameterValue(
                     LaunchConfiguration('restamp_output'),

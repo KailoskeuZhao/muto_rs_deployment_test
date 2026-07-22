@@ -65,7 +65,7 @@ pipeline instead of launching the next layer early. Use the lower-level commands
 below when debugging one layer at a time.
 
 Use this sequence for the normal robot bringup. Do not launch
-`camera_pointcloud_to_laserscan_launch.py` as a separate normal-startup step.
+`camera_depth_to_laserscan_launch.py` as a separate normal-startup step.
 That launch is a component/test launch; mapping launches it internally when a
 fused scan is needed.
 
@@ -185,13 +185,13 @@ Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
 Directly test camera scan conversion plus scan fusion:
 
 ```bash
-ros2 launch lidar_pointcloud_filter camera_pointcloud_to_laserscan_launch.py
+ros2 launch lidar_pointcloud_filter camera_depth_to_laserscan_launch.py
 ```
 
 This is not part of the normal startup sequence. It expects an existing
 `/lidar/filtered_laserscan_no_downsample` topic, normally produced by
 `filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py`. It converts
-`/camera/depth/points` to `/camera/filtered_laserscan`, then fuses that with the
+`/camera/depth/image_raw` plus CameraInfo to `/camera/filtered_laserscan`, then fuses that with the
 LiDAR scan into `/fused/laserscan`.
 
 If `/scan_odom` is already being produced by another launch and you only want
@@ -223,8 +223,9 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | `/lidar/raw_laserscan` | Raw TG30 `LaserScan`; default input to LiDAR scan filtering. |
 | `/lidar/filtered_laserscan` | Downsampled filtered LiDAR `LaserScan`; default input to RF2O. |
 | `/lidar/filtered_laserscan_no_downsample` | Full-resolution filtered LiDAR `LaserScan`; default LiDAR input for scan fusion. |
-| `/camera/depth/points` | Depth camera `PointCloud2`. |
-| `/camera/filtered_laserscan` | Intermediate camera `LaserScan` generated from `/camera/depth/points`. |
+| `/camera/depth/image_raw` | Depth camera `16UC1` image used directly by scan fusion and SAM2. |
+| `/camera/depth/camera_info` | Intrinsics used to back-project sampled depth pixels. |
+| `/camera/filtered_laserscan` | Intermediate camera `LaserScan` generated directly from the depth image. |
 | `/fused/laserscan` | Fused `LaserScan` generated from `/camera/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
@@ -232,10 +233,10 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 
 ## Fused LaserScan Notes
 
-`camera_pointcloud_to_laserscan_launch.py` is a component/test launch. It
+`camera_depth_to_laserscan_launch.py` is a component/test launch. It
 currently builds `/fused/laserscan` from:
 
-- `/camera/depth/points`, converted to `/camera/filtered_laserscan`
+- `/camera/depth/image_raw` plus `/camera/depth/camera_info`, converted to `/camera/filtered_laserscan`
 - `/lidar/filtered_laserscan_no_downsample`
 
 The no-downsample LiDAR scan is used so the final scan has enough angular
@@ -248,20 +249,20 @@ Current defaults:
 | `output_topic` | `/fused/laserscan` | Final synthetic scan. |
 | `camera_scan_topic` | `/camera/filtered_laserscan` | Intermediate camera scan. |
 | `lidar_scan_topic` | `/lidar/filtered_laserscan_no_downsample` | Existing LiDAR scan consumed by fusion. |
-| `processing_frame` | `base_frame` | Camera cloud is transformed here before scan projection. |
+| `processing_frame` | `base_frame` | Sampled depth pixels are transformed here before scan projection. |
 | `fused_scan_frame` | `base_frame` | Final fused scan frame. |
 | `angle_min` / `angle_max` | `-pi` / `pi` | Full-circle scan output. |
 | `range_max` | `3.0` | Depth camera points are capped at 3 m. |
 | `lidar_range_max` | `15.0` | Fused output range cap for LiDAR scan points. |
 | `min_z` / `max_z` | `-0.10` / `0.18` | Z slice applied in `processing_frame`. |
 | `camera_min_x` | `0.30` | Minimum forward x for depth-camera points in `processing_frame`; LiDAR fusion is not gated by this. |
-| `input_point_stride` | `8` | Process every 8th depth-camera point before scan projection. |
+| `pixel_stride_x` / `pixel_stride_y` | `4` / `4` | Keep the nearest valid depth pixel in each 4x4 block before intrinsic and TF projection. |
 | `require_lidar_scan` | `true` | Wait for a timestamp-matched LiDAR scan before publishing fused output. |
 
 When `require_lidar_scan:=true`, fusion waits until a valid LiDAR scan is
 available instead of publishing camera-only scans during startup.
-If a live depth-camera cloud contains no points, it is still converted into an
-empty all-infinity `/camera/filtered_laserscan` with the cloud timestamp. Fusion
+If a live depth image contains no valid pixels, it is still converted into an
+empty all-infinity `/camera/filtered_laserscan` with the image timestamp. Fusion
 then combines that camera scan with the latest timestamp-compatible LiDAR scan,
 so temporary depth-camera no-return frames do not block `/fused/laserscan`.
 
@@ -272,19 +273,20 @@ The current TF setup expects robot sensor frames such as:
 | Frame | Notes |
 | --- | --- |
 | `base_frame` | Robot base frame used by several launch/config files. |
-| `camera_link` | Camera body frame used for depth-cloud processing. |
+| `camera_link` | Camera body frame connected to the depth optical frame through Orbbec TF. |
 | `camera_depth_optical_frame` | Depth camera optical frame where depth points may originate. |
 | `lidar_frame` | LiDAR frame used by the TG30 LaserScan. |
 | `imu_link` | IMU frame. |
 
-The depth camera point cloud may arrive in `camera_depth_optical_frame`. The
-fusion path uses TF2 to transform sampled points into the configured
+The raw depth image normally arrives in `camera_depth_optical_frame`. The
+fusion path uses CameraInfo to back-project the nearest pixel from each block,
+then uses TF2 to transform those sampled points into the configured
 `processing_frame`, which is `base_frame` by default, before applying the
 deployment-specific z/range bounds and projecting to LaserScan.
 
 ## Development Notes
 
-- Keep TF publishers running before debugging point-cloud fusion or odometry.
+- Keep TF publishers running before debugging depth-image fusion or odometry.
 - If a transform appears missing on startup, wait a moment and re-check with `tf2_echo`; some nodes may start before the TF buffer has received all frames.
 - Prefer launching `.py` launch files. Parameter YAML files are loaded by launch files or nodes.
 - Calibration and filtering values are still experimental. Re-check them on the actual robot before relying on mapping or navigation results.

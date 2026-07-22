@@ -3,7 +3,7 @@
 <package format="3">
   <name>lidar_pointcloud_filter</name>
   <version>0.0.0</version>
-  <description>LaserScan filtering, depth-cloud projection, scan fusion, and RF2O output filtering.</description>
+  <description>LaserScan filtering, depth-image projection, scan fusion, and RF2O output filtering.</description>
   <maintainer email="a98165809@gmail.com">root</maintainer>
   <license>MIT</license>
 

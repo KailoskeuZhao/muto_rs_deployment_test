@@ -862,10 +862,26 @@ class Sam2ImageAnnotatorNode(Node):
         # 1280x1024 frame otherwise requires several full-frame float64 arrays.
         for row_start in range(0, depth.shape[0], 64):
             row_end = min(row_start + 64, depth.shape[0])
-            sampled_v, sampled_u = np.nonzero(depth[row_start:row_end] > 0)
+            # Decimate in the depth-image grid before any undistortion,
+            # validity scan, back-projection, depth-to-color transform, or
+            # visibility sort. Using global flattened indices keeps the sample
+            # grid stable when invalid depth pixels appear or disappear.
+            width = depth.shape[1]
+            first_pixel = row_start * width
+            first_pixel += (-first_pixel) % self.pointcloud_stride
+            sampled_pixel_index = np.arange(
+                first_pixel,
+                row_end * width,
+                self.pointcloud_stride,
+                dtype=np.int64,
+            )
+            sampled_v = sampled_pixel_index // width
+            sampled_u = sampled_pixel_index - sampled_v * width
+            valid = depth[sampled_v, sampled_u] > 0
+            sampled_v = sampled_v[valid]
+            sampled_u = sampled_u[valid]
             if sampled_u.size == 0:
                 continue
-            sampled_v += row_start
 
             z = (
                 depth[sampled_v, sampled_u].astype(np.float32)
@@ -942,19 +958,8 @@ class Sam2ImageAnnotatorNode(Node):
         visible_pixels = np.flatnonzero(instance_ids)
         visible_xyz = nearest_xyz[visible_pixels]
         visible_instance_ids = instance_ids[visible_pixels]
-        selected = []
-        for instance_id in np.unique(visible_instance_ids):
-            selected.append(
-                np.flatnonzero(visible_instance_ids == instance_id)[
-                    ::self.pointcloud_stride])
-        selected_indices = (
-            np.concatenate(selected) if selected
-            else np.empty(0, dtype=np.int64)
-        )
-        selected_indices.sort()
         self.publish_instance_points(
-            depth_msg, depth_frame, visible_xyz[selected_indices],
-            visible_instance_ids[selected_indices])
+            depth_msg, depth_frame, visible_xyz, visible_instance_ids)
 
     def trim_instance_mask(self, instance_mask):
         if self.pointcloud_mask_trim_ratio <= 0.0:

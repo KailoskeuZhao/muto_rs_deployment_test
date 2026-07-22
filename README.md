@@ -291,3 +291,5 @@ deployment-specific z/range bounds and projecting to LaserScan.
 - If a transform appears missing on startup, wait a moment and re-check with `tf2_echo`; some nodes may start before the TF buffer has received all frames.
 - Prefer launching `.py` launch files. Parameter YAML files are loaded by launch files or nodes.
 - Calibration and filtering values are still experimental. Re-check them on the actual robot before relying on mapping or navigation results.
+The current SAM2 and YOLO image pipeline is documented in
+[docs/sam2_yolo_pipeline.md](docs/sam2_yolo_pipeline.md).

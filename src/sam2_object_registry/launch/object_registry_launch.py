@@ -14,6 +14,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'objects_topic', default_value='/sam2/stored_objects'),
         DeclareLaunchArgument(
+            'marker_topic', default_value='/sam2/stored_object_markers'),
+        DeclareLaunchArgument(
             'query_service', default_value='/sam2/get_stored_objects'),
         DeclareLaunchArgument(
             'save_service', default_value='/sam2/save_stored_objects'),
@@ -29,6 +31,10 @@ def generate_launch_description():
         DeclareLaunchArgument('yolo_confidence', default_value='0.4'),
         DeclareLaunchArgument('tf_timeout', default_value='0.1'),
         DeclareLaunchArgument('tf_cache_time', default_value='30.0'),
+        DeclareLaunchArgument('snapshot_publish_rate', default_value='2.0'),
+        DeclareLaunchArgument('marker_scale', default_value='0.12'),
+        DeclareLaunchArgument('marker_text_height', default_value='0.12'),
+        DeclareLaunchArgument('marker_text_offset', default_value='0.15'),
         DeclareLaunchArgument('save_on_shutdown', default_value='true'),
     ]
 
@@ -41,6 +47,7 @@ def generate_launch_description():
             'pointcloud_topic': LaunchConfiguration('pointcloud_topic'),
             'detections_topic': LaunchConfiguration('detections_topic'),
             'objects_topic': LaunchConfiguration('objects_topic'),
+            'marker_topic': LaunchConfiguration('marker_topic'),
             'query_service': LaunchConfiguration('query_service'),
             'save_service': LaunchConfiguration('save_service'),
             'output_yaml': LaunchConfiguration('output_yaml'),
@@ -61,6 +68,14 @@ def generate_launch_description():
                 LaunchConfiguration('tf_timeout'), value_type=float),
             'tf_cache_time': ParameterValue(
                 LaunchConfiguration('tf_cache_time'), value_type=float),
+            'snapshot_publish_rate': ParameterValue(
+                LaunchConfiguration('snapshot_publish_rate'), value_type=float),
+            'marker_scale': ParameterValue(
+                LaunchConfiguration('marker_scale'), value_type=float),
+            'marker_text_height': ParameterValue(
+                LaunchConfiguration('marker_text_height'), value_type=float),
+            'marker_text_offset': ParameterValue(
+                LaunchConfiguration('marker_text_offset'), value_type=float),
             'save_on_shutdown': ParameterValue(
                 LaunchConfiguration('save_on_shutdown'), value_type=bool),
         }],

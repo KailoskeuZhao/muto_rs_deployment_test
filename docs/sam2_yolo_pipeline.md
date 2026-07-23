@@ -68,7 +68,8 @@ installed or editable SAM2 project root. The default model configuration is
 ## Per-Frame Processing
 
 1. The color callback drops a frame if another frame is being processed and
-   applies the wall-clock `max_publish_rate` limit.
+   applies `max_publish_rate` between processing start times. Inference time is
+   not followed by an additional rate-limit cooldown.
 2. The latest depth image and latest color/depth `CameraInfo` messages are
    snapshotted. There is no synchronized message filter.
 3. The image is converted to BGR for YOLO and RGB for SAM2.
@@ -183,7 +184,7 @@ The unorganized cloud has `height=1`, `point_step=20`, and these fields:
 | `yolo_max_detections` | `20` | Maximum boxes refined per frame. |
 | `yolo_classes` | empty | Allows every detector class. |
 | `yolo_quantize` | `fp16` | YOLO CUDA precision; disabled on CPU. |
-| `max_publish_rate` | `3.0` | Maximum processed frames per second. |
+| `max_publish_rate` | `7.0` | Maximum processing starts per second; slower inference naturally lowers throughput. |
 | `depth_scale` | `0.001` | Converts depth units to metres. |
 | `depth_sync_tolerance` | `0.2` | Maximum color/depth offset in seconds. |
 | `pointcloud_stride` | `6` | Selects every sixth stable depth-grid pixel before intrinsic and projection work. |

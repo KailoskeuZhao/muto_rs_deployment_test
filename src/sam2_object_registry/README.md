@@ -22,9 +22,19 @@ ros2 launch sam2_image_annotator sam2_image_annotator_launch.py
 ros2 launch sam2_object_registry object_registry_launch.py
 ```
 
-The transient-local `/sam2/stored_objects` topic always exposes the latest full
-snapshot. The query service accepts an optional exact `name` and/or `label`;
-empty fields return every object:
+The transient-local `/sam2/stored_objects` topic exposes the most recent full
+snapshot. New objects publish immediately; repeated centroid updates are
+coalesced and published at `snapshot_publish_rate` (2 Hz by default), avoiding
+full-registry serialization at the detector rate. The query service always
+reads the latest in-memory state and accepts an optional exact `name` and/or
+`label`; empty fields return every object:
+
+For RViz, add a `MarkerArray` display using
+`/sam2/stored_object_markers` and set the fixed frame to `map` (or the configured
+`target_frame`). The transient-local marker snapshot contains one centroid
+sphere and one name label per in-memory object, including objects loaded from
+YAML at startup. The live masked object surfaces remain available separately as
+the `PointCloud2` topic `/sam2/instance_pointcloud`.
 
 ```bash
 ros2 service call /sam2/get_stored_objects \

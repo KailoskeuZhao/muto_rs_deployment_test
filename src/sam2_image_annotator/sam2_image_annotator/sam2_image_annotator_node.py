@@ -100,7 +100,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.draw_prompts = bool(self.declare_parameter("draw_prompts", True).value)
         self.publish_passthrough_on_error = bool(
             self.declare_parameter("publish_passthrough_on_error", True).value)
-        self.max_publish_rate = float(self.declare_parameter("max_publish_rate", 3.0).value)
+        self.max_publish_rate = float(self.declare_parameter("max_publish_rate", 7.0).value)
         self.queue_size = int(self.declare_parameter("queue_size", 2).value)
 
         if self.overlay_alpha < 0.0 or self.overlay_alpha > 1.0:
@@ -158,7 +158,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.yolo_rejected_low_confidence_total = 0
         self.yolo_rejected_invalid_confidence_total = 0
         self.processing = False
-        self.last_process_wall_time = 0.0
+        self.last_process_start_wall_time = 0.0
         self.latest_depth_msg = None
         self.depth_camera_info = None
         self.color_camera_info = None
@@ -287,6 +287,7 @@ class Sam2ImageAnnotatorNode(Node):
         depth_camera_info = self.depth_camera_info
         color_camera_info = self.color_camera_info
         self.processing = True
+        self.last_process_start_wall_time = time.monotonic()
         try:
             bgr_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             if self.predictor is None:
@@ -344,16 +345,18 @@ class Sam2ImageAnnotatorNode(Node):
                 except Exception:
                     pass
         finally:
-            self.last_process_wall_time = time.monotonic()
             self.processing = False
 
     def should_throttle(self):
         if self.max_publish_rate <= 0.0:
             return False
-        if self.last_process_wall_time <= 0.0:
+        if self.last_process_start_wall_time <= 0.0:
             return False
 
-        return time.monotonic() - self.last_process_wall_time < 1.0 / self.max_publish_rate
+        return (
+            time.monotonic() - self.last_process_start_wall_time
+            < 1.0 / self.max_publish_rate
+        )
 
     def detect_objects(self, bgr_image):
         class_ids = self.parse_class_ids(self.yolo_classes_text)

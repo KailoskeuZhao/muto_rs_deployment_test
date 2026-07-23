@@ -51,5 +51,5 @@ sam2_image_annotator:
     contour_color_bgr: "0,255,255"
     draw_prompts: true
     publish_passthrough_on_error: true
-    max_publish_rate: 3.0
+    max_publish_rate: 7.0
     queue_size: 2

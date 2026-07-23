@@ -3,6 +3,7 @@ object_registry:
     pointcloud_topic: /sam2/instance_pointcloud
     detections_topic: /sam2/detections
     objects_topic: /sam2/stored_objects
+    marker_topic: /sam2/stored_object_markers
     query_service: /sam2/get_stored_objects
     save_service: /sam2/save_stored_objects
     output_yaml: ~/.ros/sam2_objects.yaml
@@ -14,4 +15,8 @@ object_registry:
     yolo_confidence: 0.4
     tf_timeout: 0.1
     tf_cache_time: 30.0
+    snapshot_publish_rate: 2.0
+    marker_scale: 0.12
+    marker_text_height: 0.12
+    marker_text_offset: 0.15
     save_on_shutdown: true

@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +34,8 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 #include "yaml-cpp/yaml.h"
 
 #include "sam2_object_registry/msg/detected_object_array.hpp"
@@ -52,6 +55,8 @@ using StoredObjectArray = msg::StoredObjectArray;
 using GetStoredObjects = srv::GetStoredObjects;
 using Trigger = std_srvs::srv::Trigger;
 using PointCloud2 = sensor_msgs::msg::PointCloud2;
+using Marker = visualization_msgs::msg::Marker;
+using MarkerArray = visualization_msgs::msg::MarkerArray;
 
 struct CellKey
 {
@@ -113,6 +118,8 @@ public:
       "detections_topic", "/sam2/detections");
     objects_topic_ = declare_parameter<std::string>(
       "objects_topic", "/sam2/stored_objects");
+    marker_topic_ = declare_parameter<std::string>(
+      "marker_topic", "/sam2/stored_object_markers");
     query_service_name_ = declare_parameter<std::string>(
       "query_service", "/sam2/get_stored_objects");
     save_service_name_ = declare_parameter<std::string>(
@@ -129,6 +136,10 @@ public:
     yolo_confidence_ = declare_parameter<double>("yolo_confidence", 0.4);
     tf_timeout_ = declare_parameter<double>("tf_timeout", 0.1);
     tf_cache_time_ = declare_parameter<double>("tf_cache_time", 30.0);
+    snapshot_publish_rate_ = declare_parameter<double>("snapshot_publish_rate", 2.0);
+    marker_scale_ = declare_parameter<double>("marker_scale", 0.12);
+    marker_text_height_ = declare_parameter<double>("marker_text_height", 0.12);
+    marker_text_offset_ = declare_parameter<double>("marker_text_offset", 0.15);
     save_on_shutdown_ = declare_parameter<bool>("save_on_shutdown", true);
     validate_parameters();
 
@@ -146,6 +157,8 @@ public:
       std::bind(&ObjectRegistryNode::detections_callback, this, std::placeholders::_1));
     objects_pub_ = create_publisher<StoredObjectArray>(
       objects_topic_, rclcpp::QoS(1).reliable().transient_local());
+    markers_pub_ = create_publisher<MarkerArray>(
+      marker_topic_, rclcpp::QoS(1).reliable().transient_local());
     query_service_ = create_service<GetStoredObjects>(
       query_service_name_,
       std::bind(
@@ -159,12 +172,17 @@ public:
 
     load_database();
     publish_snapshot();
+    snapshot_timer_ = create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(1.0 / snapshot_publish_rate_)),
+      std::bind(&ObjectRegistryNode::publish_snapshot_if_changed, this));
     RCLCPP_INFO(
       get_logger(),
-      "Indexing %s + %s in %s; query %s, save %s, snapshot %s, shutdown YAML %s",
+      "Indexing %s + %s in %s; query %s, save %s, snapshot %s + markers %s at %.2f Hz "
+      "(new objects publish immediately), shutdown YAML %s",
       pointcloud_topic_.c_str(), detections_topic_.c_str(), target_frame_.c_str(),
       query_service_name_.c_str(), save_service_name_.c_str(),
-      objects_topic_.c_str(), output_path_.c_str());
+      objects_topic_.c_str(), marker_topic_.c_str(), snapshot_publish_rate_, output_path_.c_str());
   }
 
   ~ObjectRegistryNode() override
@@ -238,6 +256,27 @@ private:
     if (!(tf_cache_time_ > 0.0)) {
       RCLCPP_WARN(get_logger(), "tf_cache_time must be positive; using 30.0");
       tf_cache_time_ = 30.0;
+    }
+    if (!(snapshot_publish_rate_ > 0.0 && snapshot_publish_rate_ <= 1000.0)) {
+      RCLCPP_WARN(
+        get_logger(), "snapshot_publish_rate must be in (0, 1000] Hz; using 2.0");
+      snapshot_publish_rate_ = 2.0;
+    }
+    if (marker_topic_.empty()) {
+      RCLCPP_WARN(get_logger(), "marker_topic is empty; using /sam2/stored_object_markers");
+      marker_topic_ = "/sam2/stored_object_markers";
+    }
+    if (!(marker_scale_ > 0.0)) {
+      RCLCPP_WARN(get_logger(), "marker_scale must be positive; using 0.12");
+      marker_scale_ = 0.12;
+    }
+    if (!(marker_text_height_ > 0.0)) {
+      RCLCPP_WARN(get_logger(), "marker_text_height must be positive; using 0.12");
+      marker_text_height_ = 0.12;
+    }
+    if (!(marker_text_offset_ >= 0.0)) {
+      RCLCPP_WARN(get_logger(), "marker_text_offset must be non-negative; using 0.15");
+      marker_text_offset_ = 0.15;
     }
   }
 
@@ -385,7 +424,7 @@ private:
       }
     }
 
-    bool changed = false;
+    bool inserted = false;
     for (const auto & [instance_id, accumulator] : accumulators) {
       if (accumulator.count < static_cast<std::uint32_t>(min_points_)) {
         continue;
@@ -416,14 +455,16 @@ private:
       }
       {
         std::lock_guard<std::mutex> lock(registry_mutex_);
-        merge_observation_locked(
+        inserted = merge_observation_locked(
           label, detection->class_id, position, accumulator.count,
-          detection->confidence, cloud.header.stamp);
+          detection->confidence, cloud.header.stamp) || inserted;
       }
-      changed = true;
     }
 
-    if (changed) {
+    // Existing-object updates remain immediately queryable in memory. The
+    // timer coalesces their full snapshot and RViz marker serialization, while
+    // a newly inserted object is made visible without waiting for that timer.
+    if (inserted) {
       publish_snapshot();
     }
   }
@@ -475,7 +516,7 @@ private:
     return nearest;
   }
 
-  void merge_observation_locked(
+  bool merge_observation_locked(
     const std::string & label, std::int32_t class_id,
     const std::array<double, 3> & position, std::uint32_t point_count,
     float confidence, const builtin_interfaces::msg::Time & stamp)
@@ -499,7 +540,7 @@ private:
       spatial_index_[label][record.cell].insert(id);
       dirty_ = true;
       ++revision_;
-      return;
+      return true;
     }
 
     auto & record = records_.at(*nearest);
@@ -530,6 +571,7 @@ private:
     }
     dirty_ = true;
     ++revision_;
+    return false;
   }
 
   std::string allocate_name_locked(const std::string & label)
@@ -609,11 +651,80 @@ private:
   void publish_snapshot()
   {
     StoredObjectArray snapshot;
+    std::uint64_t snapshot_revision = 0U;
     {
       std::lock_guard<std::mutex> lock(registry_mutex_);
       snapshot = snapshot_locked("", "");
+      snapshot_revision = revision_;
     }
     objects_pub_->publish(snapshot);
+    markers_pub_->publish(marker_snapshot(snapshot));
+    {
+      std::lock_guard<std::mutex> lock(registry_mutex_);
+      published_revision_ = std::max(published_revision_, snapshot_revision);
+    }
+  }
+
+  void publish_snapshot_if_changed()
+  {
+    {
+      std::lock_guard<std::mutex> lock(registry_mutex_);
+      if (revision_ == published_revision_) {
+        return;
+      }
+    }
+    publish_snapshot();
+  }
+
+  MarkerArray marker_snapshot(const StoredObjectArray & snapshot) const
+  {
+    MarkerArray result;
+
+    Marker clear;
+    clear.header = snapshot.header;
+    clear.action = Marker::DELETEALL;
+    result.markers.push_back(clear);
+
+    Marker centroids;
+    centroids.header = snapshot.header;
+    centroids.ns = "stored_object_centroids";
+    centroids.id = 0;
+    centroids.type = Marker::SPHERE_LIST;
+    centroids.action = Marker::ADD;
+    centroids.pose.orientation.w = 1.0;
+    centroids.scale.x = marker_scale_;
+    centroids.scale.y = marker_scale_;
+    centroids.scale.z = marker_scale_;
+    centroids.color.r = 0.10F;
+    centroids.color.g = 0.85F;
+    centroids.color.b = 0.35F;
+    centroids.color.a = 1.0F;
+    centroids.points.reserve(snapshot.objects.size());
+    for (const auto & object : snapshot.objects) {
+      centroids.points.push_back(object.position);
+    }
+    result.markers.push_back(std::move(centroids));
+
+    std::int32_t label_id = 0;
+    for (const auto & object : snapshot.objects) {
+      Marker label;
+      label.header = snapshot.header;
+      label.ns = "stored_object_labels";
+      label.id = label_id++;
+      label.type = Marker::TEXT_VIEW_FACING;
+      label.action = Marker::ADD;
+      label.pose.position = object.position;
+      label.pose.position.z += marker_text_offset_;
+      label.pose.orientation.w = 1.0;
+      label.scale.z = marker_text_height_;
+      label.color.r = 1.0F;
+      label.color.g = 1.0F;
+      label.color.b = 1.0F;
+      label.color.a = 1.0F;
+      label.text = object.name;
+      result.markers.push_back(std::move(label));
+    }
+    return result;
   }
 
   void query_callback(
@@ -859,6 +970,7 @@ private:
   std::string pointcloud_topic_;
   std::string detections_topic_;
   std::string objects_topic_;
+  std::string marker_topic_;
   std::string query_service_name_;
   std::string save_service_name_;
   fs::path output_path_;
@@ -870,6 +982,10 @@ private:
   double yolo_confidence_{};
   double tf_timeout_{};
   double tf_cache_time_{};
+  double snapshot_publish_rate_{};
+  double marker_scale_{};
+  double marker_text_height_{};
+  double marker_text_offset_{};
   bool save_on_shutdown_{};
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -877,8 +993,10 @@ private:
   rclcpp::Subscription<PointCloud2>::SharedPtr pointcloud_sub_;
   rclcpp::Subscription<DetectedObjectArray>::SharedPtr detections_sub_;
   rclcpp::Publisher<StoredObjectArray>::SharedPtr objects_pub_;
+  rclcpp::Publisher<MarkerArray>::SharedPtr markers_pub_;
   rclcpp::Service<GetStoredObjects>::SharedPtr query_service_;
   rclcpp::Service<Trigger>::SharedPtr save_service_;
+  rclcpp::TimerBase::SharedPtr snapshot_timer_;
 
   std::mutex queue_mutex_;
   std::deque<CloudPtr> pending_clouds_;
@@ -893,6 +1011,7 @@ private:
   std::unordered_map<std::string, std::uint32_t> next_suffix_;
   std::uint64_t next_id_{1U};
   std::uint64_t revision_{0U};
+  std::uint64_t published_revision_{0U};
   bool dirty_{false};
 
   std::mutex save_mutex_;

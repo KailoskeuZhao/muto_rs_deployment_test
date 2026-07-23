@@ -177,8 +177,10 @@ def generate_launch_description():
     )
     max_publish_rate_arg = DeclareLaunchArgument(
         "max_publish_rate",
-        default_value="3.0",
-        description="Maximum processed image rate in Hz. Set 0.0 to process every image.",
+        default_value="7.0",
+        description=(
+            "Maximum processing start rate in Hz. Set 0.0 to process every available image."
+        ),
     )
 
     return LaunchDescription([

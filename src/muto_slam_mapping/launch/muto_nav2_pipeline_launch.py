@@ -137,6 +137,7 @@ def generate_launch_description():
         {
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'launch_lidar_odometry': 'true',
+            'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
         },
     )
     mapping_actions = readiness_gated_include(
@@ -211,6 +212,11 @@ def generate_launch_description():
             'launch_localization',
             default_value='true',
             description='Start LiDAR filtering, RF2O odometry, and EKF.',
+        ),
+        DeclareLaunchArgument(
+            'rf2o_log_level',
+            default_value='warn',
+            description='ROS log level for the RF2O process.',
         ),
         DeclareLaunchArgument(
             'launch_mapping',

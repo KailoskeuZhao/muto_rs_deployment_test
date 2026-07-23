@@ -122,6 +122,7 @@ Default launch parameters:
 | `odom_frame_id` | `odom` |
 | `base_frame_id` | `base_frame` |
 | `freq` | `20.0` Hz |
+| ROS log level | `warn` |
 | `publish_tf` | `false` inside this launch |
 
 RF2O uses TF2 to look up the transform from the scan frame to `base_frame` on

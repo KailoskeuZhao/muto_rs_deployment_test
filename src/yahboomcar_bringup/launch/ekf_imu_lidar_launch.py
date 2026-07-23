@@ -51,6 +51,11 @@ def generate_launch_description():
         default_value="false",
         description="Use simulation clock if true.",
     )
+    rf2o_log_level_arg = DeclareLaunchArgument(
+        "rf2o_log_level",
+        default_value="warn",
+        description="ROS log level for the RF2O process.",
+    )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         "rf2o_translation_deadband",
         default_value="0.0025",
@@ -163,6 +168,7 @@ def generate_launch_description():
         raw_scan_topic_arg,
         scan_downsample_factor_arg,
         use_sim_time_arg,
+        rf2o_log_level_arg,
         rf2o_translation_deadband_arg,
         rf2o_translation_jump_rejection_threshold_arg,
         rf2o_max_translation_rate_arg,
@@ -184,6 +190,7 @@ def generate_launch_description():
                 "raw_scan_topic": LaunchConfiguration("raw_scan_topic"),
                 "scan_downsample_factor": LaunchConfiguration("scan_downsample_factor"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "rf2o_log_level": LaunchConfiguration("rf2o_log_level"),
                 "rf2o_translation_deadband": LaunchConfiguration("rf2o_translation_deadband"),
                 "rf2o_translation_jump_rejection_threshold": LaunchConfiguration(
                     "rf2o_translation_jump_rejection_threshold"

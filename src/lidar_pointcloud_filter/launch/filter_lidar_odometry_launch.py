@@ -110,6 +110,11 @@ def generate_launch_description():
         default_value='20.0',
         description='rf2o processing frequency in Hz.',
     )
+    rf2o_log_level_arg = DeclareLaunchArgument(
+        'rf2o_log_level',
+        default_value='warn',
+        description='ROS log level for the RF2O process.',
+    )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         'rf2o_translation_deadband',
         default_value='0.0025',
@@ -220,6 +225,7 @@ def generate_launch_description():
         odom_child_frame_arg,
         rf2o_publish_tf_arg,
         rf2o_freq_arg,
+        rf2o_log_level_arg,
         rf2o_translation_deadband_arg,
         rf2o_translation_jump_rejection_threshold_arg,
         rf2o_max_translation_rate_arg,
@@ -289,6 +295,11 @@ def generate_launch_description():
             package='rf2o_laser_odometry',
             executable='rf2o_laser_odometry_node',
             output='screen',
+            arguments=[
+                '--ros-args',
+                '--log-level',
+                LaunchConfiguration('rf2o_log_level'),
+            ],
             parameters=[{
                 'laser_scan_topic': LaunchConfiguration('scan_topic'),
                 'odom_topic': LaunchConfiguration('raw_odom_topic'),

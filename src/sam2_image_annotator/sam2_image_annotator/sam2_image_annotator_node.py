@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
+from collections import deque
 from contextlib import ExitStack, nullcontext
 import json
+import threading
 import time
 
 import cv2
@@ -47,6 +49,8 @@ class Sam2ImageAnnotatorNode(Node):
             self.declare_parameter("depth_scale", 0.001).value)
         self.depth_sync_tolerance = float(
             self.declare_parameter("depth_sync_tolerance", 0.2).value)
+        self.depth_buffer_size = int(
+            self.declare_parameter("depth_buffer_size", 30).value)
         self.pointcloud_stride = int(
             self.declare_parameter("pointcloud_stride", 6).value)
         self.pointcloud_mask_trim_ratio = float(
@@ -119,6 +123,9 @@ class Sam2ImageAnnotatorNode(Node):
             self.get_logger().warn(
                 "depth_sync_tolerance must be non-negative; using 0.2")
             self.depth_sync_tolerance = 0.2
+        if self.depth_buffer_size < 1:
+            self.get_logger().warn("depth_buffer_size must be positive; using 30")
+            self.depth_buffer_size = 30
         if self.pointcloud_stride < 1:
             self.get_logger().warn("pointcloud_stride must be positive; using 6")
             self.pointcloud_stride = 6
@@ -157,11 +164,16 @@ class Sam2ImageAnnotatorNode(Node):
         self.detector_error = ""
         self.yolo_rejected_low_confidence_total = 0
         self.yolo_rejected_invalid_confidence_total = 0
-        self.processing = False
         self.last_process_start_wall_time = 0.0
-        self.latest_depth_msg = None
+        self.sensor_state_lock = threading.Lock()
+        self.depth_buffer = deque(maxlen=self.depth_buffer_size)
         self.depth_camera_info = None
         self.color_camera_info = None
+        self.pending_image_lock = threading.Lock()
+        self.pending_image_msg = None
+        self.pending_image_event = threading.Event()
+        self.stop_event = threading.Event()
+        self.processing_thread = None
         self.tf_buffer = Buffer(node=self)
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -203,20 +215,38 @@ class Sam2ImageAnnotatorNode(Node):
             input_qos,
         )
 
+        self.processing_thread = threading.Thread(
+            target=self.processing_loop,
+            name="sam2-inference-worker",
+        )
+        self.processing_thread.start()
+
         self.get_logger().info(
             f"Subscribing to {self.image_topic} in {self.prompt_mode} mode; "
             f"publishing annotations on {self.annotated_topic}, masks on "
             f"{self.mask_topic}, typed detections on {self.detections_topic}, and "
-            f"instance point clouds on {self.instance_pointcloud_topic}")
+            f"instance point clouds on {self.instance_pointcloud_topic}; "
+            f"buffering {self.depth_buffer_size} timestamped depth frames")
 
     def depth_callback(self, msg):
-        self.latest_depth_msg = msg
+        with self.sensor_state_lock:
+            self.depth_buffer.append(msg)
 
     def depth_camera_info_callback(self, msg):
-        self.depth_camera_info = msg
+        with self.sensor_state_lock:
+            self.depth_camera_info = msg
 
     def color_camera_info_callback(self, msg):
-        self.color_camera_info = msg
+        with self.sensor_state_lock:
+            self.color_camera_info = msg
+
+    def destroy_node(self):
+        self.stop_event.set()
+        self.pending_image_event.set()
+        if self.processing_thread is not None:
+            self.processing_thread.join()
+            self.processing_thread = None
+        return super().destroy_node()
 
     def load_predictor(self):
         try:
@@ -278,16 +308,86 @@ class Sam2ImageAnnotatorNode(Node):
                 self.detector_error + "; node will spin without detection")
 
     def image_callback(self, msg):
-        if self.processing:
+        if self.stop_event.is_set():
             return
-        if self.should_throttle():
-            return
+        with self.pending_image_lock:
+            self.pending_image_msg = msg
+            self.pending_image_event.set()
 
-        depth_msg = self.latest_depth_msg
-        depth_camera_info = self.depth_camera_info
-        color_camera_info = self.color_camera_info
-        self.processing = True
-        self.last_process_start_wall_time = time.monotonic()
+    def processing_loop(self):
+        while not self.stop_event.is_set():
+            if not self.pending_image_event.wait(timeout=0.1):
+                continue
+            if self.stop_event.is_set():
+                break
+
+            if (self.max_publish_rate > 0.0 and
+                    self.last_process_start_wall_time > 0.0):
+                interval = 1.0 / self.max_publish_rate
+                remaining = (
+                    interval
+                    - (time.monotonic() - self.last_process_start_wall_time)
+                )
+                if remaining > 0.0:
+                    if self.stop_event.wait(min(remaining, 0.1)):
+                        break
+                    continue
+
+            with self.pending_image_lock:
+                msg = self.pending_image_msg
+                self.pending_image_msg = None
+                self.pending_image_event.clear()
+            if msg is None:
+                continue
+
+            self.last_process_start_wall_time = time.monotonic()
+            try:
+                self.process_image(msg)
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Unexpected SAM2 worker failure: {exc}")
+
+    def snapshot_projection_inputs(self, color_msg):
+        with self.sensor_state_lock:
+            depth_messages = tuple(self.depth_buffer)
+            depth_camera_info = self.depth_camera_info
+            color_camera_info = self.color_camera_info
+
+        if not depth_messages:
+            return (
+                None,
+                depth_camera_info,
+                color_camera_info,
+                f"no depth frames buffered from {self.depth_topic}",
+            )
+
+        color_stamp = self.stamp_seconds(color_msg.header.stamp)
+        depth_msg = min(
+            depth_messages,
+            key=lambda candidate: abs(
+                self.stamp_seconds(candidate.header.stamp) - color_stamp),
+        )
+        offset = abs(
+            self.stamp_seconds(depth_msg.header.stamp) - color_stamp)
+        if offset > self.depth_sync_tolerance:
+            return (
+                None,
+                depth_camera_info,
+                color_camera_info,
+                f"nearest buffered depth frame differs by {offset:.3f}s "
+                f"(limit {self.depth_sync_tolerance:.3f}s; "
+                f"buffered frames {len(depth_messages)})",
+            )
+        return depth_msg, depth_camera_info, color_camera_info, ""
+
+    def process_image(self, msg):
+        (
+            depth_msg,
+            depth_camera_info,
+            color_camera_info,
+            pointcloud_block_reason,
+        ) = self.snapshot_projection_inputs(msg)
+
         try:
             bgr_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             if self.predictor is None:
@@ -313,6 +413,7 @@ class Sam2ImageAnnotatorNode(Node):
                     depth_msg,
                     depth_camera_info,
                     color_camera_info,
+                    pointcloud_block_reason,
                 )
                 return
 
@@ -335,6 +436,7 @@ class Sam2ImageAnnotatorNode(Node):
                 depth_msg=depth_msg,
                 depth_camera_info=depth_camera_info,
                 color_camera_info=color_camera_info,
+                pointcloud_block_reason=pointcloud_block_reason,
             )
         except Exception as exc:
             self.get_logger().error(f"Failed to process image with SAM2: {exc}")
@@ -344,19 +446,6 @@ class Sam2ImageAnnotatorNode(Node):
                     self.publish_unavailable_image(msg, bgr_image)
                 except Exception:
                     pass
-        finally:
-            self.processing = False
-
-    def should_throttle(self):
-        if self.max_publish_rate <= 0.0:
-            return False
-        if self.last_process_start_wall_time <= 0.0:
-            return False
-
-        return (
-            time.monotonic() - self.last_process_start_wall_time
-            < 1.0 / self.max_publish_rate
-        )
 
     def detect_objects(self, bgr_image):
         class_ids = self.parse_class_ids(self.yolo_classes_text)
@@ -433,7 +522,7 @@ class Sam2ImageAnnotatorNode(Node):
                 f"{len(rejected_scores) + rejected_invalid} box(es) before "
                 f"SAM/point-cloud stages at threshold "
                 f"{self.yolo_confidence:.3f} ({'; '.join(details)}); "
-                f"cumulative low-confidence="
+                f"lifetime low-confidence="
                 f"{self.yolo_rejected_low_confidence_total}, invalid="
                 f"{self.yolo_rejected_invalid_confidence_total}",
                 throttle_duration_sec=1.0,
@@ -678,7 +767,8 @@ class Sam2ImageAnnotatorNode(Node):
 
     def publish_images(
             self, input_msg, annotated, mask, instance_mask=None, objects=None,
-            depth_msg=None, depth_camera_info=None, color_camera_info=None):
+            depth_msg=None, depth_camera_info=None, color_camera_info=None,
+            pointcloud_block_reason=""):
         annotated_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
         annotated_msg.header = input_msg.header
         self.annotated_pub.publish(annotated_msg)
@@ -710,17 +800,21 @@ class Sam2ImageAnnotatorNode(Node):
                     throttle_duration_sec=5.0,
                 )
         else:
-            missing_inputs = []
-            if depth_msg is None:
-                missing_inputs.append(self.depth_topic)
+            blocked_reasons = []
+            if pointcloud_block_reason:
+                blocked_reasons.append(pointcloud_block_reason)
+            elif depth_msg is None:
+                blocked_reasons.append(
+                    f"no message received on {self.depth_topic}")
             if depth_camera_info is None:
-                missing_inputs.append(self.depth_camera_info_topic)
+                blocked_reasons.append(
+                    f"no message received on {self.depth_camera_info_topic}")
             if color_camera_info is None:
-                missing_inputs.append(self.color_camera_info_topic)
+                blocked_reasons.append(
+                    f"no message received on {self.color_camera_info_topic}")
             self.get_logger().warn(
-                "Waiting to build instance point cloud; no message received "
-                f"yet on: {', '.join(missing_inputs)}",
-                throttle_duration_sec=10.0,
+                "Skipping instance point cloud: " + "; ".join(blocked_reasons),
+                throttle_duration_sec=5.0,
             )
 
         payload = {

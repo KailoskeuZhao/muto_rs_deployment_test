@@ -6,7 +6,11 @@ overlays, a binary union mask, an instance-ID mask, per-object metadata, and an
 instance-marked 3D point cloud.
 
 SAM 2 computes the image embedding once per frame and refines every YOLO box
-against that embedding.
+against that embedding. The ROS image subscription only retains the newest RGB
+work item; YOLO, SAM, and point-cloud processing run in a dedicated worker so
+depth and CameraInfo callbacks remain responsive during inference. Recent depth
+frames are buffered and the closest timestamp within `depth_sync_tolerance` is
+selected for each processed RGB frame.
 
 The SAM 2 Python package, PyTorch, Ultralytics, model configs, and weights are
 runtime dependencies. They are intentionally imported lazily so this ROS
@@ -32,7 +36,7 @@ The default detector is `yolo26m.pt`. Ultralytics candidate confidence filtering
 is disabled (`conf=0.0`), and the node's `yolo_confidence:=0.4` guard is the
 single confidence policy before SAM, point-cloud generation, and centroid
 recording. Guard interceptions are reported through throttled INFO logs with
-per-batch scores and cumulative counts. Ultralytics downloads named weights if
+per-batch scores and lifetime counts. Ultralytics downloads named weights if
 they are not cached, or an existing weights path can be supplied:
 
 ```bash
@@ -129,8 +133,9 @@ the live TF tree, and projects each 3D depth point into the color mask with the
 color intrinsics and distortion coefficients. High-resolution depth frames are
 processed in bounded row chunks to avoid full-frame projection allocations. Only points landing on a nonzero
 instance ID are published. `depth_scale` converts uint16 values to metres,
-`depth_sync_tolerance` rejects stale color/depth pairs, `tf_timeout` controls TF
-lookup time, and `pointcloud_stride` selects every Nth stable depth-grid pixel
+`depth_buffer_size` controls the recent timestamped depth queue (default `30`),
+`depth_sync_tolerance` rejects a frame when no buffered depth timestamp is close
+enough, `tf_timeout` controls TF lookup time, and `pointcloud_stride` selects every Nth stable depth-grid pixel
 before undistortion, back-projection, depth-to-color projection, and visibility
 sorting (default `6`, or approximately one-sixth of the depth grid). Before selecting
 depth points, `pointcloud_mask_trim_ratio` trims the boundary of every instance

@@ -66,6 +66,14 @@ def generate_launch_description():
         default_value="0.2",
         description="Maximum color/depth timestamp difference in seconds.",
     )
+    depth_buffer_size_arg = DeclareLaunchArgument(
+        "depth_buffer_size",
+        default_value="30",
+        description=(
+            "Number of recent depth frames retained for timestamp matching "
+            "with the newest RGB work item."
+        ),
+    )
     pointcloud_stride_arg = DeclareLaunchArgument(
         "pointcloud_stride",
         default_value="6",
@@ -196,6 +204,7 @@ def generate_launch_description():
         instance_pointcloud_topic_arg,
         depth_scale_arg,
         depth_sync_tolerance_arg,
+        depth_buffer_size_arg,
         pointcloud_stride_arg,
         pointcloud_mask_trim_ratio_arg,
         tf_timeout_arg,
@@ -246,6 +255,10 @@ def generate_launch_description():
                 "depth_sync_tolerance": ParameterValue(
                     LaunchConfiguration("depth_sync_tolerance"),
                     value_type=float,
+                ),
+                "depth_buffer_size": ParameterValue(
+                    LaunchConfiguration("depth_buffer_size"),
+                    value_type=int,
                 ),
                 "pointcloud_stride": ParameterValue(
                     LaunchConfiguration("pointcloud_stride"),

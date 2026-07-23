@@ -53,6 +53,17 @@ def generate_launch_description():
         default_value="30",
         description="Frame rate in Hz for the Orbbec color stream.",
     )
+    color_info_url_arg = DeclareLaunchArgument(
+        "color_info_url",
+        default_value=(
+            "package://yahboomcar_bringup/config/"
+            "astra_pro_plus_acrf35300kr_color_640x480.yaml"
+        ),
+        description=(
+            "Static color calibration fallback for Astra Pro Plus ACRF35300KR "
+            "at 640x480."
+        ),
+    )
     depth_width_arg = DeclareLaunchArgument(
         "depth_width",
         default_value="320",
@@ -115,6 +126,7 @@ def generate_launch_description():
             "color_width": LaunchConfiguration("camera_width"),
             "color_height": LaunchConfiguration("camera_height"),
             "color_fps": LaunchConfiguration("color_fps"),
+            "color_info_url": LaunchConfiguration("color_info_url"),
             "depth_width": LaunchConfiguration("depth_width"),
             "depth_height": LaunchConfiguration("depth_height"),
             "depth_fps": LaunchConfiguration("depth_fps"),
@@ -164,6 +176,7 @@ def generate_launch_description():
         camera_width_arg,
         camera_height_arg,
         color_fps_arg,
+        color_info_url_arg,
         depth_width_arg,
         depth_height_arg,
         depth_fps_arg,

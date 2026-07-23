@@ -66,7 +66,10 @@ def generate_launch_description():
     fusion_lidar_scan_topic_arg = DeclareLaunchArgument(
         "fusion_lidar_scan_topic",
         default_value="/lidar/filtered_laserscan_no_downsample",
-        description="Filtered full-resolution LiDAR LaserScan topic used by scan fusion.",
+        description=(
+            "Filtered full-resolution LiDAR LaserScan that drives fusion and "
+            "continues as the fallback when camera depth is unavailable."
+        ),
     )
     fused_scan_frame_arg = DeclareLaunchArgument(
         "fused_scan_frame",
@@ -121,8 +124,19 @@ def generate_launch_description():
     )
     fused_scan_max_publish_rate_arg = DeclareLaunchArgument(
         "fused_scan_max_publish_rate",
-        default_value="10.0",
-        description="Maximum /fused/laserscan publish rate in Hz. Set 0.0 to process every cloud.",
+        default_value="7.0",
+        description=(
+            "Maximum camera-depth-to-scan processing rate in Hz. LiDAR-driven fused output "
+            "continues independently. Set 0.0 to process every depth image."
+        ),
+    )
+    fused_scan_camera_max_age_arg = DeclareLaunchArgument(
+        "fused_scan_camera_max_age",
+        default_value="0.5",
+        description=(
+            "Maximum camera/LiDAR timestamp difference in seconds. A missing or "
+            "older camera scan is omitted while LiDAR-only output continues."
+        ),
     )
     fused_scan_pixel_stride_x_arg = DeclareLaunchArgument(
         "fused_scan_pixel_stride_x",
@@ -167,6 +181,7 @@ def generate_launch_description():
         max_input_age_arg,
         fused_scan_queue_size_arg,
         fused_scan_max_publish_rate_arg,
+        fused_scan_camera_max_age_arg,
         fused_scan_pixel_stride_x_arg,
         fused_scan_pixel_stride_y_arg,
         camera_scan_angle_increment_arg,
@@ -191,6 +206,7 @@ def generate_launch_description():
                 "max_input_age": LaunchConfiguration("max_input_age"),
                 "queue_size": LaunchConfiguration("fused_scan_queue_size"),
                 "max_publish_rate": LaunchConfiguration("fused_scan_max_publish_rate"),
+                "max_lidar_age": LaunchConfiguration("fused_scan_camera_max_age"),
                 "pixel_stride_x": LaunchConfiguration("fused_scan_pixel_stride_x"),
                 "pixel_stride_y": LaunchConfiguration("fused_scan_pixel_stride_y"),
                 "camera_angle_increment": LaunchConfiguration("camera_scan_angle_increment"),

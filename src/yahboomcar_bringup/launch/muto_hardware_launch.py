@@ -55,18 +55,29 @@ def generate_launch_description():
     )
     depth_width_arg = DeclareLaunchArgument(
         "depth_width",
-        default_value="1280",
+        default_value="320",
         description="Width in pixels for the Orbbec depth stream.",
     )
     depth_height_arg = DeclareLaunchArgument(
         "depth_height",
-        default_value="1024",
+        default_value="240",
         description="Height in pixels for the Orbbec depth stream.",
     )
     depth_fps_arg = DeclareLaunchArgument(
         "depth_fps",
-        default_value="7",
-        description="Frame rate in Hz for the Orbbec depth stream.",
+        default_value="30",
+        description=(
+            "Hardware frame rate for the Orbbec depth stream. Astra Pro Plus "
+            "advertises 320x240 only at 30 FPS; downstream consumers cap processing at 7 Hz."
+        ),
+    )
+    depth_info_url_arg = DeclareLaunchArgument(
+        "depth_info_url",
+        default_value="",
+        description=(
+            "Optional calibration URL for the exact selected depth profile. The upstream "
+            "Astra launch uses its ir_info_url parameter for both IR and depth CameraInfo."
+        ),
     )
     enable_point_cloud_arg = DeclareLaunchArgument(
         "enable_point_cloud",
@@ -107,6 +118,7 @@ def generate_launch_description():
             "depth_width": LaunchConfiguration("depth_width"),
             "depth_height": LaunchConfiguration("depth_height"),
             "depth_fps": LaunchConfiguration("depth_fps"),
+            "ir_info_url": LaunchConfiguration("depth_info_url"),
             "enable_point_cloud": LaunchConfiguration("enable_point_cloud"),
             "enable_colored_point_cloud": "false",
             "enable_ir": LaunchConfiguration("enable_ir"),
@@ -155,6 +167,7 @@ def generate_launch_description():
         depth_width_arg,
         depth_height_arg,
         depth_fps_arg,
+        depth_info_url_arg,
         enable_point_cloud_arg,
         enable_ir_arg,
         lidar_node,

@@ -44,7 +44,10 @@ def generate_launch_description():
     require_lidar_scan_arg = DeclareLaunchArgument(
         'require_lidar_scan',
         default_value='true',
-        description='Whether fused scan output must wait for a timestamp-matched LiDAR scan.',
+        description=(
+            'Require LiDAR for output. LiDAR drives /fused/laserscan and remains '
+            'available as a fallback when the camera scan is missing.'
+        ),
     )
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
@@ -103,9 +106,9 @@ def generate_launch_description():
     )
     max_publish_rate_arg = DeclareLaunchArgument(
         'max_publish_rate',
-        default_value='0.0',
+        default_value='7.0',
         description=(
-            'Maximum generated LaserScan rate in Hz. Set 0.0 to process every '
+            'Maximum generated camera LaserScan rate in Hz. Set 0.0 to process every '
             'input depth image.'
         ),
     )
@@ -127,7 +130,10 @@ def generate_launch_description():
     max_lidar_age_arg = DeclareLaunchArgument(
         'max_lidar_age',
         default_value='0.5',
-        description='Maximum timestamp difference between camera and LiDAR scans in seconds.',
+        description=(
+            'Maximum timestamp difference between camera and LiDAR scans. Older '
+            'camera scans are omitted while LiDAR-only output continues.'
+        ),
     )
     restamp_output_arg = DeclareLaunchArgument(
         'restamp_output',

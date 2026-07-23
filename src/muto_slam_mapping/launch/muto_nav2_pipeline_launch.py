@@ -159,6 +159,12 @@ def generate_launch_description():
             'launch_fused_laserscan': LaunchConfiguration(
                 'launch_fused_laserscan'
             ),
+            'fused_scan_max_publish_rate': LaunchConfiguration(
+                'fused_scan_max_publish_rate'
+            ),
+            'fused_scan_camera_max_age': LaunchConfiguration(
+                'fused_scan_camera_max_age'
+            ),
             'slam_params_file': LaunchConfiguration('slam_params_file'),
         },
     )
@@ -255,6 +261,19 @@ def generate_launch_description():
             'launch_fused_laserscan',
             default_value='true',
             description='Let mapping start /fused/laserscan generation.',
+        ),
+        DeclareLaunchArgument(
+            'fused_scan_max_publish_rate',
+            default_value='7.0',
+            description='Maximum camera-depth-to-scan processing rate in Hz.',
+        ),
+        DeclareLaunchArgument(
+            'fused_scan_camera_max_age',
+            default_value='0.5',
+            description=(
+                'Maximum camera/LiDAR timestamp difference before fused output '
+                'falls back to LiDAR only.'
+            ),
         ),
         DeclareLaunchArgument(
             'slam_params_file',

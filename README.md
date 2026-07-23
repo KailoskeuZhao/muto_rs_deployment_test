@@ -85,10 +85,13 @@ The TG30 driver publishes only `/lidar/raw_laserscan`; downstream nodes own
 filtering, downsampling, and fusion.
 
 The Astra Pro Plus defaults to the device-advertised exact profiles: color
-`640x480 @ 30 FPS` and depth `1280x1024 @ 7 FPS`, with IR disabled. The SAM2
-node does not hard-code either image size; it consumes the live color and depth
-`CameraInfo` messages and rejects a 3D frame if calibration dimensions do not
-match the images.
+`640x480 @ 30 FPS` and depth `320x240 @ 30 FPS`, with IR disabled. A
+lower-resolution 7 FPS depth mode is not advertised, so the depth-to-scan and
+SAM2 consumers cap processing at 7 Hz instead. Depth calibration normally comes
+from the SDK for the selected profile. The optional `depth_info_url` hardware
+launch argument maps to the upstream `ir_info_url` hook when an exact
+320x240 calibration is available. The SAM2 node does not hard-code either image
+size and rejects a 3D frame if calibration dimensions do not match the images.
 
 Start the sensor TF publishers:
 

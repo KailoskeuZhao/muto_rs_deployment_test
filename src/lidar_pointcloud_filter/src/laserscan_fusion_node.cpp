@@ -71,7 +71,8 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Fusing camera scan %s with LiDAR scan %s -> %s in frame %s, range[%.3f, %.3f], "
-      "angle[%.3f, %.3f], angle_increment=%.6f, require_lidar=%s",
+      "angle[%.3f, %.3f], angle_increment=%.6f, require_lidar=%s; LiDAR drives output "
+      "and camera data is optional",
       camera_scan_topic_.c_str(), lidar_scan_topic_.c_str(), output_topic_.c_str(),
       output_frame_.empty() ? "<camera scan frame>" : output_frame_.c_str(),
       range_min_, range_max_, angle_min_, angle_max_, angle_increment_,
@@ -159,18 +160,25 @@ private:
         lidar_scan_topic_.c_str(), msg->header.frame_id.c_str());
     }
 
-    std::lock_guard<std::mutex> lock(latest_lidar_mutex_);
-    latest_lidar_scan_ = msg;
+    {
+      std::lock_guard<std::mutex> lock(latest_lidar_mutex_);
+      latest_lidar_scan_ = msg;
+    }
+
+    sensor_msgs::msg::LaserScan::SharedPtr camera_msg;
+    {
+      std::lock_guard<std::mutex> lock(latest_camera_mutex_);
+      camera_msg = latest_camera_scan_;
+    }
+    if (camera_msg && !scansAreClose(*camera_msg, *msg)) {
+      camera_msg.reset();
+    }
+
+    publishMergedScan(*msg, camera_msg, msg);
   }
 
   void cameraScanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
   {
-    const rclcpp::Time now = get_clock()->now();
-    if (shouldThrottle(now)) {
-      return;
-    }
-    const auto processing_start = std::chrono::steady_clock::now();
-
     warnIfStampFarFromNow(*msg, "camera");
     if (isStampTooFarFromNow(*msg, "camera")) {
       return;
@@ -187,7 +195,10 @@ private:
         "Camera LaserScan has no ranges; dropping scan");
       return;
     }
-    last_process_time_ = now;
+    {
+      std::lock_guard<std::mutex> lock(latest_camera_mutex_);
+      latest_camera_scan_ = msg;
+    }
 
     sensor_msgs::msg::LaserScan::SharedPtr lidar_msg;
     {
@@ -195,35 +206,61 @@ private:
       lidar_msg = latest_lidar_scan_;
     }
 
-    if (require_lidar_ && !lidar_msg) {
+    if (lidar_msg && scansAreClose(*msg, *lidar_msg)) {
+      // LiDAR is the primary trigger. Its next callback will publish a scan
+      // with this camera observation if the timestamps remain close enough.
+      return;
+    }
+
+    if (require_lidar_) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "No LiDAR LaserScan received yet on %s; waiting before publishing fused scan",
+        "No timestamp-near LiDAR LaserScan is available on %s; camera scan is cached",
         lidar_scan_topic_.c_str());
       return;
     }
-    if (lidar_msg && max_lidar_age_ > 0.0) {
-      const double age = std::abs(
-        (rclcpp::Time(msg->header.stamp) - rclcpp::Time(lidar_msg->header.stamp)).seconds());
-      if (age > max_lidar_age_) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "Latest LiDAR LaserScan is %.3f seconds from the camera scan; waiting before fusion",
-          age);
-        return;
-      }
+
+    // Camera-only output is allowed only when LiDAR is explicitly optional.
+    publishMergedScan(*msg, msg, nullptr);
+  }
+
+  bool scansAreClose(
+    const sensor_msgs::msg::LaserScan & left,
+    const sensor_msgs::msg::LaserScan & right) const
+  {
+    if (max_lidar_age_ <= 0.0) {
+      return true;
     }
+    const double age = std::abs(
+      (rclcpp::Time(left.header.stamp) - rclcpp::Time(right.header.stamp)).seconds());
+    return age <= max_lidar_age_;
+  }
+
+  void publishMergedScan(
+    const sensor_msgs::msg::LaserScan & trigger_msg,
+    const sensor_msgs::msg::LaserScan::SharedPtr & camera_msg,
+    const sensor_msgs::msg::LaserScan::SharedPtr & lidar_msg)
+  {
+    const rclcpp::Time now = get_clock()->now();
+    if (shouldThrottle(now)) {
+      return;
+    }
+    const auto processing_start = std::chrono::steady_clock::now();
+    last_process_time_ = now;
 
     sensor_msgs::msg::LaserScan output_scan;
-    initializeOutputScan(*msg, output_scan);
+    initializeOutputScan(trigger_msg, output_scan);
 
     FilterStats camera_stats;
-    if (hasUsableRange(*msg)) {
-      if (!addScanToOutput(*msg, output_scan, "camera", camera_stats)) {
-        return;
+    bool camera_accepted = false;
+    if (camera_msg) {
+      if (hasUsableRange(*camera_msg)) {
+        camera_accepted = addScanToOutput(
+          *camera_msg, output_scan, "camera", camera_stats);
+      } else {
+        camera_stats.invalid = camera_msg->ranges.size();
+        camera_accepted = true;
       }
-    } else {
-      camera_stats.invalid = msg->ranges.size();
     }
 
     FilterStats lidar_stats;
@@ -234,9 +271,14 @@ private:
         return;
       }
     }
+    if (!camera_accepted && !lidar_used) {
+      return;
+    }
 
     publisher_->publish(output_scan);
-    warnIfProcessingWasSlow(processing_start, *msg, camera_stats, lidar_stats, lidar_used);
+    reportCameraMode(camera_accepted, lidar_used);
+    warnIfProcessingWasSlow(
+      processing_start, trigger_msg, camera_stats, lidar_stats, lidar_used);
 
     if (log_filter_stats_) {
       RCLCPP_INFO_THROTTLE(
@@ -244,6 +286,23 @@ private:
         "Fused scans: camera_kept=%zu lidar_used=%s lidar_kept=%zu bins=%zu",
         camera_stats.kept, lidar_used ? "true" : "false", lidar_stats.kept,
         output_scan.ranges.size());
+    }
+  }
+
+  void reportCameraMode(bool camera_accepted, bool lidar_used)
+  {
+    if (!lidar_used ||
+      (camera_mode_known_ && camera_accepted == camera_accepted_last_publish_))
+    {
+      return;
+    }
+    camera_mode_known_ = true;
+    camera_accepted_last_publish_ = camera_accepted;
+    if (camera_accepted) {
+      RCLCPP_INFO(get_logger(), "Camera scan available; publishing camera + LiDAR fusion");
+    } else {
+      RCLCPP_WARN(
+        get_logger(), "Camera scan unavailable or stale; publishing LiDAR-only fallback");
     }
   }
 
@@ -270,14 +329,14 @@ private:
   }
 
   void initializeOutputScan(
-    const sensor_msgs::msg::LaserScan & camera_msg,
+    const sensor_msgs::msg::LaserScan & trigger_msg,
     sensor_msgs::msg::LaserScan & output_msg)
   {
     const auto bin_count = static_cast<std::size_t>(
       std::floor((angle_max_ - angle_min_) / angle_increment_)) + 1U;
 
-    output_msg.header = camera_msg.header;
-    output_msg.header.frame_id = output_frame_.empty() ? camera_msg.header.frame_id : output_frame_;
+    output_msg.header = trigger_msg.header;
+    output_msg.header.frame_id = output_frame_.empty() ? trigger_msg.header.frame_id : output_frame_;
     if (restamp_output_) {
       output_msg.header.stamp = get_clock()->now();
     }
@@ -422,7 +481,7 @@ private:
 
   void warnIfProcessingWasSlow(
     const std::chrono::steady_clock::time_point & processing_start,
-    const sensor_msgs::msg::LaserScan & camera_msg,
+    const sensor_msgs::msg::LaserScan & trigger_msg,
     const FilterStats & camera_stats,
     const FilterStats & lidar_stats,
     bool lidar_used)
@@ -439,9 +498,9 @@ private:
 
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 2000,
-      "LaserScan fusion took %.3f s for %zu camera bins; kept camera=%zu lidar_used=%s "
+      "LaserScan fusion took %.3f s for %zu trigger bins; kept camera=%zu lidar_used=%s "
       "lidar=%zu",
-      elapsed_s, camera_msg.ranges.size(), camera_stats.kept, lidar_used ? "true" : "false",
+      elapsed_s, trigger_msg.ranges.size(), camera_stats.kept, lidar_used ? "true" : "false",
       lidar_stats.kept);
   }
 
@@ -507,11 +566,15 @@ private:
   rclcpp::Duration transform_timeout_{0, 0};
   bool log_filter_stats_;
   bool received_lidar_scan_{false};
+  bool camera_mode_known_{false};
+  bool camera_accepted_last_publish_{false};
   rclcpp::Time last_process_time_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr camera_scan_subscriber_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr lidar_scan_subscriber_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr publisher_;
+  std::mutex latest_camera_mutex_;
+  sensor_msgs::msg::LaserScan::SharedPtr latest_camera_scan_;
   std::mutex latest_lidar_mutex_;
   sensor_msgs::msg::LaserScan::SharedPtr latest_lidar_scan_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

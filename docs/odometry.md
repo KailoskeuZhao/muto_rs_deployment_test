@@ -121,8 +121,8 @@ Default launch parameters:
 | `odom_topic` | `scan_odom_raw` |
 | `odom_frame_id` | `odom` |
 | `base_frame_id` | `base_frame` |
-| `freq` | `20.0` Hz |
-| ROS log level | `warn` |
+| `freq` | `16.0` Hz |
+| ROS log level | `error` |
 | `publish_tf` | `false` inside this launch |
 
 RF2O uses TF2 to look up the transform from the scan frame to `base_frame` on
@@ -144,7 +144,7 @@ Current default filters:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `translation_deadband` | `0.0025` m | Suppress tiny per-update XY drift; at 20 Hz RF2O, this accepts roughly `>=5 cm/s`. |
+| `translation_deadband` | `0.0025` m | Suppress tiny per-update XY drift; at 16 Hz RF2O, this accepts roughly `>=4 cm/s`. |
 | `yaw_deadband` | `0.001` rad | Suppress tiny per-update yaw drift. |
 | `translation_jump_rejection_threshold` | `0.03` m | Reject RF2O XY updates above 3 cm per update while commanded translation is near zero. |
 | `max_translation_rate` | `0.0` m/s | Disabled so translation jump rejection uses only the per-update 3 cm cap. |

@@ -215,7 +215,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'rf2o_log_level',
-            default_value='warn',
+            default_value='error',
             description='ROS log level for the RF2O process.',
         ),
         DeclareLaunchArgument(

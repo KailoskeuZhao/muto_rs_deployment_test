@@ -53,7 +53,7 @@ def generate_launch_description():
     )
     rf2o_log_level_arg = DeclareLaunchArgument(
         "rf2o_log_level",
-        default_value="warn",
+        default_value="error",
         description="ROS log level for the RF2O process.",
     )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
@@ -61,7 +61,7 @@ def generate_launch_description():
         default_value="0.0025",
         description=(
             "Per-update RF2O planar translation deadband in meters. "
-            "At the default 20 Hz RF2O rate, 0.0025 m accepts roughly >=5 cm/s. "
+            "At the default 16 Hz RF2O rate, 0.0025 m accepts roughly >=4 cm/s. "
             "Set 0.0 to disable."
         ),
     )

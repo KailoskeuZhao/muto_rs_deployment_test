@@ -6,7 +6,8 @@ object_registry:
     marker_topic: /sam2/stored_object_markers
     query_service: /sam2/get_stored_objects
     save_service: /sam2/save_stored_objects
-    output_yaml: ~/.ros/sam2_objects.yaml
+    # Empty resolves to sam2_objects.yaml in the active colcon workspace root.
+    output_yaml: ""
     target_frame: map
     duplicate_distance_threshold: 0.25
     metadata_sync_tolerance: 0.2

@@ -20,7 +20,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'save_service', default_value='/sam2/save_stored_objects'),
         DeclareLaunchArgument(
-            'output_yaml', default_value='~/.ros/sam2_objects.yaml'),
+            'output_yaml',
+            default_value='',
+            description=(
+                'Registry YAML path. Empty resolves to sam2_objects.yaml in '
+                'the active colcon workspace root.'
+            )),
         DeclareLaunchArgument('target_frame', default_value='map'),
         DeclareLaunchArgument(
             'duplicate_distance_threshold', default_value='0.25'),

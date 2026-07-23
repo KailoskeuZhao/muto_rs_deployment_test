@@ -30,7 +30,7 @@ sam2_image_annotator:
     yolo_device: "0"
     yolo_confidence: 0.4
     yolo_iou: 0.7
-    yolo_imgsz: 640
+    yolo_imgsz: 960
     yolo_max_detections: 20
     yolo_classes: ""
     yolo_quantize: fp16

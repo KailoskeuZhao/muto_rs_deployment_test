@@ -71,7 +71,7 @@ class Sam2ImageAnnotatorNode(Node):
         self.yolo_confidence = float(
             self.declare_parameter("yolo_confidence", 0.4).value)
         self.yolo_iou = float(self.declare_parameter("yolo_iou", 0.7).value)
-        self.yolo_imgsz = int(self.declare_parameter("yolo_imgsz", 640).value)
+        self.yolo_imgsz = int(self.declare_parameter("yolo_imgsz", 960).value)
         self.yolo_max_detections = int(
             self.declare_parameter("yolo_max_detections", 20).value)
         self.yolo_classes_text = str(
@@ -138,8 +138,8 @@ class Sam2ImageAnnotatorNode(Node):
                 "yolo_max_detections must be positive; using 20")
             self.yolo_max_detections = 20
         if self.yolo_imgsz < 32:
-            self.get_logger().warn("yolo_imgsz must be at least 32; using 640")
-            self.yolo_imgsz = 640
+            self.get_logger().warn("yolo_imgsz must be at least 32; using 960")
+            self.yolo_imgsz = 960
         if not 0.0 <= self.yolo_confidence <= 1.0:
             self.get_logger().warn(
                 "yolo_confidence must be in [0.0, 1.0]; using 0.4")

@@ -94,10 +94,13 @@ ros2 service call /sam2/get_stored_objects \
   sam2_object_registry/srv/GetStoredObjects "{name: '', label: chair}"
 ```
 
-The default output is `~/.ros/sam2_objects.yaml`. Existing entries are loaded at
-startup; new observations are merged in memory and the complete valid YAML
-document is atomically rewritten on clean shutdown. The manual
-`/sam2/save_stored_objects` Trigger service checkpoints it earlier.
+By default the registry writes `sam2_objects.yaml` in the active colcon
+workspace root (for example `/opt/muto_rs_ws/sam2_objects.yaml`). Existing
+entries are loaded at startup; new observations are merged in memory and the
+complete valid YAML document is atomically rewritten on clean shutdown. The
+manual `/sam2/save_stored_objects` Trigger service checkpoints it earlier.
+If the workspace file does not yet exist, the legacy
+`~/.ros/sam2_objects.yaml` is loaded and migrated on the next save.
 
 Default topics:
 

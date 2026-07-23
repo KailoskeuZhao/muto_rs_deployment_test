@@ -42,12 +42,20 @@ ros2 service call /sam2/get_stored_objects \
   "{name: chair, label: ''}"
 ```
 
-The default database is `~/.ros/sam2_objects.yaml`. Existing objects are loaded
-at startup and merged with new observations. On clean SIGINT/SIGTERM shutdown,
-the complete merged database is written through a temporary file, `fsync`, and
+By default, an empty `output_yaml` resolves to `sam2_objects.yaml` in the active
+colcon workspace root. For example, a package installed below
+`/opt/muto_rs_ws/install` writes `/opt/muto_rs_ws/sam2_objects.yaml`. Set the
+`ROS_WORKSPACE` environment variable to select the workspace explicitly, or
+pass `output_yaml:=/some/path/objects.yaml`. Existing objects are loaded at
+startup and merged with new observations. On clean SIGINT/SIGTERM shutdown, the
+complete merged database is written through a temporary file, `fsync`, and
 atomic rename. This is a valid YAML rewrite rather than literal text append,
 which would corrupt a single YAML document. A manual checkpoint is also
 available:
+
+When the workspace file does not exist, the default-path mode loads the legacy
+`~/.ros/sam2_objects.yaml` once and writes the merged data to the workspace file
+on the next save or clean shutdown.
 
 ```bash
 ros2 service call /sam2/save_stored_objects std_srvs/srv/Trigger "{}"

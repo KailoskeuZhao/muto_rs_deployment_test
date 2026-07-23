@@ -40,12 +40,12 @@ def generate_launch_description():
     )
     camera_width_arg = DeclareLaunchArgument(
         "camera_width",
-        default_value="640",
+        default_value="1280",
         description="Width in pixels for the Orbbec color stream.",
     )
     camera_height_arg = DeclareLaunchArgument(
         "camera_height",
-        default_value="480",
+        default_value="720",
         description="Height in pixels for the Orbbec color stream.",
     )
     color_fps_arg = DeclareLaunchArgument(

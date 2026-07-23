@@ -137,7 +137,7 @@ def generate_launch_description():
     )
     yolo_imgsz_arg = DeclareLaunchArgument(
         "yolo_imgsz",
-        default_value="640",
+        default_value="960",
         description="YOLO square inference size.",
     )
     yolo_max_detections_arg = DeclareLaunchArgument(

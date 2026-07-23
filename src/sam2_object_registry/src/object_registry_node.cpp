@@ -124,8 +124,10 @@ public:
       "query_service", "/sam2/get_stored_objects");
     save_service_name_ = declare_parameter<std::string>(
       "save_service", "/sam2/save_stored_objects");
-    output_path_ = expand_user_path(declare_parameter<std::string>(
-      "output_yaml", "~/.ros/sam2_objects.yaml"));
+    const std::string configured_output_path = declare_parameter<std::string>(
+      "output_yaml", "");
+    using_default_output_path_ = configured_output_path.empty();
+    output_path_ = resolve_output_path(configured_output_path);
     target_frame_ = declare_parameter<std::string>("target_frame", "map");
     duplicate_distance_threshold_ = declare_parameter<double>(
       "duplicate_distance_threshold", 0.25);
@@ -169,6 +171,9 @@ public:
       std::bind(
         &ObjectRegistryNode::save_callback, this,
         std::placeholders::_1, std::placeholders::_2));
+    RCLCPP_INFO(
+      get_logger(), "Advertised registry services: query %s, save %s",
+      query_service_name_.c_str(), save_service_name_.c_str());
 
     load_database();
     publish_snapshot();
@@ -208,8 +213,69 @@ private:
   using SpatialCells = std::unordered_map<
     CellKey, std::unordered_set<std::uint64_t>, CellKeyHash>;
 
-  static fs::path expand_user_path(const std::string & value)
+  static std::optional<fs::path> workspace_root_from_prefix(const fs::path & prefix)
   {
+    if (prefix.empty()) {
+      return std::nullopt;
+    }
+    fs::path cursor = fs::absolute(prefix);
+    while (!cursor.empty()) {
+      if (cursor.filename() == "install" && cursor.has_parent_path()) {
+        return cursor.parent_path();
+      }
+      const fs::path parent = cursor.parent_path();
+      if (parent.empty() || parent == cursor) {
+        break;
+      }
+      cursor = parent;
+    }
+    return std::nullopt;
+  }
+
+  static std::optional<fs::path> workspace_root_from_prefix_list(const char * value)
+  {
+    if (value == nullptr || std::strlen(value) == 0U) {
+      return std::nullopt;
+    }
+    const std::string prefixes(value);
+    std::size_t begin = 0U;
+    while (begin <= prefixes.size()) {
+      const std::size_t end = prefixes.find(':', begin);
+      const std::string prefix = prefixes.substr(begin, end - begin);
+      if (!prefix.empty()) {
+        const auto workspace = workspace_root_from_prefix(fs::path(prefix));
+        if (workspace) {
+          return workspace;
+        }
+      }
+      if (end == std::string::npos) {
+        break;
+      }
+      begin = end + 1U;
+    }
+    return std::nullopt;
+  }
+
+  static fs::path default_output_path()
+  {
+    const char * explicit_workspace = std::getenv("ROS_WORKSPACE");
+    if (explicit_workspace != nullptr && std::strlen(explicit_workspace) > 0U) {
+      return fs::absolute(fs::path(explicit_workspace)) / "sam2_objects.yaml";
+    }
+    for (const char * variable : {"COLCON_PREFIX_PATH", "AMENT_PREFIX_PATH"}) {
+      const auto workspace = workspace_root_from_prefix_list(std::getenv(variable));
+      if (workspace) {
+        return *workspace / "sam2_objects.yaml";
+      }
+    }
+    return fs::current_path() / "sam2_objects.yaml";
+  }
+
+  static fs::path resolve_output_path(const std::string & value)
+  {
+    if (value.empty()) {
+      return default_output_path();
+    }
     if (value == "~" || value.rfind("~/", 0) == 0) {
       const char * home = std::getenv("HOME");
       if (home == nullptr || std::strlen(home) == 0U) {
@@ -221,6 +287,15 @@ private:
       return fs::path(home) / value.substr(2);
     }
     return fs::absolute(fs::path(value));
+  }
+
+  static std::optional<fs::path> legacy_output_path()
+  {
+    const char * home = std::getenv("HOME");
+    if (home == nullptr || std::strlen(home) == 0U) {
+      return std::nullopt;
+    }
+    return fs::path(home) / ".ros" / "sam2_objects.yaml";
   }
 
   void validate_parameters()
@@ -768,11 +843,18 @@ private:
 
   void load_database()
   {
-    if (!fs::exists(output_path_)) {
-      return;
+    fs::path load_path = output_path_;
+    bool migrate_legacy_database = false;
+    if (!fs::exists(load_path)) {
+      const auto legacy_path = using_default_output_path_ ? legacy_output_path() : std::nullopt;
+      if (!legacy_path || *legacy_path == output_path_ || !fs::exists(*legacy_path)) {
+        return;
+      }
+      load_path = *legacy_path;
+      migrate_legacy_database = true;
     }
     try {
-      const YAML::Node root = YAML::LoadFile(output_path_.string());
+      const YAML::Node root = YAML::LoadFile(load_path.string());
       const std::string frame = root["frame_id"] ?
         root["frame_id"].as<std::string>() : target_frame_;
       if (frame != target_frame_) {
@@ -817,9 +899,16 @@ private:
           index_loaded_record_locked(record);
         }
       }
-      dirty_ = false;
-      RCLCPP_INFO(
-        get_logger(), "Loaded %zu objects from %s", records_.size(), output_path_.c_str());
+      dirty_ = migrate_legacy_database;
+      if (migrate_legacy_database) {
+        RCLCPP_INFO(
+          get_logger(),
+          "Loaded %zu objects from legacy database %s; next save migrates them to %s",
+          records_.size(), load_path.c_str(), output_path_.c_str());
+      } else {
+        RCLCPP_INFO(
+          get_logger(), "Loaded %zu objects from %s", records_.size(), load_path.c_str());
+      }
     } catch (const std::exception & error) {
       {
         std::lock_guard<std::mutex> lock(registry_mutex_);
@@ -838,7 +927,7 @@ private:
       RCLCPP_ERROR(
         get_logger(),
         "Cannot load %s: %s; in-memory registry remains available but shutdown save is disabled",
-        output_path_.c_str(), error.what());
+        load_path.c_str(), error.what());
     }
   }
 
@@ -974,6 +1063,7 @@ private:
   std::string query_service_name_;
   std::string save_service_name_;
   fs::path output_path_;
+  bool using_default_output_path_{};
   std::string target_frame_;
   double duplicate_distance_threshold_{};
   double metadata_sync_tolerance_{};
@@ -1025,15 +1115,25 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<sam2_object_registry::ObjectRegistryNode>();
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2U);
-  executor.add_node(node);
-  executor.spin();
-  node->flush_on_shutdown();
-  executor.remove_node(node);
-  node.reset();
-  if (rclcpp::ok()) {
-    rclcpp::shutdown();
+  try {
+    auto node = std::make_shared<sam2_object_registry::ObjectRegistryNode>();
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2U);
+    executor.add_node(node);
+    executor.spin();
+    node->flush_on_shutdown();
+    executor.remove_node(node);
+    node.reset();
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  } catch (const std::exception & error) {
+    RCLCPP_FATAL(
+      rclcpp::get_logger("object_registry"),
+      "Object registry failed to start; services are unavailable: %s", error.what());
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+    return 1;
   }
   return 0;
 }

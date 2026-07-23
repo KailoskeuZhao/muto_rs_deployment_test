@@ -180,7 +180,7 @@ The unorganized cloud has `height=1`, `point_step=20`, and these fields:
 | `yolo_device` | `0` | YOLO CUDA device. |
 | `yolo_confidence` | `0.4` | Minimum score before SAM2. |
 | `yolo_iou` | `0.7` | YOLO NMS IoU. |
-| `yolo_imgsz` | `640` | YOLO inference size. |
+| `yolo_imgsz` | `960` | YOLO inference size for the 1280x720 RGB stream. |
 | `yolo_max_detections` | `20` | Maximum boxes refined per frame. |
 | `yolo_classes` | empty | Allows every detector class. |
 | `yolo_quantize` | `fp16` | YOLO CUDA precision; disabled on CPU. |

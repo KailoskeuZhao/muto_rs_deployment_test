@@ -20,6 +20,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'save_service', default_value='/sam2/save_stored_objects'),
         DeclareLaunchArgument(
+            'clear_service', default_value='/sam2/clear_stored_objects'),
+        DeclareLaunchArgument(
             'output_yaml',
             default_value='',
             description=(
@@ -34,6 +36,12 @@ def generate_launch_description():
         DeclareLaunchArgument('sync_queue_size', default_value='10'),
         DeclareLaunchArgument('min_points', default_value='20'),
         DeclareLaunchArgument('yolo_confidence', default_value='0.4'),
+        DeclareLaunchArgument(
+            'confirmation_min_observations', default_value='3'),
+        DeclareLaunchArgument(
+            'confirmation_min_average_confidence', default_value='0.6'),
+        DeclareLaunchArgument('confirmation_window', default_value='3.0'),
+        DeclareLaunchArgument('confirmation_max_gap', default_value='1.5'),
         DeclareLaunchArgument('tf_timeout', default_value='0.1'),
         DeclareLaunchArgument('tf_cache_time', default_value='30.0'),
         DeclareLaunchArgument('snapshot_publish_rate', default_value='2.0'),
@@ -55,6 +63,7 @@ def generate_launch_description():
             'marker_topic': LaunchConfiguration('marker_topic'),
             'query_service': LaunchConfiguration('query_service'),
             'save_service': LaunchConfiguration('save_service'),
+            'clear_service': LaunchConfiguration('clear_service'),
             'output_yaml': LaunchConfiguration('output_yaml'),
             'target_frame': LaunchConfiguration('target_frame'),
             'duplicate_distance_threshold': ParameterValue(
@@ -69,6 +78,16 @@ def generate_launch_description():
                 LaunchConfiguration('min_points'), value_type=int),
             'yolo_confidence': ParameterValue(
                 LaunchConfiguration('yolo_confidence'), value_type=float),
+            'confirmation_min_observations': ParameterValue(
+                LaunchConfiguration('confirmation_min_observations'),
+                value_type=int),
+            'confirmation_min_average_confidence': ParameterValue(
+                LaunchConfiguration('confirmation_min_average_confidence'),
+                value_type=float),
+            'confirmation_window': ParameterValue(
+                LaunchConfiguration('confirmation_window'), value_type=float),
+            'confirmation_max_gap': ParameterValue(
+                LaunchConfiguration('confirmation_max_gap'), value_type=float),
             'tf_timeout': ParameterValue(
                 LaunchConfiguration('tf_timeout'), value_type=float),
             'tf_cache_time': ParameterValue(

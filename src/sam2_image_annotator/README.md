@@ -88,7 +88,10 @@ It synchronizes the typed `/sam2/detections` message with
 `instance_id`, and transforms the centroid at the cloud timestamp into
 `target_frame` (default `map`). Same-label observations within
 `duplicate_distance_threshold` (default `0.25` metres) update the same weighted
-centroid. Distinct objects receive names such as `chair_2`.
+centroid. A new label/location remains tentative until it has 3 distinct
+timestamped observations within 3 seconds, no gap over 1.5 seconds, and average
+YOLO confidence of at least 0.6. Tentative candidates are neither published nor
+saved; distinct confirmed objects receive names such as `chair_2`.
 
 The registry publishes a transient-local snapshot on `/sam2/stored_objects` and
 supports indexed queries by unique name or YOLO label:
@@ -102,7 +105,9 @@ By default the registry writes `sam2_objects.yaml` in the active colcon
 workspace root (for example `/opt/muto_rs_ws/sam2_objects.yaml`). Existing
 entries are loaded at startup; new observations are merged in memory and the
 complete valid YAML document is atomically rewritten on clean shutdown. The
-manual `/sam2/save_stored_objects` Trigger service checkpoints it earlier.
+manual `/sam2/save_stored_objects` Trigger service checkpoints it earlier. The
+destructive `/sam2/clear_stored_objects` Trigger service clears confirmed and
+tentative in-memory state and atomically persists an empty YAML registry.
 If the workspace file does not yet exist, the legacy
 `~/.ros/sam2_objects.yaml` is loaded and migrated on the next save.
 

@@ -106,6 +106,24 @@ struct Accumulator
   std::uint32_t count{};
 };
 
+struct CandidateObservation
+{
+  std::array<double, 3> position{};
+  std::uint32_t point_count{};
+  float confidence{};
+  builtin_interfaces::msg::Time stamp;
+  double stamp_seconds{};
+};
+
+struct CandidateRecord
+{
+  std::uint64_t id{};
+  std::string label;
+  std::int32_t class_id{-1};
+  std::array<double, 3> position{};
+  std::deque<CandidateObservation> observations;
+};
+
 class ObjectRegistryNode : public rclcpp::Node
 {
 public:
@@ -124,6 +142,8 @@ public:
       "query_service", "/sam2/get_stored_objects");
     save_service_name_ = declare_parameter<std::string>(
       "save_service", "/sam2/save_stored_objects");
+    clear_service_name_ = declare_parameter<std::string>(
+      "clear_service", "/sam2/clear_stored_objects");
     const std::string configured_output_path = declare_parameter<std::string>(
       "output_yaml", "");
     using_default_output_path_ = configured_output_path.empty();
@@ -136,6 +156,12 @@ public:
     sync_queue_size_ = declare_parameter<int>("sync_queue_size", 10);
     min_points_ = declare_parameter<int>("min_points", 20);
     yolo_confidence_ = declare_parameter<double>("yolo_confidence", 0.4);
+    confirmation_min_observations_ = declare_parameter<int>(
+      "confirmation_min_observations", 3);
+    confirmation_min_average_confidence_ = declare_parameter<double>(
+      "confirmation_min_average_confidence", 0.6);
+    confirmation_window_ = declare_parameter<double>("confirmation_window", 3.0);
+    confirmation_max_gap_ = declare_parameter<double>("confirmation_max_gap", 1.5);
     tf_timeout_ = declare_parameter<double>("tf_timeout", 0.1);
     tf_cache_time_ = declare_parameter<double>("tf_cache_time", 30.0);
     snapshot_publish_rate_ = declare_parameter<double>("snapshot_publish_rate", 2.0);
@@ -171,23 +197,35 @@ public:
       std::bind(
         &ObjectRegistryNode::save_callback, this,
         std::placeholders::_1, std::placeholders::_2));
+    clear_service_ = create_service<Trigger>(
+      clear_service_name_,
+      std::bind(
+        &ObjectRegistryNode::clear_callback, this,
+        std::placeholders::_1, std::placeholders::_2));
     RCLCPP_INFO(
-      get_logger(), "Advertised registry services: query %s, save %s",
-      query_service_name_.c_str(), save_service_name_.c_str());
+      get_logger(), "Advertised registry services: query %s, save %s, clear %s",
+      query_service_name_.c_str(), save_service_name_.c_str(), clear_service_name_.c_str());
 
     load_database();
     publish_snapshot();
     snapshot_timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / snapshot_publish_rate_)),
-      std::bind(&ObjectRegistryNode::publish_snapshot_if_changed, this));
+      std::bind(&ObjectRegistryNode::publish_periodic_snapshot, this));
     RCLCPP_INFO(
       get_logger(),
-      "Indexing %s + %s in %s; query %s, save %s, snapshot %s + markers %s at %.2f Hz "
-      "(new objects publish immediately), shutdown YAML %s",
+      "Indexing %s + %s in %s; query %s, save %s, clear %s, "
+      "snapshot %s + markers %s at %.2f Hz "
+      "(newly confirmed objects publish immediately), shutdown YAML %s",
       pointcloud_topic_.c_str(), detections_topic_.c_str(), target_frame_.c_str(),
-      query_service_name_.c_str(), save_service_name_.c_str(),
+      query_service_name_.c_str(), save_service_name_.c_str(), clear_service_name_.c_str(),
       objects_topic_.c_str(), marker_topic_.c_str(), snapshot_publish_rate_, output_path_.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "New objects require %d observations within %.2fs, no gap over %.2fs, and "
+      "average confidence >= %.2f before publication or persistence",
+      confirmation_min_observations_, confirmation_window_, confirmation_max_gap_,
+      confirmation_min_average_confidence_);
   }
 
   ~ObjectRegistryNode() override
@@ -324,6 +362,31 @@ private:
       RCLCPP_WARN(get_logger(), "yolo_confidence must be in [0, 1]; using 0.4");
       yolo_confidence_ = 0.4;
     }
+    if (confirmation_min_observations_ < 1) {
+      RCLCPP_WARN(
+        get_logger(), "confirmation_min_observations must be positive; using 3");
+      confirmation_min_observations_ = 3;
+    }
+    if (!(confirmation_min_average_confidence_ >= yolo_confidence_ &&
+      confirmation_min_average_confidence_ <= 1.0))
+    {
+      confirmation_min_average_confidence_ = std::max(0.6, yolo_confidence_);
+      RCLCPP_WARN(
+        get_logger(),
+        "confirmation_min_average_confidence must be in [yolo_confidence, 1]; using %.2f",
+        confirmation_min_average_confidence_);
+    }
+    if (!(confirmation_window_ > 0.0)) {
+      RCLCPP_WARN(get_logger(), "confirmation_window must be positive; using 3.0");
+      confirmation_window_ = 3.0;
+    }
+    if (!(confirmation_max_gap_ > 0.0 && confirmation_max_gap_ <= confirmation_window_)) {
+      confirmation_max_gap_ = std::min(1.5, confirmation_window_);
+      RCLCPP_WARN(
+        get_logger(),
+        "confirmation_max_gap must be in (0, confirmation_window]; using %.2f",
+        confirmation_max_gap_);
+    }
     if (tf_timeout_ < 0.0) {
       RCLCPP_WARN(get_logger(), "tf_timeout must be non-negative; using 0.1");
       tf_timeout_ = 0.1;
@@ -363,8 +426,12 @@ private:
 
   void pointcloud_callback(const CloudPtr cloud)
   {
+    const auto generation = clear_generation_.load(std::memory_order_acquire);
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
+      if (generation != clear_generation_.load(std::memory_order_relaxed)) {
+        return;
+      }
       pending_clouds_.push_back(cloud);
       trim_queue(pending_clouds_);
     }
@@ -373,8 +440,12 @@ private:
 
   void detections_callback(const DetectionsPtr detections)
   {
+    const auto generation = clear_generation_.load(std::memory_order_acquire);
     {
       std::lock_guard<std::mutex> lock(queue_mutex_);
+      if (generation != clear_generation_.load(std::memory_order_relaxed)) {
+        return;
+      }
       pending_detections_.push_back(detections);
       trim_queue(pending_detections_);
     }
@@ -394,6 +465,7 @@ private:
     while (true) {
       CloudPtr cloud;
       DetectionsPtr detections;
+      std::uint64_t observation_generation{};
       {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         if (pending_clouds_.empty() || pending_detections_.empty()) {
@@ -422,19 +494,24 @@ private:
         if (best_offset > metadata_sync_tolerance_) {
           return;
         }
+        observation_generation = clear_generation_.load(std::memory_order_relaxed);
         cloud = pending_clouds_[best_cloud];
         detections = pending_detections_[best_detections];
         pending_clouds_.erase(pending_clouds_.begin() + static_cast<std::ptrdiff_t>(best_cloud));
         pending_detections_.erase(
           pending_detections_.begin() + static_cast<std::ptrdiff_t>(best_detections));
       }
-      process_observation(*cloud, *detections);
+      process_observation(*cloud, *detections, observation_generation);
     }
   }
 
   void process_observation(
-    const PointCloud2 & cloud, const DetectedObjectArray & detections)
+    const PointCloud2 & cloud, const DetectedObjectArray & detections,
+    std::uint64_t observation_generation)
   {
+    if (observation_generation != clear_generation_.load(std::memory_order_acquire)) {
+      return;
+    }
     if (cloud.header.frame_id.empty()) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000, "Ignoring instance cloud with an empty frame_id");
@@ -530,6 +607,9 @@ private:
       }
       {
         std::lock_guard<std::mutex> lock(registry_mutex_);
+        if (observation_generation != clear_generation_.load(std::memory_order_acquire)) {
+          return;
+        }
         inserted = merge_observation_locked(
           label, detection->class_id, position, accumulator.count,
           detection->confidence, cloud.header.stamp) || inserted;
@@ -596,26 +676,12 @@ private:
     const std::array<double, 3> & position, std::uint32_t point_count,
     float confidence, const builtin_interfaces::msg::Time & stamp)
   {
+    const double observation_stamp = stamp_seconds(stamp);
+    prune_candidates_locked(observation_stamp);
     const auto nearest = find_nearest_locked(label, position);
     if (!nearest.has_value()) {
-      ObjectRecord record;
-      record.id = next_id_++;
-      record.name = allocate_name_locked(label);
-      record.label = label;
-      record.class_id = class_id;
-      record.position = position;
-      record.point_count = point_count;
-      record.last_confidence = confidence;
-      record.last_seen = stamp;
-      record.cell = cell_for(position);
-      const auto id = record.id;
-      records_.emplace(id, record);
-      name_index_[record.name] = id;
-      label_index_[label].insert(id);
-      spatial_index_[label][record.cell].insert(id);
-      dirty_ = true;
-      ++revision_;
-      return true;
+      return stage_candidate_locked(
+        label, class_id, position, point_count, confidence, stamp);
     }
 
     auto & record = records_.at(*nearest);
@@ -647,6 +713,222 @@ private:
     dirty_ = true;
     ++revision_;
     return false;
+  }
+
+  static double squared_distance(
+    const std::array<double, 3> & left,
+    const std::array<double, 3> & right)
+  {
+    const double x = left[0] - right[0];
+    const double y = left[1] - right[1];
+    const double z = left[2] - right[2];
+    return x * x + y * y + z * z;
+  }
+
+  std::optional<std::uint64_t> find_nearest_candidate_locked(
+    const std::string & label, const std::array<double, 3> & position) const
+  {
+    const auto ids = candidate_label_index_.find(label);
+    if (ids == candidate_label_index_.end()) {
+      return std::nullopt;
+    }
+    const double threshold_squared =
+      duplicate_distance_threshold_ * duplicate_distance_threshold_;
+    double nearest_distance = std::numeric_limits<double>::infinity();
+    std::optional<std::uint64_t> nearest;
+    for (const auto id : ids->second) {
+      const auto candidate = candidates_.find(id);
+      if (candidate == candidates_.end()) {
+        continue;
+      }
+      const double distance = squared_distance(position, candidate->second.position);
+      if (distance <= threshold_squared && distance < nearest_distance) {
+        nearest_distance = distance;
+        nearest = id;
+      }
+    }
+    return nearest;
+  }
+
+  static void recompute_candidate_position(CandidateRecord & candidate)
+  {
+    candidate.position = {0.0, 0.0, 0.0};
+    if (candidate.observations.empty()) {
+      return;
+    }
+    for (const auto & observation : candidate.observations) {
+      for (std::size_t index = 0; index < candidate.position.size(); ++index) {
+        candidate.position[index] += observation.position[index];
+      }
+    }
+    const double count = static_cast<double>(candidate.observations.size());
+    for (auto & coordinate : candidate.position) {
+      coordinate /= count;
+    }
+  }
+
+  void normalize_candidate_locked(CandidateRecord & candidate)
+  {
+    auto & observations = candidate.observations;
+    std::sort(
+      observations.begin(), observations.end(),
+      [](const CandidateObservation & left, const CandidateObservation & right) {
+        return left.stamp_seconds < right.stamp_seconds;
+      });
+    if (observations.empty()) {
+      return;
+    }
+
+    const double newest_stamp = observations.back().stamp_seconds;
+    while (!observations.empty() &&
+      newest_stamp - observations.front().stamp_seconds > confirmation_window_)
+    {
+      observations.pop_front();
+    }
+
+    std::size_t keep_from = 0U;
+    for (std::size_t index = 1U; index < observations.size(); ++index) {
+      if (observations[index].stamp_seconds - observations[index - 1U].stamp_seconds >
+        confirmation_max_gap_)
+      {
+        keep_from = index;
+      }
+    }
+    while (keep_from > 0U) {
+      observations.pop_front();
+      --keep_from;
+    }
+    recompute_candidate_position(candidate);
+  }
+
+  void erase_candidate_locked(std::uint64_t id)
+  {
+    const auto candidate = candidates_.find(id);
+    if (candidate == candidates_.end()) {
+      return;
+    }
+    const auto label = candidate->second.label;
+    auto ids = candidate_label_index_.find(label);
+    if (ids != candidate_label_index_.end()) {
+      ids->second.erase(id);
+      if (ids->second.empty()) {
+        candidate_label_index_.erase(ids);
+      }
+    }
+    candidates_.erase(candidate);
+  }
+
+  void prune_candidates_locked(double reference_stamp)
+  {
+    std::vector<std::uint64_t> expired;
+    expired.reserve(candidates_.size());
+    for (const auto & [id, candidate] : candidates_) {
+      if (candidate.observations.empty() ||
+        reference_stamp - candidate.observations.back().stamp_seconds > confirmation_window_)
+      {
+        expired.push_back(id);
+      }
+    }
+    for (const auto id : expired) {
+      erase_candidate_locked(id);
+    }
+    if (!expired.empty()) {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Expired %zu tentative object candidate(s) without confirmation",
+        expired.size());
+    }
+  }
+
+  bool stage_candidate_locked(
+    const std::string & label, std::int32_t class_id,
+    const std::array<double, 3> & position, std::uint32_t point_count,
+    float confidence, const builtin_interfaces::msg::Time & stamp)
+  {
+    const double observation_stamp = stamp_seconds(stamp);
+
+    auto candidate_id = find_nearest_candidate_locked(label, position);
+    if (!candidate_id.has_value()) {
+      CandidateRecord candidate;
+      candidate.id = next_candidate_id_++;
+      candidate.label = label;
+      candidate.class_id = class_id;
+      candidate.position = position;
+      candidate_id = candidate.id;
+      candidates_.emplace(candidate.id, std::move(candidate));
+      candidate_label_index_[label].insert(*candidate_id);
+    }
+
+    auto & candidate = candidates_.at(*candidate_id);
+    CandidateObservation observation;
+    observation.position = position;
+    observation.point_count = point_count;
+    observation.confidence = confidence;
+    observation.stamp = stamp;
+    observation.stamp_seconds = observation_stamp;
+    const auto duplicate = std::find_if(
+      candidate.observations.begin(), candidate.observations.end(),
+      [observation_stamp](const CandidateObservation & existing) {
+        return std::abs(existing.stamp_seconds - observation_stamp) <= 1.0e-6;
+      });
+    if (duplicate == candidate.observations.end()) {
+      candidate.observations.push_back(observation);
+    } else if (confidence > duplicate->confidence) {
+      *duplicate = observation;
+    }
+    if (candidate.class_id < 0 && class_id >= 0) {
+      candidate.class_id = class_id;
+    }
+    normalize_candidate_locked(candidate);
+
+    double confidence_sum = 0.0;
+    for (const auto & item : candidate.observations) {
+      confidence_sum += item.confidence;
+    }
+    const std::size_t observation_count = candidate.observations.size();
+    const double average_confidence = observation_count == 0U ? 0.0 :
+      confidence_sum / static_cast<double>(observation_count);
+    const double observation_span = observation_count < 2U ? 0.0 :
+      candidate.observations.back().stamp_seconds -
+      candidate.observations.front().stamp_seconds;
+    if (observation_count < static_cast<std::size_t>(confirmation_min_observations_) ||
+      average_confidence < confirmation_min_average_confidence_)
+    {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Tentative %s: %zu/%d observations over %.2fs, average confidence "
+        "%.3f/%.3f; not stored",
+        label.c_str(), observation_count, confirmation_min_observations_, observation_span,
+        average_confidence, confirmation_min_average_confidence_);
+      return false;
+    }
+
+    ObjectRecord record;
+    record.id = next_id_++;
+    record.name = allocate_name_locked(label);
+    record.label = label;
+    record.class_id = candidate.class_id;
+    record.position = candidate.position;
+    record.observation_count = observation_count;
+    record.point_count = candidate.observations.back().point_count;
+    record.last_confidence = candidate.observations.back().confidence;
+    record.last_seen = candidate.observations.back().stamp;
+    record.cell = cell_for(record.position);
+    const auto candidate_to_erase = candidate.id;
+    const auto id = record.id;
+    const auto name = record.name;
+    erase_candidate_locked(candidate_to_erase);
+    records_.emplace(id, record);
+    name_index_[name] = id;
+    label_index_[label].insert(id);
+    spatial_index_[label][record.cell].insert(id);
+    dirty_ = true;
+    ++revision_;
+    RCLCPP_INFO(
+      get_logger(),
+      "Confirmed new object %s (%s): %zu observations over %.2fs, average confidence %.3f",
+      name.c_str(), label.c_str(), observation_count, observation_span, average_confidence);
+    return true;
   }
 
   std::string allocate_name_locked(const std::string & label)
@@ -723,8 +1005,9 @@ private:
     return result;
   }
 
-  void publish_snapshot()
+  void publish_snapshot(bool publish_objects = true)
   {
+    std::lock_guard<std::mutex> publish_lock(publish_mutex_);
     StoredObjectArray snapshot;
     std::uint64_t snapshot_revision = 0U;
     {
@@ -732,23 +1015,25 @@ private:
       snapshot = snapshot_locked("", "");
       snapshot_revision = revision_;
     }
-    objects_pub_->publish(snapshot);
+    if (publish_objects) {
+      objects_pub_->publish(snapshot);
+    }
     markers_pub_->publish(marker_snapshot(snapshot));
-    {
+    if (publish_objects) {
       std::lock_guard<std::mutex> lock(registry_mutex_);
       published_revision_ = std::max(published_revision_, snapshot_revision);
     }
   }
 
-  void publish_snapshot_if_changed()
+  void publish_periodic_snapshot()
   {
+    bool publish_objects = false;
     {
       std::lock_guard<std::mutex> lock(registry_mutex_);
-      if (revision_ == published_revision_) {
-        return;
-      }
+      prune_candidates_locked(now().seconds());
+      publish_objects = revision_ != published_revision_;
     }
-    publish_snapshot();
+    publish_snapshot(publish_objects);
   }
 
   MarkerArray marker_snapshot(const StoredObjectArray & snapshot) const
@@ -823,6 +1108,62 @@ private:
       response->success = false;
       response->message = error.what();
       RCLCPP_ERROR(get_logger(), "Manual registry save failed: %s", error.what());
+    }
+  }
+
+  void clear_callback(
+    const std::shared_ptr<Trigger::Request> request,
+    std::shared_ptr<Trigger::Response> response)
+  {
+    static_cast<void>(request);
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      clear_generation_.fetch_add(1U, std::memory_order_acq_rel);
+      pending_clouds_.clear();
+      pending_detections_.clear();
+    }
+
+    std::size_t confirmed_count = 0U;
+    std::size_t tentative_count = 0U;
+    {
+      std::lock_guard<std::mutex> lock(registry_mutex_);
+      confirmed_count = records_.size();
+      tentative_count = candidates_.size();
+      records_.clear();
+      name_index_.clear();
+      label_index_.clear();
+      spatial_index_.clear();
+      candidates_.clear();
+      candidate_label_index_.clear();
+      used_names_.clear();
+      next_suffix_.clear();
+      next_id_ = 1U;
+      next_candidate_id_ = 1U;
+      dirty_ = true;
+      ++revision_;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(save_mutex_);
+      persistence_enabled_ = true;
+      persistence_error_.clear();
+    }
+    publish_snapshot();
+
+    try {
+      save_database();
+      response->success = true;
+      response->message =
+        "Cleared " + std::to_string(confirmed_count) + " confirmed and " +
+        std::to_string(tentative_count) + " tentative objects; persisted empty registry to " +
+        output_path_.string();
+      RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+    } catch (const std::exception & error) {
+      response->success = false;
+      response->message =
+        "Cleared registry in memory, but failed to clear YAML " + output_path_.string() +
+        ": " + error.what();
+      RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
     }
   }
 
@@ -1062,6 +1403,7 @@ private:
   std::string marker_topic_;
   std::string query_service_name_;
   std::string save_service_name_;
+  std::string clear_service_name_;
   fs::path output_path_;
   bool using_default_output_path_{};
   std::string target_frame_;
@@ -1070,6 +1412,10 @@ private:
   int sync_queue_size_{};
   int min_points_{};
   double yolo_confidence_{};
+  int confirmation_min_observations_{};
+  double confirmation_min_average_confidence_{};
+  double confirmation_window_{};
+  double confirmation_max_gap_{};
   double tf_timeout_{};
   double tf_cache_time_{};
   double snapshot_publish_rate_{};
@@ -1086,9 +1432,12 @@ private:
   rclcpp::Publisher<MarkerArray>::SharedPtr markers_pub_;
   rclcpp::Service<GetStoredObjects>::SharedPtr query_service_;
   rclcpp::Service<Trigger>::SharedPtr save_service_;
+  rclcpp::Service<Trigger>::SharedPtr clear_service_;
   rclcpp::TimerBase::SharedPtr snapshot_timer_;
 
+  std::mutex publish_mutex_;
   std::mutex queue_mutex_;
+  std::atomic<std::uint64_t> clear_generation_{0U};
   std::deque<CloudPtr> pending_clouds_;
   std::deque<DetectionsPtr> pending_detections_;
 
@@ -1097,9 +1446,12 @@ private:
   std::unordered_map<std::string, std::uint64_t> name_index_;
   std::unordered_map<std::string, std::unordered_set<std::uint64_t>> label_index_;
   std::unordered_map<std::string, SpatialCells> spatial_index_;
+  std::unordered_map<std::uint64_t, CandidateRecord> candidates_;
+  std::unordered_map<std::string, std::unordered_set<std::uint64_t>> candidate_label_index_;
   std::unordered_set<std::string> used_names_;
   std::unordered_map<std::string, std::uint32_t> next_suffix_;
   std::uint64_t next_id_{1U};
+  std::uint64_t next_candidate_id_{1U};
   std::uint64_t revision_{0U};
   std::uint64_t published_revision_{0U};
   bool dirty_{false};

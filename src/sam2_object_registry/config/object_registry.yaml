@@ -6,6 +6,7 @@ object_registry:
     marker_topic: /sam2/stored_object_markers
     query_service: /sam2/get_stored_objects
     save_service: /sam2/save_stored_objects
+    clear_service: /sam2/clear_stored_objects
     # Empty resolves to sam2_objects.yaml in the active colcon workspace root.
     output_yaml: ""
     target_frame: map
@@ -14,6 +15,10 @@ object_registry:
     sync_queue_size: 10
     min_points: 20
     yolo_confidence: 0.4
+    confirmation_min_observations: 3
+    confirmation_min_average_confidence: 0.6
+    confirmation_window: 3.0
+    confirmation_max_gap: 1.5
     tf_timeout: 0.1
     tf_cache_time: 30.0
     snapshot_publish_rate: 2.0

@@ -12,6 +12,8 @@ Hardware-specific assumptions are currently embedded in several places, especial
 
 Detailed odometry and localization notes are in [docs/odometry.md](docs/odometry.md).
 Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
+The current SLAM and Nav2 runbook is in [docs/slam_pipeline.md](docs/slam_pipeline.md).
+Mapping and costmap design notes are in [docs/Muto Mapping and Costmap Notes.md](<docs/Muto Mapping and Costmap Notes.md>).
 
 ## Package Origins
 

@@ -14,6 +14,7 @@ Detailed odometry and localization notes are in [docs/odometry.md](docs/odometry
 Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
 The current SLAM and Nav2 runbook is in [docs/slam_pipeline.md](docs/slam_pipeline.md).
 Mapping and costmap design notes are in [docs/Muto Mapping and Costmap Notes.md](<docs/Muto Mapping and Costmap Notes.md>).
+TF2 frame ownership and diagnostics are in [docs/TF2.md](docs/TF2.md).
 
 ## Package Origins
 

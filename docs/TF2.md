@@ -1,304 +1,566 @@
-# TF2
+# TF2 Frames And Ownership
 
-```Plain Text
-# Coordinate Frames and TF2 on MutoRS
+Date: 2026-07-24
 
-## Why Frames Matter
+This document defines the active TF2 contract for the Muto RS ROS 2 Humble
+workspace. It covers frame names, transform ownership, static calibration,
+timestamp behavior, startup readiness, and debugging.
 
-Every ROS 2 sensor message with a `header` has a `frame_id`. That field says which coordinate system the data is expressed in.
+For the complete startup sequence, see [slam_pipeline.md](slam_pipeline.md).
 
-This matters because the robot does not have one universal sensor coordinate system. Each sensor measures in its own local frame:
+## Non-Negotiable Rules
+
+1. The robot frame is `base_frame`. This workspace does not use
+   `base_link`.
+2. Every child frame must have one parent in the active TF tree.
+3. Every dynamic transform must have one authoritative publisher.
+4. Sensor data must be transformed at a timestamp compatible with its header.
+5. Do not publish an identity transform to hide a missing localization layer.
+6. Do not restamp sensor data merely to hide a clock or TF problem.
+
+Violating these rules can produce plausible-looking topics with geometrically
+incorrect data.
+
+## Direction Notation
+
+This document uses two related notations.
+
+Tree ownership:
 
 ```text
-/lidar/PointCloud        -> lidar_frame
-/camera/depth/points     -> camera_depth_optical_frame
-/imu/data_processed      -> imu_link
-/fused/laserscan         -> camera_link or chosen processing frame
+parent -> child
 ```
 
-If data from two sensors is fused without transforming frames correctly, the result is geometrically wrong even if the topics are publishing normally\.
+For example, `base_frame -> lidar_frame` means `base_frame` is the parent
+and `lidar_frame` is the child published in TF.
 
-## Practical Example: Camera \+ LiDAR Fusion
+Lookup direction:
 
-The depth camera publishes:
-
-```Plain Text
-/camera/depth/points
+```text
+target <- source
 ```
 
-in:
+A lookup asks TF2 for coordinates expressed in `source` to be represented in
+`target`:
 
-```Plain Text
-camera_depth_optical_frame
+```text
+lookup_transform(target_frame, source_frame, stamp)
 ```
 
-But our filtering rules are defined in `camera_link`, for example:
+The Buffer API order is target then source. The `tf2_echo` CLI retains the
+historical argument labels `source_frame target_frame`; its help notes that the
+returned transform converts target-frame data into source-frame coordinates.
 
-```Plain Text
-z range: [-0.4, 0.2]
-max range: 3.0 m
+To inspect `base_frame <- lidar_frame`, run:
+
+```bash
+ros2 run tf2_ros tf2_echo base_frame lidar_frame
 ```
 
-So the point cloud must first be transformed:
+Read the first argument as the frame in which the second frame should be
+expressed. The underlying tree edge remains `base_frame -> lidar_frame`.
 
-```Plain Text
-camera_depth_optical_frame -> camera_link
-```
+## Current Frame Tree
 
-The LiDAR publishes raw data on:
+During normal online mapping:
 
-```Plain Text
-/lidar/PointCloud
-```
-
-in:
-
-```Plain Text
-lidar_frame
-```
-
-That cloud is filtered first:
-
-```Plain Text
-/lidar/PointCloud -> /lidar/PointCloudFiltered
-```
-
-The fused LaserScan node then uses:
-
-```Plain Text
-/camera/depth/points
-/lidar/PointCloudFiltered
-```
-
-and publishes:
-
-```Plain Text
-/fused/laserscan
-```
-
-The final `/fused/laserscan` should not be restricted to the camera FOV\. The camera contributes only where it has valid depth points, while the LiDAR can contribute around the full scan\.
-
-## TF2 Basics
-
-TF2 stores coordinate relationships in a tree\.
-
-Example:
-
-```Plain Text
-base_frame -> lidar_frame
-base_frame -> camera_link
-base_frame -> imu_link
-```
-
-If TF2 knows both:
-
-```Plain Text
-base_frame -> lidar_frame
-base_frame -> camera_linkDeprecated
-```
-
-then it can compute:
-
-```Plain Text
-lidar_frame <-> camera_link
-```
-
-No separate direct transform is needed\.
-
-Important rule:
-
-```Plain Text
-one child frame should have one parent frame
-```
-
-Do not publish two different transforms for the same child frame\. For example, do not let two nodes both publish `map -> odom`\.
-
-## MutoRS Frame Structure
-
-A practical frame tree for MutoRS is:
-
-```Plain Text
+```text
 map
-└── odom
-    └── base_frame
-        ├── lidar_frame
-        ├── camera_link
-        │   └── camera_depth_optical_frame
-        └── imu_link
+  -> odom
+    -> base_frame
+      -> lidar_frame
+      -> imu_link
+      -> camera_link
+        -> camera optical and stream frames
 ```
 
-Typical responsibilities:
+Important qualifications:
 
-```Plain Text
-map -> odom
+- `map` exists only when SLAM or another map-localization source is active.
+- `odom` remains locally continuous but can drift.
+- `map -> odom` corrects that local drift against the map.
+- The Orbbec driver owns the internal camera-frame tree below `camera_link`.
+- Raw IMU inspection messages use `raw_imu_link`. The active navigation tree
+  and processed EKF input use `imu_link`.
+- No active package should introduce `base_link`.
+
+## Transform Ownership
+
+| Transform | Normal owner | Behavior |
+| --- | --- | --- |
+| `map -> odom` | SLAM Toolbox | Dynamic transform while online mapping is active. |
+| `odom -> base_frame` | `robot_localization/ekf_node` | Dynamic local pose in the normal pipeline. |
+| `base_frame -> lidar_frame` | `tf2_publisher/base_to_lidar_publisher` | Static hard-coded sensor mount. |
+| `base_frame -> camera_link` | `tf2_publisher/base_to_camera_publisher` | Static hard-coded camera-body mount. |
+| `base_frame -> imu_link` | `tf2_publisher/base_to_imu_publisher` | Static hard-coded IMU mount. |
+| `camera_link -> camera optical frames` | Orbbec driver | Driver-owned static/internal camera tree. |
+
+Consumers such as Nav2, scan fusion, SAM2, and the object registry query TF;
+they do not own these tree edges.
+
+There is no current `publish_map_to_odom_tf` launch argument and no identity
+`map -> odom` helper. SLAM Toolbox owns that transform during mapping.
+
+## Static Sensor Calibration
+
+The local static transforms are hard-coded in C++:
+
+| Parent -> child | Translation xyz, metres | RPY, radians |
+| --- | --- | --- |
+| `base_frame -> lidar_frame` | `(-0.02, 0.0, 0.0)` | `(0.0, -3.1415, 0.20)` |
+| `base_frame -> camera_link` | `(0.13, 0.0, 0.115)` | `(0.0, 0.18325, 0.0)` |
+| `base_frame -> imu_link` | `(0.07, 0.0, 0.0)` | `(0.0, 0.0, 0.0)` |
+
+Start them directly with:
+
+```bash
+ros2 launch tf2_publisher all_tf2_publishers_launch.py
 ```
 
-Provided by SLAM or localization\.
+They are published through `StaticTransformBroadcaster` on `/tf_static`.
+Static transforms are transient-local, so late subscribers can receive them.
 
-```Plain Text
-odom -> base_frame
+These calibration values are deployment-specific and currently require a source
+change and rebuild. Verify physical translation, axis direction, and rotation on
+the robot before trusting fused scans, odometry, maps, or costmaps.
+
+## Optional Odometry Republisher
+
+`all_tf2_publishers_launch.py` has:
+
+```text
+publish_odom_tf:=false
+odom_topic:=scan_odom
 ```
 
-Provided by odometry or EKF\.
+When explicitly enabled, `tf2_publisher/odom_publisher` copies an Odometry
+message into TF using:
 
-```Plain Text
-base_frame -> sensor_frame
+- the message timestamp;
+- `header.frame_id` as the parent;
+- `child_frame_id` as the child;
+- the message pose as the transform.
+
+It does not choose or repair frame names. It is disabled by default and must
+remain disabled while the EKF or standalone odometry wrapper publishes the same
+dynamic edge.
+
+## Normal Dynamic Ownership
+
+The normal localization path is:
+
+```text
+/lidar/filtered_laserscan
+  -> RF2O
+  -> /scan_odom_raw
+  -> odometry deadband/jump wrapper
+  -> /scan_odom
+  -> robot_localization EKF <- /imu/data_processed
+  -> /odometry/filtered
+  -> odom -> base_frame
 ```
 
-Static transforms from physical mounting positions\.
+The EKF configuration uses:
 
-## Static Sensor Transforms
-
-The static TF publishers are in:
-
-```Plain Text
-src/tf2_publisher
+```text
+map_frame: map
+odom_frame: odom
+base_link_frame: base_frame
+world_frame: odom
+publish_tf: true
 ```
 
-Examples:
+Because `world_frame` is `odom`, the EKF publishes
+`odom -> base_frame`. Setting `map_frame` does not make this EKF own
+`map -> odom`.
 
-```Plain Text
-base_frame -> lidar_frame
-base_frame -> camera_link
-base_frame -> imu_link
+The normal EKF launch forces `rf2o_publish_tf:=false`. Foot odometry, when
+enabled, also publishes no TF.
+
+## Standalone LiDAR Odometry
+
+For RF2O testing without the EKF:
+
+```bash
+ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
 ```
 
-These are static because the sensors are physically bolted to the robot\.
+RF2O itself has TF publication disabled by the wrapper launch. The downstream
+odometry guard publishes `odom -> base_frame` by default in this standalone
+mode.
 
-A static transform describes:
+Before starting the EKF, stop the standalone launch or use:
 
-```Plain Text
-translation: x, y, z
-rotation: roll, pitch, yaw or quaternion
+```bash
+ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py \
+  rf2o_publish_tf:=false
 ```
 
-Example meaning:
+Never run the standalone TF owner and EKF TF owner together.
 
-```Plain Text
-base_frame -> lidar_frame
+## SLAM And Nav2
+
+SLAM Toolbox is configured with:
+
+```text
+map_frame: map
+odom_frame: odom
+base_frame: base_frame
+scan_topic: /fused/laserscan
 ```
 
-says where the LiDAR is mounted relative to the robot base\.
+It consumes the existing `odom -> base_frame` transform and publishes
+`map -> odom` while mapping.
 
-## Dynamic Transforms
+Nav2 does not replace either transform. Its local costmap consumes
+`odom -> base_frame`; its global costmap and BT navigator require a complete
+`map -> odom -> base_frame` chain.
 
-Dynamic transforms change over time\.
+## Topic And Frame Contract
 
-Example:
+| Product | Expected header frames |
+| --- | --- |
+| `/lidar/raw_laserscan` | `lidar_frame`. |
+| `/lidar/filtered_laserscan` | Preserves the LiDAR scan frame. |
+| `/lidar/filtered_laserscan_no_downsample` | Preserves the LiDAR scan frame. |
+| `/scan_odom_raw` | Parent `odom`, child `base_frame`. |
+| `/scan_odom` | Parent `odom`, child `base_frame`. |
+| `/odometry/filtered` | Parent `odom`, child `base_frame`. |
+| `/imu/data_processed` | `imu_link`. |
+| `/imu/data_raw` and `/imu/mag_raw` | `raw_imu_link`; inspection data, not the active EKF frame. |
+| `/camera/depth/image_raw` | Normally a depth optical frame from the Orbbec driver. |
+| `/camera/depth/camera_info` | Must describe the depth profile and frame. |
+| `/camera/filtered_laserscan` | `base_frame` by default. |
+| `/fused/laserscan` | `base_frame` by default. |
+| `/map` | `map`. |
+| SAM2 image and mask outputs | Preserve the color image frame. |
+| `/sam2/instance_pointcloud` | Depth optical frame and depth timestamp. |
+| Stored perception positions | Registry target frame, normally `map`. |
 
-```Plain Text
-odom -> base_frame
+Always inspect the actual message header. Driver profiles and remappings can
+change camera optical frame names.
+
+## Lookup Behavior By Component
+
+### Readiness gates
+
+The top-level pipeline checks latest transform availability before launching
+each downstream stage:
+
+| Stage | Required TF lookup |
+| --- | --- |
+| Localization | `base_frame <- lidar_frame` and `base_frame <- imu_link`. |
+| Mapping | `odom <- base_frame`. |
+| Nav2 | `map <- base_frame`. |
+
+The gate proves that a chain currently exists. It does not prove that every
+historical sensor timestamp can be transformed.
+
+### RF2O
+
+On its first scan, RF2O requests the latest
+`base_frame <- <scan frame>` transform and stores the LiDAR mounting pose.
+This should resolve through the static `base_frame -> lidar_frame` edge.
+
+### Depth-image to LaserScan
+
+The depth converter requests:
+
+```text
+base_frame <- depth_image_frame
 ```
 
-This transform represents where the robot currently is according to odometry\.
+at the depth-image timestamp. If that fails, it tries the latest transform.
+The fallback is intended to tolerate static camera-extrinsic timing. Do not rely
+on latest-transform fallback to conceal a missing or stale dynamic
+`map/odom/base_frame` relationship.
 
-If LiDAR odometry or EKF updates the robot pose, it should update this transform continuously\.
+The output camera scan keeps the depth-image timestamp but changes its frame to
+the configured processing frame, normally `base_frame`.
 
-## SLAM Mapping
+### LaserScan fusion
 
-The `muto_slam_mapping` package launches `slam_toolbox` online async mapping:
+For each input scan whose frame differs from the output frame, fusion requests:
 
-```Plain Text
-ros2 launch muto_slam_mapping online_async_mapping_launch.py
+```text
+fused_scan_frame <- input_scan_frame
 ```
 
-It wraps:
+first at the scan timestamp, then at the latest available time. The normal
+camera scan is already in `base_frame`; the LiDAR scan resolves through the
+static LiDAR mount.
 
-```Plain Text
-ros2 launch slam_toolbox online_async_launch.py \
-  slam_params_file:=<muto_slam_mapping config yaml>
+The final fused scan is published in `base_frame` by default.
+
+### SLAM And Nav2
+
+SLAM and Nav2 consume dynamic transforms at sensor/message times. Continuous
+`odom -> base_frame` and `map -> odom` history matters. A transform that
+exists only at the latest time can still cause message-filter drops or
+extrapolation errors for older scans.
+
+### SAM2 depth projection
+
+The image annotator requests:
+
+```text
+color_optical_frame <- depth_optical_frame
 ```
 
-If you temporarily want `map` and `odom` to be identical, the launch file has an optional identity TF:
+at the depth timestamp and then permits a latest-transform fallback. These are
+normally fixed camera extrinsics.
 
-```Plain Text
-ros2 launch muto_slam_mapping online_async_mapping_launch.py \
-  publish_map_to_odom_tf:=true
+The published instance cloud remains in the depth frame. Transforming points
+for color projection does not change the cloud's declared frame.
+
+### Stored perception positions
+
+The registry requests:
+
+```text
+target_frame <- instance_cloud_frame
 ```
 
-That publishes:
+at the cloud timestamp, where `target_frame` normally defaults to `map`.
+It does not fall back to the latest transform. If the timestamped chain is
+missing, the complete observation is rejected.
 
-```Plain Text
-map -> odom
-translation: 0 0 0
-rotation: 0 0 0
+Persisted positions assume objects are static in the target frame. TF only
+places an observation in that frame; it does not detect or compensate for
+object motion.
+
+## Pipeline Startup
+
+Preferred startup:
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 ```
 
-Use this only when no other node is publishing `map -> odom`\. If `slam_toolbox` is publishing `map -> odom`, leave this disabled\.
+The launch starts hardware immediately, static sensor TF after a minimum
+one-second delay, then uses topic and TF gates before localization, mapping, and
+Nav2.
 
-## Debugging TF Problems
+The relevant TF checks are:
 
-Check whether two frames are connected:
+```text
+localization: base_frame <- lidar_frame
+              base_frame <- imu_link
 
-```Plain Text
-ros2 run tf2_ros tf2_echo camera_link lidar_frame
+mapping:      odom <- base_frame
+
+Nav2:         map <- base_frame
 ```
 
-If TF2 says:
+A gate timeout shuts down the pipeline rather than launching the next layer
+with an incomplete tree.
 
-```Plain Text
-Invalid frame ID "lidar_frame" passed to lookupTransform
+## Basic Verification
+
+Start with the expected static edges:
+
+```bash
+ros2 run tf2_ros tf2_echo base_frame lidar_frame
+ros2 run tf2_ros tf2_echo base_frame camera_link
+ros2 run tf2_ros tf2_echo base_frame imu_link
 ```
 
-then one of these is true:
+Check the camera chain using the actual frame from CameraInfo:
 
-- the TF publisher is not running
-
-- the frame name is different from expected
-
-- the transform has not arrived yet
-
-- the node started before TF was available
-
-Check static transforms:
-
-```Plain Text
-ros2 topic echo /tf_static
+```bash
+ros2 topic echo /camera/depth/camera_info --once
+ros2 run tf2_ros tf2_echo base_frame camera_depth_optical_frame
 ```
 
-Check dynamic transforms:
+Check dynamic localization and mapping:
 
-```Plain Text
+```bash
+ros2 run tf2_ros tf2_echo odom base_frame
+ros2 run tf2_ros tf2_echo map odom
+ros2 run tf2_ros tf2_echo map base_frame
+```
+
+Inspect TF topics and publishers:
+
+```bash
+ros2 topic echo /tf_static --once
+ros2 topic info /tf --verbose
+ros2 topic info /tf_static --verbose
+```
+
+Generate a tree snapshot when `tf2_tools` is installed:
+
+```bash
+ros2 run tf2_tools view_frames
+```
+
+Open the generated `frames.pdf` and verify that each child appears once under
+the expected parent.
+
+## Message Header Checks
+
+Verify frame and timestamp fields before blaming TF:
+
+```bash
+ros2 topic echo /lidar/raw_laserscan --once
+ros2 topic echo /imu/data_processed --once
+ros2 topic echo /camera/depth/camera_info --once
+ros2 topic echo /fused/laserscan --once
+ros2 topic echo /odometry/filtered --once
+ros2 topic echo /map --once
+```
+
+For every sensor-processing path, verify:
+
+1. The topic is live.
+2. `header.frame_id` is nonempty and expected.
+3. The timestamp uses the same clock as TF publishers.
+4. `target <- source` resolves at that timestamp.
+5. The output frame matches the node's configured processing frame.
+
+## Duplicate-Publisher Audit
+
+The highest-risk duplicate is `odom -> base_frame`.
+
+Normal EKF mode:
+
+| Possible publisher | Expected state |
+| --- | --- |
+| EKF | Enabled and authoritative. |
+| RF2O node | TF disabled. |
+| Odometry deadband wrapper | TF disabled by the EKF parent launch. |
+| `tf2_publisher/odom_publisher` | Disabled. |
+| Foot odometry | TF disabled. |
+
+Standalone LiDAR odometry mode:
+
+| Possible publisher | Expected state |
+| --- | --- |
+| Odometry deadband wrapper | Enabled and authoritative. |
+| EKF | Not running. |
+| `tf2_publisher/odom_publisher` | Disabled. |
+
+For `map -> odom`, SLAM Toolbox is the only normal owner during online
+mapping. Do not add an identity publisher beside it.
+
+Useful audit commands:
+
+```bash
+ros2 node list
+ros2 topic info /tf --verbose
 ros2 topic echo /tf
 ```
 
-Useful sanity check:
+If the same child alternates between poses, jumps while stationary, or appears
+under multiple parents in `view_frames`, stop the duplicate publisher before
+tuning any filter.
 
-```Plain Text
-ros2 topic echo /fused/laserscan --once
+## Common Failures
+
+### Invalid frame ID
+
+Typical causes:
+
+- the expected publisher is not running;
+- the driver uses a different frame name;
+- the Orbbec internal frame tree has not started;
+- a message has an empty `frame_id`;
+- an old launch or remapping still expects a removed frame.
+
+Check the exact message header and `view_frames`.
+
+### Extrapolation into the future
+
+The sensor timestamp is newer than available dynamic TF. Check clock
+synchronization, `use_sim_time`, publication latency, and whether the dynamic
+publisher is still running.
+
+### Extrapolation into the past
+
+The message is older than the TF buffer history or processing is backlogged.
+Check stale inputs, queue growth, CPU load, and inappropriate restamping.
+
+### Lookup works with latest time but processing still drops messages
+
+`tf2_echo` normally shows the current transform. The failing node may need the
+transform at an older sensor timestamp. Inspect the message stamp and dynamic TF
+history rather than assuming the current lookup proves timestamp compatibility.
+
+### Fused scan missing
+
+Check:
+
+1. `/lidar/filtered_laserscan_no_downsample` is live in `lidar_frame`.
+2. `base_frame <- lidar_frame` resolves.
+3. The camera depth frame resolves to `base_frame`.
+4. Sensor stamps are not rejected as stale.
+5. Only one fusion launch owns `/fused/laserscan`.
+
+Because LiDAR drives fusion, missing camera TF should remove the camera
+contribution but should not normally stop valid LiDAR-only output.
+
+### Map missing or not updating
+
+Check:
+
+1. `/fused/laserscan` is in `base_frame`.
+2. `odom <- base_frame` exists continuously.
+3. SLAM Toolbox is running with `map_frame=map`.
+4. No other node publishes `map -> odom`.
+5. Scan and odometry timestamps are compatible.
+
+### Nav2 transform timeout
+
+Check the complete timestamped chain:
+
+```text
+map -> odom -> base_frame -> fused scan frame
 ```
 
-The scan header should contain the expected output frame, and the ranges should not be clipped to only the camera FOV\.
+A latest `map <- base_frame` lookup can succeed while a costmap still rejects
+an older scan. Inspect continuous message-filter warnings and sensor stamps.
 
-## Practical Rule
+### Geometry looks rotated or mirrored
 
-Before fusing any data, verify three things:
+A connected TF tree can still contain bad calibration. Inspect the hard-coded
+RPY values, sensor axis conventions, and a known physical target in RViz.
+Connectivity does not prove geometric correctness.
 
-```Plain Text
-1. The topic is publishing.
-2. The message header.frame_id is correct.
-3. TF2 can transform that frame into the processing frame.
-```
+## Simulated Time And Clocks
 
-For MutoRS sensor fusion, the usual processing frame should be consistent, such as:
+Dynamic publishers and sensor sources must use the same clock. If some nodes
+use `/clock` and others use wall time, timestamped lookups fail even when frame
+names and topology are correct.
 
-```Plain Text
-base_frame
-```
+The main pipeline propagates `use_sim_time` through localization, mapping, and
+Nav2. Static transforms are time-independent after publication, but dynamic
+odometry and map transforms are not.
 
-or:
+## Removed Legacy Assumptions
 
-```Plain Text
-camera_link
-```
+The active TF contract does not use:
 
-depending on the node\.
+- `base_link`;
+- `/lidar/PointCloud` or filtered PointCloud topics;
+- `/camera/depth/points`;
+- `camera_link` as the default fused-scan processing frame;
+- an identity `map -> odom` launch helper;
+- `publish_map_to_odom_tf`.
 
-The important part is not which frame is chosen, but that all inputs are transformed into the same frame before filtering, projection, fusion, odometry, or mapping\.
+Current scan fusion uses raw `16UC1` depth, the TG30 LaserScan path, and
+`base_frame` as the default processing and fused-scan frame.
 
-## Example Visualization
+## Key Files
 
-![Image](https://internal-api-drive-stream-jp.larksuite.com/space/api/box/stream/download/authcode/?code=YzQ1MDEwODA2Y2U1NjU3NjZmZjBlMDMzODcyODJmYTJfNThhOTJmMDMyMDY0NjBlNzg2NmU2MTk3N2JjNzkwMzVfSUQ6NzY2NDkwNjkxMTYzMjgyMTc4Nl8xNzg0ODc4NzU5OjE3ODQ5NjUxNTlfVjM)
-
-
-
+| File | Role |
+| --- | --- |
+| `src/tf2_publisher/launch/all_tf2_publishers_launch.py` | Static sensor TF and disabled optional odometry republisher. |
+| `src/tf2_publisher/src/base_to_lidar_publisher.cpp` | LiDAR mount calibration. |
+| `src/tf2_publisher/src/base_to_camera_publisher.cpp` | Camera-body mount calibration. |
+| `src/tf2_publisher/src/base_to_imu_publisher.cpp` | IMU mount calibration. |
+| `src/tf2_publisher/src/odom_publisher.cpp` | Optional Odometry-to-TF relay. |
+| `src/yahboomcar_bringup/config/ekf_lidar_imu.yaml` | Normal dynamic odom TF owner. |
+| `src/muto_slam_mapping/config/mapper_params_online_async.yaml` | SLAM frame contract. |
+| `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Topic and TF readiness gates. |
+| `src/lidar_pointcloud_filter/src/camera_depth_to_laserscan_node.cpp` | Depth-frame lookup and output-frame behavior. |
+| `src/lidar_pointcloud_filter/src/laserscan_fusion_node.cpp` | Scan-frame conversion. |

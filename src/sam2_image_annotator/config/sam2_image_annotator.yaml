@@ -33,6 +33,8 @@ sam2_image_annotator:
     yolo_iou: 0.7
     yolo_imgsz: 960
     yolo_max_detections: 20
+    # 0 disables representative object crops in the typed detection message.
+    detection_crop_jpeg_quality: 90
     yolo_classes: ""
     yolo_quantize: fp16
 

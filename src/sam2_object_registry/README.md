@@ -26,6 +26,11 @@ adjustable with `confirmation_min_observations`,
 `confirmation_min_average_confidence`, `confirmation_window`, and
 `confirmation_max_gap`.
 
+The typed detection also carries a JPEG crop of the original color box. A
+candidate retains only its highest-confidence crop, and promotion atomically
+writes that one representative picture. The resulting absolute `image_path` is
+included in `StoredObject` and in YAML.
+
 Run the annotator and registry in separate terminals:
 
 ```bash
@@ -70,6 +75,11 @@ available:
 ros2 service call /sam2/save_stored_objects std_srvs/srv/Trigger "{}"
 ```
 
+An empty `image_directory` places pictures in `sam2_object_images` beside the
+YAML (normally `/opt/muto_rs_ws/sam2_object_images`). `store_images:=false`
+disables writing. Images are written when promotion occurs, independently of
+the later YAML checkpoint.
+
 When the workspace file does not exist, the default-path mode loads the legacy
 `~/.ros/sam2_objects.yaml` once and writes the merged data to the workspace file
 on the next save or clean shutdown.
@@ -80,9 +90,10 @@ To remove everything, call the destructive clear service:
 ros2 service call /sam2/clear_stored_objects std_srvs/srv/Trigger "{}"
 ```
 
-It clears confirmed objects, tentative candidates, name/spatial indexes, and
-pending synchronized observations. It immediately publishes empty object and
-marker snapshots, then atomically rewrites the YAML as an empty registry. An
+It clears confirmed objects, tentative candidates, name/spatial indexes,
+pending synchronized observations, and record-owned images inside the
+configured image directory. It immediately publishes empty object and marker
+snapshots, then atomically rewrites the YAML as an empty registry. An
 observation already processing when the service starts is invalidated so it
 cannot restore pre-clear state.
 

@@ -5,3 +5,4 @@ float32 confidence
 float32[4] box_xyxy
 float32 sam_score
 uint32 mask_area
+sensor_msgs/CompressedImage crop

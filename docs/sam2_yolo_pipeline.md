@@ -68,6 +68,8 @@ TF: color <- depth ---------> extrinsic transform                        |
                          |                       |                       |
                          v                       v                       v
                /sam2/stored_objects     RViz MarkerArray       sam2_objects.yaml
+                         |                                      + object JPEG
+                         +---- image_path ------------------------------+
                                                 services: query / save / clear
 ```
 
@@ -139,7 +141,9 @@ installed or editable SAM2 project root. The default model configuration is
    drops invalid boxes.
 5. SAM2 sets the RGB image once, then predicts one mask per accepted box. If
    multimask output is enabled, the highest-scoring mask is selected.
-6. The node composes the overlay, union mask, instance mask, and metadata.
+6. The node composes the overlay, union mask, instance mask, and metadata. Each
+   typed detection also carries a JPEG crop of its original, unannotated YOLO
+   box for possible registry promotion.
 7. When valid depth inputs and TF are available, depth pixels are projected
    into the color mask to create the labeled point cloud.
 
@@ -167,7 +171,7 @@ Outputs:
 | `/sam2/mask` | `sensor_msgs/msg/Image` | `mono8` union of refined masks. |
 | `/sam2/instance_mask` | `sensor_msgs/msg/Image` | `16UC1` frame-local instance IDs. |
 | `/sam2/segments` | `std_msgs/msg/String` | JSON image and segment metadata. |
-| `/sam2/detections` | `sam2_object_registry/msg/DetectedObjectArray` | Structured segment metadata. |
+| `/sam2/detections` | `sam2_object_registry/msg/DetectedObjectArray` | Structured segment metadata and JPEG object crops. |
 | `/sam2/instance_pointcloud` | `sensor_msgs/msg/PointCloud2` | Depth-frame XYZ, instance ID, and color. |
 
 Image and metadata outputs retain the color image header. The point cloud uses
@@ -188,6 +192,11 @@ best-effort and volatile; output publishers have queue depth `2`.
 | `box_xyxy` | Clipped box in `[x1, y1, x2, y2]` order. |
 | `sam_score` | Score of the selected SAM2 mask. |
 | `mask_area` | Refined mask area in pixels. |
+
+A typed `DetectedObject` additionally contains `crop`, a
+`sensor_msgs/msg/CompressedImage` JPEG cut from the original color image at the
+clipped YOLO box. The JSON `/sam2/segments` representation intentionally omits
+the binary crop.
 
 A no-detection frame publishes valid empty image-sized masks and empty
 metadata.
@@ -412,7 +421,9 @@ Confirmed state is organized as:
 - A used-name set and suffix counters for deterministic unique naming.
 
 Tentative state has a candidate map plus a label index and bounded observation
-deques. A two-thread ROS executor permits sensor callbacks and services to
+deques. Each candidate retains only the highest-confidence JPEG from its
+current confirmation run; it does not accumulate a picture per observation. A
+two-thread ROS executor permits sensor callbacks and services to
 overlap; queue, registry, publication, and persistence state use separate
 locks.
 
@@ -438,6 +449,8 @@ Final registry outputs are:
 | `label` | YOLO label used for association. |
 | `class_id` | YOLO class index. |
 | `position` | Confirmed centroid in the array header frame. |
+| `image_path` | Absolute path to the stored representative JPEG, or empty when image storage failed or was disabled. |
+| `image_confidence` | YOLO confidence associated with the representative crop, or `-1` when unavailable. |
 | `observation_count` | Number of observations incorporated into the record. |
 | `point_count` | Retained cloud points in the latest observation. |
 | `last_confidence` | YOLO confidence of the latest observation. |
@@ -491,6 +504,7 @@ Clear is destructive and removes:
 - Name, label, and spatial indexes.
 - Pending point-cloud and metadata messages.
 - Name suffix and internal ID state.
+- Representative JPEGs owned by records under `image_directory`.
 
 It invalidates observations already processing before the service boundary,
 immediately publishes empty object and marker snapshots, and atomically writes
@@ -513,7 +527,15 @@ For an installation under `/opt/muto_rs_ws/install`, the usual result is:
 
 ```text
 /opt/muto_rs_ws/sam2_objects.yaml
+/opt/muto_rs_ws/sam2_object_images/
 ```
+
+When a candidate is promoted, the registry atomically writes its
+highest-confidence crop to `image_directory`; the default empty directory is
+`sam2_object_images` beside the YAML. The image is written immediately at
+promotion, while YAML still follows the configured manual/shutdown checkpoint
+policy. Existing legacy records with no image acquire one on their next matched
+observation.
 
 The file contains the target frame, duplicate threshold, and sorted confirmed
 records. A representative entry is:
@@ -521,6 +543,7 @@ records. A representative entry is:
 ```yaml
 frame_id: map
 duplicate_distance_threshold: 0.25
+image_directory: /opt/muto_rs_ws/sam2_object_images
 objects:
   - name: chair
     label: chair
@@ -529,6 +552,8 @@ objects:
       x: 1.24
       y: -0.31
       z: 0.48
+    image_path: /opt/muto_rs_ws/sam2_object_images/chair_1.jpg
+    image_confidence: 0.86
     observation_count: 7
     point_count: 284
     last_confidence: 0.81
@@ -598,6 +623,7 @@ are detecting tentative objects.
 | `yolo_iou` | `0.7` | YOLO NMS IoU. |
 | `yolo_imgsz` | `960` | YOLO square inference size used for the current RGB stream. |
 | `yolo_max_detections` | `20` | Maximum boxes refined per frame. |
+| `detection_crop_jpeg_quality` | `90` | Representative crop JPEG quality; `0` disables crop encoding. |
 | `yolo_classes` | empty | Allows every detector class. |
 | `yolo_quantize` | `fp16` | YOLO CUDA precision; disabled on CPU. |
 | `max_publish_rate` | `7.0` | Maximum processing starts per second; slower inference naturally lowers throughput. |
@@ -649,6 +675,8 @@ ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
 | `marker_text_height` | `0.12` | RViz name text height. |
 | `marker_text_offset` | `0.15` | Vertical offset of name text from the centroid. |
 | `output_yaml` | empty | Resolves to the active workspace `sam2_objects.yaml`. |
+| `image_directory` | empty | Resolves to `sam2_object_images` beside `output_yaml`. |
+| `store_images` | `true` | Writes one representative JPEG when a candidate is confirmed. |
 | `save_on_shutdown` | `true` | Writes dirty confirmed state during clean shutdown. |
 
 The registry launch exposes every row above, including topic and service names.

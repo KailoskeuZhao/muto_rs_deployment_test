@@ -9,6 +9,9 @@ object_registry:
     clear_service: /sam2/clear_stored_objects
     # Empty resolves to sam2_objects.yaml in the active colcon workspace root.
     output_yaml: ""
+    # Empty resolves to sam2_object_images beside output_yaml.
+    image_directory: ""
+    store_images: true
     target_frame: map
     duplicate_distance_threshold: 0.25
     metadata_sync_tolerance: 0.2

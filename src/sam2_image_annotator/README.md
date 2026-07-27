@@ -108,6 +108,9 @@ complete valid YAML document is atomically rewritten on clean shutdown. The
 manual `/sam2/save_stored_objects` Trigger service checkpoints it earlier. The
 destructive `/sam2/clear_stored_objects` Trigger service clears confirmed and
 tentative in-memory state and atomically persists an empty YAML registry.
+The registry also stores the highest-confidence JPEG crop from each confirmed
+candidate in `/opt/muto_rs_ws/sam2_object_images` by default and returns its
+path in `StoredObject.image_path`; clear removes those registry-owned images.
 If the workspace file does not yet exist, the legacy
 `~/.ros/sam2_objects.yaml` is loaded and migrated on the next save.
 
@@ -128,7 +131,9 @@ Default topics:
 
 Each object in `/sam2/segments` and `/sam2/detections` contains `instance_id`,
 `class_id`, `label`, YOLO `confidence`, `box_xyxy`, `sam_score`, and
-`mask_area`. The typed topic avoids JSON parsing in the C++ registry. The
+`mask_area`. The typed detection additionally contains a JPEG crop of the
+original color box; binary crops are omitted from JSON. The typed topic avoids
+JSON parsing in the C++ registry. The
 `instance_id` matches the pixel value in `/sam2/instance_mask` and the point
 cloud field.
 

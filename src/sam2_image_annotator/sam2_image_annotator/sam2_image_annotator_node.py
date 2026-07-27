@@ -78,6 +78,8 @@ class Sam2ImageAnnotatorNode(Node):
         self.yolo_imgsz = int(self.declare_parameter("yolo_imgsz", 960).value)
         self.yolo_max_detections = int(
             self.declare_parameter("yolo_max_detections", 20).value)
+        self.detection_crop_jpeg_quality = int(
+            self.declare_parameter("detection_crop_jpeg_quality", 90).value)
         self.yolo_classes_text = str(
             self.declare_parameter("yolo_classes", "").value)
         self.yolo_quantize = str(
@@ -144,6 +146,10 @@ class Sam2ImageAnnotatorNode(Node):
             self.get_logger().warn(
                 "yolo_max_detections must be positive; using 20")
             self.yolo_max_detections = 20
+        if not 0 <= self.detection_crop_jpeg_quality <= 100:
+            self.get_logger().warn(
+                "detection_crop_jpeg_quality must be in [0, 100]; using 90")
+            self.detection_crop_jpeg_quality = 90
         if self.yolo_imgsz < 32:
             self.get_logger().warn("yolo_imgsz must be at least 32; using 960")
             self.yolo_imgsz = 960
@@ -666,9 +672,33 @@ class Sam2ImageAnnotatorNode(Node):
                 "box_xyxy": [float(value) for value in box],
                 "sam_score": segment["sam_score"],
                 "mask_area": int(np.count_nonzero(mask)),
+                "crop_jpeg": self.encode_detection_crop(bgr_image, box),
             })
 
         return annotated, union_mask, instance_mask, objects
+
+    def encode_detection_crop(self, image, box):
+        if self.detection_crop_jpeg_quality == 0:
+            return b""
+
+        height, width = image.shape[:2]
+        left = max(0, min(int(np.floor(box[0])), width - 1))
+        top = max(0, min(int(np.floor(box[1])), height - 1))
+        right = max(left + 1, min(int(np.ceil(box[2])) + 1, width))
+        bottom = max(top + 1, min(int(np.ceil(box[3])) + 1, height))
+        crop = image[top:bottom, left:right]
+        encoded, jpeg = cv2.imencode(
+            ".jpg",
+            crop,
+            [cv2.IMWRITE_JPEG_QUALITY, self.detection_crop_jpeg_quality],
+        )
+        if not encoded:
+            self.get_logger().warn(
+                "Failed to JPEG-encode a detection crop",
+                throttle_duration_sec=5.0,
+            )
+            return b""
+        return jpeg.tobytes()
 
     def overlay_mask(self, image, mask, color, contour_color=None):
         if not np.any(mask):
@@ -817,6 +847,10 @@ class Sam2ImageAnnotatorNode(Node):
                 throttle_duration_sec=5.0,
             )
 
+        payload_objects = [
+            {key: value for key, value in item.items() if key != "crop_jpeg"}
+            for item in (objects if objects is not None else [])
+        ]
         payload = {
             "header": {
                 "stamp": {
@@ -827,7 +861,7 @@ class Sam2ImageAnnotatorNode(Node):
             },
             "image_width": int(annotated.shape[1]),
             "image_height": int(annotated.shape[0]),
-            "objects": objects if objects is not None else [],
+            "objects": payload_objects,
         }
         self.segments_pub.publish(String(data=json.dumps(payload)))
 
@@ -844,6 +878,9 @@ class Sam2ImageAnnotatorNode(Node):
             detection.box_xyxy = [float(value) for value in item["box_xyxy"]]
             detection.sam_score = float(item["sam_score"])
             detection.mask_area = int(item["mask_area"])
+            detection.crop.header = input_msg.header
+            detection.crop.format = "jpeg"
+            detection.crop.data = item.get("crop_jpeg", b"")
             detections_msg.objects.append(detection)
         self.detections_pub.publish(detections_msg)
 

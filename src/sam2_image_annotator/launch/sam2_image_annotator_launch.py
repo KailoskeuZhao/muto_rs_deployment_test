@@ -153,6 +153,14 @@ def generate_launch_description():
         default_value="20",
         description="Maximum number of boxes refined by SAM 2 per frame.",
     )
+    detection_crop_jpeg_quality_arg = DeclareLaunchArgument(
+        "detection_crop_jpeg_quality",
+        default_value="90",
+        description=(
+            "JPEG quality for representative object crops in typed detections; "
+            "0 disables crops."
+        ),
+    )
     yolo_classes_arg = DeclareLaunchArgument(
         "yolo_classes",
         default_value="",
@@ -219,6 +227,7 @@ def generate_launch_description():
         yolo_iou_arg,
         yolo_imgsz_arg,
         yolo_max_detections_arg,
+        detection_crop_jpeg_quality_arg,
         yolo_classes_arg,
         yolo_quantize_arg,
         point_coords_arg,
@@ -295,6 +304,10 @@ def generate_launch_description():
                 ),
                 "yolo_max_detections": ParameterValue(
                     LaunchConfiguration("yolo_max_detections"),
+                    value_type=int,
+                ),
+                "detection_crop_jpeg_quality": ParameterValue(
+                    LaunchConfiguration("detection_crop_jpeg_quality"),
                     value_type=int,
                 ),
                 "yolo_classes": ParameterValue(

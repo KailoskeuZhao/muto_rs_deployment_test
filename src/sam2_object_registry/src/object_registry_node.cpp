@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -91,6 +93,8 @@ struct ObjectRecord
   std::string label;
   std::int32_t class_id{-1};
   std::array<double, 3> position{};
+  std::string image_path;
+  float image_confidence{-1.0F};
   std::uint64_t observation_count{1};
   std::uint32_t point_count{};
   float last_confidence{};
@@ -122,6 +126,10 @@ struct CandidateRecord
   std::int32_t class_id{-1};
   std::array<double, 3> position{};
   std::deque<CandidateObservation> observations;
+  std::vector<std::uint8_t> image_jpeg;
+  std::string image_format;
+  float image_confidence{-1.0F};
+  double image_stamp_seconds{-1.0};
 };
 
 class ObjectRegistryNode : public rclcpp::Node
@@ -148,6 +156,10 @@ public:
       "output_yaml", "");
     using_default_output_path_ = configured_output_path.empty();
     output_path_ = resolve_output_path(configured_output_path);
+    store_images_ = declare_parameter<bool>("store_images", true);
+    const std::string configured_image_directory = declare_parameter<std::string>(
+      "image_directory", "");
+    image_directory_ = resolve_image_directory(configured_image_directory, output_path_);
     target_frame_ = declare_parameter<std::string>("target_frame", "map");
     duplicate_distance_threshold_ = declare_parameter<double>(
       "duplicate_distance_threshold", 0.25);
@@ -216,10 +228,11 @@ public:
       get_logger(),
       "Indexing %s + %s in %s; query %s, save %s, clear %s, "
       "snapshot %s + markers %s at %.2f Hz "
-      "(newly confirmed objects publish immediately), shutdown YAML %s",
+      "(newly confirmed objects publish immediately), shutdown YAML %s, images %s",
       pointcloud_topic_.c_str(), detections_topic_.c_str(), target_frame_.c_str(),
       query_service_name_.c_str(), save_service_name_.c_str(), clear_service_name_.c_str(),
-      objects_topic_.c_str(), marker_topic_.c_str(), snapshot_publish_rate_, output_path_.c_str());
+      objects_topic_.c_str(), marker_topic_.c_str(), snapshot_publish_rate_, output_path_.c_str(),
+      store_images_ ? image_directory_.c_str() : "disabled");
     RCLCPP_INFO(
       get_logger(),
       "New objects require %d observations within %.2fs, no gap over %.2fs, and "
@@ -325,6 +338,15 @@ private:
       return fs::path(home) / value.substr(2);
     }
     return fs::absolute(fs::path(value));
+  }
+
+  static fs::path resolve_image_directory(
+    const std::string & value, const fs::path & output_path)
+  {
+    if (value.empty()) {
+      return output_path.parent_path() / "sam2_object_images";
+    }
+    return resolve_output_path(value);
   }
 
   static std::optional<fs::path> legacy_output_path()
@@ -612,7 +634,8 @@ private:
         }
         inserted = merge_observation_locked(
           label, detection->class_id, position, accumulator.count,
-          detection->confidence, cloud.header.stamp) || inserted;
+          detection->confidence, cloud.header.stamp,
+          detection->crop.format, detection->crop.data) || inserted;
       }
     }
 
@@ -674,14 +697,16 @@ private:
   bool merge_observation_locked(
     const std::string & label, std::int32_t class_id,
     const std::array<double, 3> & position, std::uint32_t point_count,
-    float confidence, const builtin_interfaces::msg::Time & stamp)
+    float confidence, const builtin_interfaces::msg::Time & stamp,
+    const std::string & image_format, const std::vector<std::uint8_t> & image_data)
   {
     const double observation_stamp = stamp_seconds(stamp);
     prune_candidates_locked(observation_stamp);
     const auto nearest = find_nearest_locked(label, position);
     if (!nearest.has_value()) {
       return stage_candidate_locked(
-        label, class_id, position, point_count, confidence, stamp);
+        label, class_id, position, point_count, confidence, stamp,
+        image_format, image_data);
     }
 
     auto & record = records_.at(*nearest);
@@ -697,6 +722,16 @@ private:
     record.last_seen = stamp;
     if (record.class_id < 0 && class_id >= 0) {
       record.class_id = class_id;
+    }
+    std::error_code image_error;
+    const bool image_missing = record.image_path.empty() ||
+      !fs::is_regular_file(record.image_path, image_error);
+    if (image_missing && !image_data.empty()) {
+      record.image_path = store_object_image(
+        record.name, record.id, image_format, image_data);
+      if (!record.image_path.empty()) {
+        record.image_confidence = confidence;
+      }
     }
     record.cell = cell_for(record.position);
     if (!(record.cell == old_cell)) {
@@ -843,7 +878,8 @@ private:
   bool stage_candidate_locked(
     const std::string & label, std::int32_t class_id,
     const std::array<double, 3> & position, std::uint32_t point_count,
-    float confidence, const builtin_interfaces::msg::Time & stamp)
+    float confidence, const builtin_interfaces::msg::Time & stamp,
+    const std::string & image_format, const std::vector<std::uint8_t> & image_data)
   {
     const double observation_stamp = stamp_seconds(stamp);
 
@@ -880,6 +916,29 @@ private:
       candidate.class_id = class_id;
     }
     normalize_candidate_locked(candidate);
+    if (!candidate.observations.empty() &&
+      candidate.image_stamp_seconds + 1.0e-6 <
+      candidate.observations.front().stamp_seconds)
+    {
+      candidate.image_jpeg.clear();
+      candidate.image_format.clear();
+      candidate.image_confidence = -1.0F;
+      candidate.image_stamp_seconds = -1.0;
+    }
+    const bool observation_retained = std::any_of(
+      candidate.observations.begin(), candidate.observations.end(),
+      [observation_stamp](const CandidateObservation & existing) {
+        return std::abs(existing.stamp_seconds - observation_stamp) <= 1.0e-6;
+      });
+    if (observation_retained &&
+      is_jpeg_data(image_data) && is_jpeg_format(image_format) &&
+      confidence > candidate.image_confidence)
+    {
+      candidate.image_jpeg = image_data;
+      candidate.image_format = image_format;
+      candidate.image_confidence = confidence;
+      candidate.image_stamp_seconds = observation_stamp;
+    }
 
     double confidence_sum = 0.0;
     for (const auto & item : candidate.observations) {
@@ -914,6 +973,11 @@ private:
     record.last_confidence = candidate.observations.back().confidence;
     record.last_seen = candidate.observations.back().stamp;
     record.cell = cell_for(record.position);
+    record.image_path = store_object_image(
+      record.name, record.id, candidate.image_format, candidate.image_jpeg);
+    if (!record.image_path.empty()) {
+      record.image_confidence = candidate.image_confidence;
+    }
     const auto candidate_to_erase = candidate.id;
     const auto id = record.id;
     const auto name = record.name;
@@ -956,6 +1020,8 @@ private:
     result.position.x = record.position[0];
     result.position.y = record.position[1];
     result.position.z = record.position[2];
+    result.image_path = record.image_path;
+    result.image_confidence = record.image_confidence;
     result.observation_count = record.observation_count;
     result.point_count = record.point_count;
     result.last_confidence = record.last_confidence;
@@ -1125,10 +1191,18 @@ private:
 
     std::size_t confirmed_count = 0U;
     std::size_t tentative_count = 0U;
+    std::vector<fs::path> image_paths;
     {
       std::lock_guard<std::mutex> lock(registry_mutex_);
       confirmed_count = records_.size();
       tentative_count = candidates_.size();
+      image_paths.reserve(records_.size());
+      for (const auto & [id, record] : records_) {
+        static_cast<void>(id);
+        if (!record.image_path.empty()) {
+          image_paths.emplace_back(record.image_path);
+        }
+      }
       records_.clear();
       name_index_.clear();
       label_index_.clear();
@@ -1143,6 +1217,8 @@ private:
       ++revision_;
     }
 
+    const auto [removed_images, failed_images] = remove_object_images(image_paths);
+
     {
       std::lock_guard<std::mutex> lock(save_mutex_);
       persistence_enabled_ = true;
@@ -1155,8 +1231,13 @@ private:
       response->success = true;
       response->message =
         "Cleared " + std::to_string(confirmed_count) + " confirmed and " +
-        std::to_string(tentative_count) + " tentative objects; persisted empty registry to " +
+        std::to_string(tentative_count) + " tentative objects and " +
+        std::to_string(removed_images) + " stored images; persisted empty registry to " +
         output_path_.string();
+      if (failed_images > 0U) {
+        response->message += "; failed to remove " + std::to_string(failed_images) +
+          " image(s) outside or unavailable under the configured image directory";
+      }
       RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
     } catch (const std::exception & error) {
       response->success = false;
@@ -1165,6 +1246,33 @@ private:
         ": " + error.what();
       RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
     }
+  }
+
+  std::pair<std::size_t, std::size_t> remove_object_images(
+    const std::vector<fs::path> & paths) const
+  {
+    std::size_t removed = 0U;
+    std::size_t failed = 0U;
+    std::error_code error;
+    const fs::path image_root = fs::weakly_canonical(image_directory_, error);
+    if (error) {
+      return {0U, paths.size()};
+    }
+    for (const auto & path : paths) {
+      error.clear();
+      const fs::path parent = fs::weakly_canonical(path.parent_path(), error);
+      if (error || parent != image_root) {
+        ++failed;
+        continue;
+      }
+      error.clear();
+      if (fs::remove(path, error)) {
+        ++removed;
+      } else if (error) {
+        ++failed;
+      }
+    }
+    return {removed, failed};
   }
 
   void index_loaded_record_locked(ObjectRecord record)
@@ -1194,6 +1302,7 @@ private:
       load_path = *legacy_path;
       migrate_legacy_database = true;
     }
+    bool database_needs_rewrite = migrate_legacy_database;
     try {
       const YAML::Node root = YAML::LoadFile(load_path.string());
       const std::string frame = root["frame_id"] ?
@@ -1228,6 +1337,29 @@ private:
             node["point_count"].as<std::uint32_t>() : 0U;
           record.last_confidence = node["last_confidence"] ?
             node["last_confidence"].as<float>() : 0.0F;
+          if (node["image_path"]) {
+            const std::string saved_image_path = node["image_path"].as<std::string>();
+            if (!saved_image_path.empty()) {
+              fs::path image_path(saved_image_path);
+              if (image_path.is_relative()) {
+                image_path = load_path.parent_path() / image_path;
+              }
+              image_path = fs::absolute(image_path).lexically_normal();
+              std::error_code image_error;
+              if (fs::is_regular_file(image_path, image_error)) {
+                record.image_path = image_path.string();
+              } else {
+                database_needs_rewrite = true;
+                RCLCPP_WARN(
+                  get_logger(),
+                  "Stored image for %s is unavailable at %s; the next matched "
+                  "observation can replace it",
+                  record.name.c_str(), image_path.c_str());
+              }
+            }
+          }
+          record.image_confidence = !record.image_path.empty() && node["image_confidence"] ?
+            node["image_confidence"].as<float>() : -1.0F;
           const auto last_seen = node["last_seen"];
           if (last_seen) {
             record.last_seen.sec = last_seen["sec"] ? last_seen["sec"].as<std::int32_t>() : 0;
@@ -1240,7 +1372,7 @@ private:
           index_loaded_record_locked(record);
         }
       }
-      dirty_ = migrate_legacy_database;
+      dirty_ = database_needs_rewrite;
       if (migrate_legacy_database) {
         RCLCPP_INFO(
           get_logger(),
@@ -1272,6 +1404,113 @@ private:
     }
   }
 
+  static bool is_jpeg_format(std::string format)
+  {
+    std::transform(
+      format.begin(), format.end(), format.begin(),
+      [](unsigned char character) {return static_cast<char>(std::tolower(character));});
+    return format.find("jpeg") != std::string::npos ||
+           format.find("jpg") != std::string::npos;
+  }
+
+  static bool is_jpeg_data(const std::vector<std::uint8_t> & image_data)
+  {
+    return image_data.size() >= 4U &&
+           image_data[0] == 0xFFU && image_data[1] == 0xD8U &&
+           image_data[image_data.size() - 2U] == 0xFFU &&
+           image_data.back() == 0xD9U;
+  }
+
+  static std::string safe_image_stem(const std::string & name)
+  {
+    std::string result;
+    result.reserve(name.size());
+    for (const unsigned char character : name) {
+      if (std::isalnum(character) != 0 || character == '-' || character == '_') {
+        result.push_back(static_cast<char>(character));
+      } else {
+        result.push_back('_');
+      }
+    }
+    if (result.size() > 96U) {
+      result.resize(96U);
+    }
+    return result.empty() ? "object" : result;
+  }
+
+  std::string store_object_image(
+    const std::string & name, std::uint64_t id, const std::string & format,
+    const std::vector<std::uint8_t> & image_data)
+  {
+    if (!store_images_) {
+      return "";
+    }
+    if (!is_jpeg_data(image_data)) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Confirmed object JPEG is unavailable or invalid; check "
+        "detection_crop_jpeg_quality");
+      return "";
+    }
+    if (!is_jpeg_format(format)) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Ignoring representative object image with unsupported format '%s'", format.c_str());
+      return "";
+    }
+
+    try {
+      fs::create_directories(image_directory_);
+      const fs::path final_path = image_directory_ /
+        (safe_image_stem(name) + "_" + std::to_string(id) + ".jpg");
+      std::string pattern =
+        (image_directory_ / ("." + final_path.filename().string() + ".XXXXXX")).string();
+      std::vector<char> temporary_name(pattern.begin(), pattern.end());
+      temporary_name.push_back(0);
+      int descriptor = ::mkstemp(temporary_name.data());
+      if (descriptor < 0) {
+        throw std::runtime_error("mkstemp failed: " + std::string(std::strerror(errno)));
+      }
+      const fs::path temporary_path(temporary_name.data());
+      try {
+        write_all(descriptor, image_data);
+        if (::fsync(descriptor) != 0) {
+          throw std::runtime_error("fsync failed: " + std::string(std::strerror(errno)));
+        }
+        const int close_result = ::close(descriptor);
+        descriptor = -1;
+        if (close_result != 0) {
+          throw std::runtime_error("close failed: " + std::string(std::strerror(errno)));
+        }
+        if (::rename(temporary_path.c_str(), final_path.c_str()) != 0) {
+          throw std::runtime_error("rename failed: " + std::string(std::strerror(errno)));
+        }
+        const int directory_descriptor = ::open(
+          image_directory_.c_str(), O_RDONLY | O_DIRECTORY);
+        if (directory_descriptor >= 0) {
+          static_cast<void>(::fsync(directory_descriptor));
+          static_cast<void>(::close(directory_descriptor));
+        }
+      } catch (...) {
+        if (descriptor >= 0) {
+          static_cast<void>(::close(descriptor));
+        }
+        static_cast<void>(::unlink(temporary_path.c_str()));
+        throw;
+      }
+      RCLCPP_INFO(
+        get_logger(), "Stored representative image for %s at %s",
+        name.c_str(), final_path.c_str());
+      return final_path.string();
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Failed to store representative image for %s: %s",
+        name.c_str(), error.what());
+      return "";
+    }
+  }
+
   static void append_yaml_object(YAML::Emitter & emitter, const ObjectRecord & record)
   {
     emitter << YAML::BeginMap;
@@ -1283,6 +1522,8 @@ private:
     emitter << YAML::Key << "y" << YAML::Value << record.position[1];
     emitter << YAML::Key << "z" << YAML::Value << record.position[2];
     emitter << YAML::EndMap;
+    emitter << YAML::Key << "image_path" << YAML::Value << record.image_path;
+    emitter << YAML::Key << "image_confidence" << YAML::Value << record.image_confidence;
     emitter << YAML::Key << "observation_count" << YAML::Value << record.observation_count;
     emitter << YAML::Key << "point_count" << YAML::Value << record.point_count;
     emitter << YAML::Key << "last_confidence" << YAML::Value << record.last_confidence;
@@ -1294,6 +1535,23 @@ private:
   }
 
   static void write_all(int descriptor, const std::string & content)
+  {
+    std::size_t written = 0U;
+    while (written < content.size()) {
+      const ssize_t result = ::write(
+        descriptor, content.data() + written, content.size() - written);
+      if (result < 0 && errno == EINTR) {
+        continue;
+      }
+      if (result <= 0) {
+        throw std::runtime_error("write failed: " + std::string(std::strerror(errno)));
+      }
+      written += static_cast<std::size_t>(result);
+    }
+  }
+
+  static void write_all(
+    int descriptor, const std::vector<std::uint8_t> & content)
   {
     std::size_t written = 0U;
     while (written < content.size()) {
@@ -1341,6 +1599,7 @@ private:
     emitter << YAML::Key << "frame_id" << YAML::Value << target_frame_;
     emitter << YAML::Key << "duplicate_distance_threshold" << YAML::Value <<
       duplicate_distance_threshold_;
+    emitter << YAML::Key << "image_directory" << YAML::Value << image_directory_.string();
     emitter << YAML::Key << "objects" << YAML::Value << YAML::BeginSeq;
     for (const auto & record : snapshot) {
       append_yaml_object(emitter, record);
@@ -1405,7 +1664,9 @@ private:
   std::string save_service_name_;
   std::string clear_service_name_;
   fs::path output_path_;
+  fs::path image_directory_;
   bool using_default_output_path_{};
+  bool store_images_{};
   std::string target_frame_;
   double duplicate_distance_threshold_{};
   double metadata_sync_tolerance_{};

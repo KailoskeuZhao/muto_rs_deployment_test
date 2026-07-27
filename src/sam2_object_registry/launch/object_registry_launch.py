@@ -28,6 +28,14 @@ def generate_launch_description():
                 'Registry YAML path. Empty resolves to sam2_objects.yaml in '
                 'the active colcon workspace root.'
             )),
+        DeclareLaunchArgument(
+            'image_directory',
+            default_value='',
+            description=(
+                'Representative object image directory. Empty places '
+                'sam2_object_images beside output_yaml.'
+            )),
+        DeclareLaunchArgument('store_images', default_value='true'),
         DeclareLaunchArgument('target_frame', default_value='map'),
         DeclareLaunchArgument(
             'duplicate_distance_threshold', default_value='0.25'),
@@ -65,6 +73,9 @@ def generate_launch_description():
             'save_service': LaunchConfiguration('save_service'),
             'clear_service': LaunchConfiguration('clear_service'),
             'output_yaml': LaunchConfiguration('output_yaml'),
+            'image_directory': LaunchConfiguration('image_directory'),
+            'store_images': ParameterValue(
+                LaunchConfiguration('store_images'), value_type=bool),
             'target_frame': LaunchConfiguration('target_frame'),
             'duplicate_distance_threshold': ParameterValue(
                 LaunchConfiguration('duplicate_distance_threshold'),

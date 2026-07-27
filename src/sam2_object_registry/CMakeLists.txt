@@ -26,7 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/StoredObject.msg"
   "msg/StoredObjectArray.msg"
   "srv/GetStoredObjects.srv"
-  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
+  DEPENDENCIES builtin_interfaces geometry_msgs sensor_msgs std_msgs
 )
 
 add_executable(object_registry_node src/object_registry_node.cpp)

@@ -20,148 +20,154 @@ def scoped_include(launch_path, launch_arguments, condition=None):
 
 def generate_launch_description():
     slam_params_file = os.path.join(
-        get_package_share_directory("muto_slam_mapping"),
-        "config",
-        "mapper_params_online_async.yaml",
+        get_package_share_directory('muto_slam_mapping'),
+        'config',
+        'mapper_params_online_async.yaml',
     )
     slam_toolbox_launch = os.path.join(
-        get_package_share_directory("slam_toolbox"),
-        "launch",
-        "online_async_launch.py",
+        get_package_share_directory('slam_toolbox'),
+        'launch',
+        'online_async_launch.py',
     )
     fused_laserscan_launch = os.path.join(
-        get_package_share_directory("lidar_pointcloud_filter"),
-        "launch",
-        "camera_depth_to_laserscan_launch.py",
+        get_package_share_directory('lidar_pointcloud_filter'),
+        'launch',
+        'camera_depth_to_laserscan_launch.py',
     )
 
     slam_params_file_arg = DeclareLaunchArgument(
-        "slam_params_file",
+        'slam_params_file',
         default_value=slam_params_file,
-        description="Path to the slam_toolbox online async mapper parameter file.",
+        description='Path to the slam_toolbox online async mapper parameter file.',
     )
     launch_fused_laserscan_arg = DeclareLaunchArgument(
-        "launch_fused_laserscan",
-        default_value="true",
+        'launch_fused_laserscan',
+        default_value='true',
         description=(
-            "Whether to launch camera depth-image to LaserScan conversion and fuse it with "
-            "the filtered no-downsample LiDAR LaserScan."
+            'Whether to launch camera depth-image to LaserScan conversion and fuse it with '
+            'the filtered no-downsample LiDAR LaserScan.'
         ),
     )
     camera_depth_image_topic_arg = DeclareLaunchArgument(
-        "camera_depth_image_topic",
-        default_value="/camera/depth/image_raw",
-        description="16UC1 depth image converted into the camera LaserScan.",
+        'camera_depth_image_topic',
+        default_value='/camera/depth/image_raw',
+        description='16UC1 depth image converted into the camera LaserScan.',
     )
     camera_depth_info_topic_arg = DeclareLaunchArgument(
-        "camera_depth_info_topic",
-        default_value="/camera/depth/camera_info",
-        description="Depth CameraInfo used to back-project sampled pixels.",
+        'camera_depth_info_topic',
+        default_value='/camera/depth/camera_info',
+        description='Depth CameraInfo used to back-project sampled pixels.',
     )
     camera_scan_topic_arg = DeclareLaunchArgument(
-        "camera_scan_topic",
-        default_value="/camera/filtered_laserscan",
-        description="Intermediate downsampled camera LaserScan topic.",
+        'camera_scan_topic',
+        default_value='/camera/filtered_laserscan',
+        description='Intermediate downsampled camera LaserScan topic.',
     )
     fusion_lidar_scan_topic_arg = DeclareLaunchArgument(
-        "fusion_lidar_scan_topic",
-        default_value="/lidar/filtered_laserscan_no_downsample",
+        'fusion_lidar_scan_topic',
+        default_value='/lidar/filtered_laserscan_no_downsample',
         description=(
-            "Filtered full-resolution LiDAR LaserScan that drives fusion and "
-            "continues as the fallback when camera depth is unavailable."
+            'Filtered full-resolution LiDAR LaserScan that drives fusion and '
+            'continues as the fallback when camera depth is unavailable.'
         ),
     )
     fused_scan_frame_arg = DeclareLaunchArgument(
-        "fused_scan_frame",
-        default_value="base_frame",
-        description="Frame used for /fused/laserscan.",
+        'fused_scan_frame',
+        default_value='base_frame',
+        description='Frame used for /fused/laserscan.',
     )
     depth_min_z_arg = DeclareLaunchArgument(
-        "depth_min_z",
-        default_value="-0.10",
-        description="Minimum depth-camera point z in fused_scan_frame to keep.",
+        'depth_min_z',
+        default_value='-0.10',
+        description='Minimum depth-camera point z in fused_scan_frame to keep.',
     )
     depth_max_z_arg = DeclareLaunchArgument(
-        "depth_max_z",
-        default_value="0.18",
-        description="Maximum depth-camera point z in fused_scan_frame to keep.",
+        'depth_max_z',
+        default_value='0.18',
+        description='Maximum depth-camera point z in fused_scan_frame to keep.',
     )
     depth_min_x_arg = DeclareLaunchArgument(
-        "depth_min_x",
-        default_value="0.30",
-        description="Minimum depth-camera point x in fused_scan_frame to keep.",
+        'depth_min_x',
+        default_value='0.30',
+        description='Minimum depth-camera point x in fused_scan_frame to keep.',
     )
     use_sim_time_arg = DeclareLaunchArgument(
-        "use_sim_time",
-        default_value="false",
-        description="Use simulation clock if true.",
+        'use_sim_time',
+        default_value='false',
+        description='Use simulation clock if true.',
     )
     restamp_laserscan_output_arg = DeclareLaunchArgument(
-        "restamp_laserscan_output",
-        default_value="false",
+        'restamp_laserscan_output',
+        default_value='false',
         description=(
-            "Use current ROS time for generated /fused/laserscan stamps. "
-            "Leave false unless camera/LiDAR stamps are known bad while the data is fresh."
+            'Use current ROS time for generated /fused/laserscan stamps. '
+            'Leave false unless camera/LiDAR stamps are known bad while the data is fresh.'
         ),
     )
     input_stamp_warning_age_arg = DeclareLaunchArgument(
-        "input_stamp_warning_age",
-        default_value="1.0",
-        description="Warn when depth-image or scan stamps differ from this node clock by more seconds.",
+        'input_stamp_warning_age',
+        default_value='1.0',
+        description=(
+            'Warn when depth-image or scan stamps differ from this node clock '
+            'by more seconds.'
+        ),
     )
     max_input_age_arg = DeclareLaunchArgument(
-        "max_input_age",
-        default_value="2.0",
+        'max_input_age',
+        default_value='2.0',
         description=(
-            "Drop depth images/scans whose stamps differ from this node clock by more seconds. "
-            "Set 0.0 only for intentional non-live stamps."
+            'Drop depth images/scans whose stamps differ from this node clock by more seconds. '
+            'Set 0.0 only for intentional non-live stamps.'
         ),
     )
     fused_scan_queue_size_arg = DeclareLaunchArgument(
-        "fused_scan_queue_size",
-        default_value="1",
-        description="Queue size for camera scan conversion and scan fusion.",
+        'fused_scan_queue_size',
+        default_value='1',
+        description='Queue size for camera scan conversion and scan fusion.',
     )
     fused_scan_max_publish_rate_arg = DeclareLaunchArgument(
-        "fused_scan_max_publish_rate",
-        default_value="7.0",
+        'fused_scan_max_publish_rate',
+        default_value='7.0',
         description=(
-            "Maximum camera-depth-to-scan processing rate in Hz. LiDAR-driven fused output "
-            "continues independently. Set 0.0 to process every depth image."
+            'Maximum camera-depth-to-scan processing rate in Hz. LiDAR-driven fused output '
+            'continues independently. Set 0.0 to process every depth image.'
         ),
     )
     fused_scan_camera_max_age_arg = DeclareLaunchArgument(
-        "fused_scan_camera_max_age",
-        default_value="0.5",
+        'fused_scan_camera_max_age',
+        default_value='0.5',
         description=(
-            "Maximum camera/LiDAR timestamp difference in seconds. A missing or "
-            "older camera scan is omitted while LiDAR-only output continues."
+            'Maximum camera/LiDAR timestamp difference in seconds. A missing or '
+            'older camera scan is omitted while LiDAR-only output continues.'
         ),
     )
     fused_scan_pixel_stride_x_arg = DeclareLaunchArgument(
-        "fused_scan_pixel_stride_x",
-        default_value="4",
-        description="Depth block width; project only its nearest valid pixel.",
+        'fused_scan_pixel_stride_x',
+        default_value='4',
+        description='Depth block width; project only its nearest valid pixel.',
     )
     fused_scan_pixel_stride_y_arg = DeclareLaunchArgument(
-        "fused_scan_pixel_stride_y",
-        default_value="4",
-        description="Depth block height; project only its nearest valid pixel.",
+        'fused_scan_pixel_stride_y',
+        default_value='4',
+        description='Depth block height; project only its nearest valid pixel.',
     )
     camera_scan_angle_increment_arg = DeclareLaunchArgument(
-        "camera_scan_angle_increment",
-        default_value="0.017453292519943295",
-        description="Intermediate camera LaserScan angular resolution in radians.",
+        'camera_scan_angle_increment',
+        default_value='0.017453292519943295',
+        description='Intermediate camera LaserScan angular resolution in radians.',
     )
     fused_scan_angle_increment_arg = DeclareLaunchArgument(
-        "fused_scan_angle_increment",
-        default_value="0.004363323129985824",
-        description="/fused/laserscan angular resolution in radians.",
+        'fused_scan_angle_increment',
+        default_value='0.004363323129985824',
+        description='/fused/laserscan angular resolution in radians.',
     )
     fused_scan_processing_time_warning_arg = DeclareLaunchArgument(
-        "fused_scan_processing_time_warning",
-        default_value="0.05",
-        description="Warn when one /fused/laserscan conversion takes longer than this many seconds.",
+        'fused_scan_processing_time_warning',
+        default_value='0.05',
+        description=(
+            'Warn when one /fused/laserscan conversion takes longer than this '
+            'many seconds.'
+        ),
     )
 
     return LaunchDescription([
@@ -189,38 +195,38 @@ def generate_launch_description():
         fused_scan_processing_time_warning_arg,
         scoped_include(
             fused_laserscan_launch,
-            condition=IfCondition(LaunchConfiguration("launch_fused_laserscan")),
+            condition=IfCondition(LaunchConfiguration('launch_fused_laserscan')),
             launch_arguments={
-                "depth_image_topic": LaunchConfiguration("camera_depth_image_topic"),
-                "camera_info_topic": LaunchConfiguration("camera_depth_info_topic"),
-                "camera_scan_topic": LaunchConfiguration("camera_scan_topic"),
-                "lidar_scan_topic": LaunchConfiguration("fusion_lidar_scan_topic"),
-                "fused_scan_frame": LaunchConfiguration("fused_scan_frame"),
-                "processing_frame": LaunchConfiguration("fused_scan_frame"),
-                "min_z": LaunchConfiguration("depth_min_z"),
-                "max_z": LaunchConfiguration("depth_max_z"),
-                "camera_min_x": LaunchConfiguration("depth_min_x"),
-                "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "restamp_output": LaunchConfiguration("restamp_laserscan_output"),
-                "input_stamp_warning_age": LaunchConfiguration("input_stamp_warning_age"),
-                "max_input_age": LaunchConfiguration("max_input_age"),
-                "queue_size": LaunchConfiguration("fused_scan_queue_size"),
-                "max_publish_rate": LaunchConfiguration("fused_scan_max_publish_rate"),
-                "max_lidar_age": LaunchConfiguration("fused_scan_camera_max_age"),
-                "pixel_stride_x": LaunchConfiguration("fused_scan_pixel_stride_x"),
-                "pixel_stride_y": LaunchConfiguration("fused_scan_pixel_stride_y"),
-                "camera_angle_increment": LaunchConfiguration("camera_scan_angle_increment"),
-                "fused_angle_increment": LaunchConfiguration("fused_scan_angle_increment"),
-                "processing_time_warning": LaunchConfiguration(
-                    "fused_scan_processing_time_warning"
+                'depth_image_topic': LaunchConfiguration('camera_depth_image_topic'),
+                'camera_info_topic': LaunchConfiguration('camera_depth_info_topic'),
+                'camera_scan_topic': LaunchConfiguration('camera_scan_topic'),
+                'lidar_scan_topic': LaunchConfiguration('fusion_lidar_scan_topic'),
+                'fused_scan_frame': LaunchConfiguration('fused_scan_frame'),
+                'processing_frame': LaunchConfiguration('fused_scan_frame'),
+                'min_z': LaunchConfiguration('depth_min_z'),
+                'max_z': LaunchConfiguration('depth_max_z'),
+                'camera_min_x': LaunchConfiguration('depth_min_x'),
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'restamp_output': LaunchConfiguration('restamp_laserscan_output'),
+                'input_stamp_warning_age': LaunchConfiguration('input_stamp_warning_age'),
+                'max_input_age': LaunchConfiguration('max_input_age'),
+                'queue_size': LaunchConfiguration('fused_scan_queue_size'),
+                'max_publish_rate': LaunchConfiguration('fused_scan_max_publish_rate'),
+                'max_lidar_age': LaunchConfiguration('fused_scan_camera_max_age'),
+                'pixel_stride_x': LaunchConfiguration('fused_scan_pixel_stride_x'),
+                'pixel_stride_y': LaunchConfiguration('fused_scan_pixel_stride_y'),
+                'camera_angle_increment': LaunchConfiguration('camera_scan_angle_increment'),
+                'fused_angle_increment': LaunchConfiguration('fused_scan_angle_increment'),
+                'processing_time_warning': LaunchConfiguration(
+                    'fused_scan_processing_time_warning'
                 ),
             }.items(),
         ),
         scoped_include(
             slam_toolbox_launch,
             launch_arguments={
-                "slam_params_file": LaunchConfiguration("slam_params_file"),
-                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                'slam_params_file': LaunchConfiguration('slam_params_file'),
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
             }.items(),
         ),
     ])

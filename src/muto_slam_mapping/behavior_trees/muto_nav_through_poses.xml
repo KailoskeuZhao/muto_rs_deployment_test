@@ -9,9 +9,17 @@
     <RecoveryNode number_of_retries="4" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
-          <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+          <Sequence name="PlanAndSmoothPath">
+            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            <SmoothPath
+              unsmoothed_path="{path}"
+              smoothed_path="{smoothed_path}"
+              smoother_id="simple_smoother"
+              max_smoothing_duration="0.5"
+              check_for_collisions="true"/>
+          </Sequence>
         </RateController>
-        <FollowPath path="{path}" controller_id="FollowPath"/>
+        <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>

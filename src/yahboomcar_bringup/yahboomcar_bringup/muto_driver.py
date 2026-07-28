@@ -73,13 +73,13 @@ class yahboomcar_driver(Node):
 		self.vel_y = max(-30, min(30, self.vel_y))
 		self.angular_z = max(-30, min(30, self.angular_z))
 		
-		# 角速度特殊处理：确保在有效范围[10-20]内，或为0
-		# Special handling for angular velocity: ensure within valid range [10-20] or 0
+		# 角速度特殊处理：确保在有效范围[10-30]内，或为0
+		# Special handling for angular velocity: ensure within valid range [10-30] or 0
 		if self.angular_z != 0:
 			if abs(self.angular_z) < 10:
 				self.angular_z = 10 if self.angular_z > 0 else -10
-			elif abs(self.angular_z) > 20:
-				self.angular_z = 20 if self.angular_z > 0 else -20
+			elif abs(self.angular_z) > 30:
+				self.angular_z = 30 if self.angular_z > 0 else -30
 		
 		self.get_logger().info("ROS vel: x={:.3f}, y={:.3f}, z={:.3f} -> Muto levels: x={:.1f}, y={:.1f}, z={:.1f}".format(
 			ros_vel_x, ros_vel_y, ros_angular_z, self.vel_x, self.vel_y, self.angular_z))

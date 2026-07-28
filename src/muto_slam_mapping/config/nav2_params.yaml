@@ -45,8 +45,9 @@ controller_server:
     controller_plugins: ["FollowPath"]
 
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.1
+      required_movement_angle: 0.15
       movement_time_allowance: 13.0
 
     goal_checker:
@@ -57,15 +58,15 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.2
+      desired_linear_vel: 0.25
       # Fixed accuracy-oriented carrot distance. With velocity scaling disabled,
       # min/max lookahead and lookahead_time are not used by Humble RPP.
       lookahead_dist: 0.25
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      # The Muto driver accepts at most angular level 20 (0.2 rad/s).
-      rotate_to_heading_angular_vel: 0.2
+      # Match the Muto driver's angular level 30 ceiling (0.3 rad/s).
+      rotate_to_heading_angular_vel: 0.3
       transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.1
@@ -167,9 +168,9 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.2, 0.0, 0.2]
-    min_velocity: [-0.15, 0.0, -0.2]
-    max_accel: [0.2, 0.0, 0.4]
+    max_velocity: [0.25, 0.0, 0.3]
+    min_velocity: [-0.15, 0.0, -0.3]
+    max_accel: [0.25, 0.0, 0.4]
     max_decel: [-0.3, 0.0, -0.5]
     odom_topic: /odometry/filtered
     odom_duration: 0.2
@@ -193,7 +194,7 @@ behavior_server:
     robot_base_frame: base_frame
     transform_tolerance: 0.1
     simulate_ahead_time: 1.5
-    max_rotational_vel: 0.2
+    max_rotational_vel: 0.3
     min_rotational_vel: 0.1
     rotational_acc_lim: 0.4
 

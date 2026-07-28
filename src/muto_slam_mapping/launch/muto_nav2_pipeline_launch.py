@@ -130,7 +130,10 @@ def generate_launch_description():
         'localization_delay',
         'localization_readiness_timeout',
         'launch_localization',
-        [('/lidar/raw_laserscan', 'sensor_msgs/msg/LaserScan')],
+        [
+            ('/lidar/raw_laserscan', 'sensor_msgs/msg/LaserScan'),
+            ('/imu/data_processed', 'sensor_msgs/msg/Imu'),
+        ],
         [('base_frame', 'lidar_frame'), ('base_frame', 'imu_link')],
         'yahboomcar_bringup',
         'ekf_imu_lidar_launch.py',
@@ -250,8 +253,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'localization_readiness_timeout',
-            default_value='60.0',
-            description='Seconds to wait for raw scan and sensor TF.',
+            default_value='120.0',
+            description=(
+                'Seconds to wait for raw scan, calibrated IMU output, and '
+                'sensor TF.'
+            ),
         ),
         DeclareLaunchArgument(
             'mapping_readiness_timeout',

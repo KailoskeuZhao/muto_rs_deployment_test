@@ -11,13 +11,14 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from rclpy.utilities import remove_ros_args
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from tf2_ros import Buffer, TransformListener
 
 
 MESSAGE_TYPES = {
     'nav_msgs/msg/OccupancyGrid': OccupancyGrid,
     'nav_msgs/msg/Odometry': Odometry,
+    'sensor_msgs/msg/Imu': Imu,
     'sensor_msgs/msg/LaserScan': LaserScan,
 }
 

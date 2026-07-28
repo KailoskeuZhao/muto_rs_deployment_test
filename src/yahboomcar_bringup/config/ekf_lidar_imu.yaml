@@ -2,6 +2,9 @@ ekf_filter_node:
   ros__parameters:
     frequency: 30.0
     sensor_timeout: 0.2
+    # Advance the filter state to each 30 Hz publication time instead of
+    # reusing the latest (slower) sensor timestamp.
+    predict_to_current_time: true
     two_d_mode: true
 
     map_frame: map
@@ -9,7 +12,8 @@ ekf_filter_node:
     base_link_frame: base_frame
     world_frame: odom
 
-    transform_time_offset: 0.0
+    # Keep odom->base_frame available slightly ahead of the 16 Hz LiDAR scan.
+    transform_time_offset: 0.05
     transform_timeout: 0.0
     publish_tf: true
     publish_acceleration: false

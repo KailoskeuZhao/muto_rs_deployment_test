@@ -9,5 +9,10 @@ slam_toolbox:
     mode: mapping
 
     resolution: 0.04
-    transform_publish_period: 0.08
+    # Async mode should retain only the newest scan while waiting for odom TF.
+    scan_queue_size: 1.0
+    # Publish map->odom at the Nav2 controller's 20 Hz cadence and retain the
+    # standard future-dating/TF wait budget.
+    transform_publish_period: 0.05
+    transform_timeout: 0.5
     map_update_interval: 3.0

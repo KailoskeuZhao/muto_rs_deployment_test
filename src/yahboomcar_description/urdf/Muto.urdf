@@ -1,0 +1,1279 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-1-g15f4949  Build Version: 1.6.7594.29634
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="yahboomcar">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.014753 -0.0011703 0.042862"
+        rpy="0 0 0" />
+      <mass
+        value="0.52271" />
+      <inertia
+        ixx="0.00029973"
+        ixy="1.5394E-07"
+        ixz="6.7511E-06"
+        iyy="0.00065621"
+        iyz="-1.7792E-07"
+        izz="0.00085184" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.22353 0.22353 0.22353 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+
+  <link
+    name="zq1_Link">
+    <inertial>
+      <origin
+        xyz="0.0175671234822099 0.0183275622855853 -0.0279577757363983"
+        rpy="0 0 0" />
+      <mass
+        value="0.0188688838363916" />
+      <inertia
+        ixx="3.22767024053249E-06"
+        ixy="-3.24265606811455E-09"
+        ixz="5.44703489494797E-19"
+        iyy="3.2260036647082E-06"
+        iyz="-5.4967991522866E-19"
+        izz="3.19885659442498E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zq1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zq1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zq1_Joint"
+    type="revolute">
+    <origin
+      xyz="0.102390617184867 0.050690984282426 0.05005003231721"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="zq1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zq2_Link">
+    <inertial>
+      <origin
+        xyz="0.00289010592570774 0.0441830666758998 0.0189457195462664"
+        rpy="0 0 0" />
+      <mass
+        value="0.0168985875743192" />
+      <inertia
+        ixx="3.83292368499588E-06"
+        ixy="-4.97754558978875E-07"
+        ixz="-4.56796884616839E-07"
+        iyy="3.82012710915592E-06"
+        iyz="-4.62705670262728E-07"
+        izz="5.54892411357111E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zq2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.180392156862745 0.180392156862745 0.180392156862745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zq2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zq2_Joint"
+    type="revolute">
+    <origin
+      xyz="0.055227 0.016573 -0.027474"
+      rpy="0 0 0" />
+    <parent
+      link="zq1_Link" />
+    <child
+      link="zq2_Link" />
+    <axis
+      xyz="0.71164 -0.70255 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zq3_Link">
+    <inertial>
+      <origin
+        xyz="-0.00495043469238857 0.034563884337893 -0.041258453020474"
+        rpy="0 0 0" />
+      <mass
+        value="0.0295670688235905" />
+      <inertia
+        ixx="1.57761940315882E-05"
+        ixy="1.18518257421779E-06"
+        ixz="2.49003640832861E-06"
+        iyy="1.58066616336138E-05"
+        iyz="2.52224789627681E-06"
+        izz="7.61819604152756E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zq3_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zq3_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zq3_Joint"
+    type="revolute">
+    <origin
+      xyz="0.0497740601308618 0.0504179449064641 0.0158615312364907"
+      rpy="0 0 0" />
+    <parent
+      link="zq2_Link" />
+    <child
+      link="zq3_Link" />
+    <axis
+      xyz="-0.711636313809335 0.702548045949785 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zz1_Link">
+    <inertial>
+      <origin
+        xyz="-0.000374589652654412 0.0253843070714884 -0.0279577757599148"
+        rpy="0 0 0" />
+      <mass
+        value="0.018868883529333" />
+      <inertia
+        ixx="3.23009005065797E-06"
+        ixy="7.91542915538644E-10"
+        ixz="-7.06179953679885E-23"
+        iyy="3.22358385361411E-06"
+        iyz="-4.7390846562016E-21"
+        izz="3.19885659347594E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zz1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zz1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zz1_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.0809 0.05005"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="zz1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zz2_Link">
+    <inertial>
+      <origin
+        xyz="-0.0289840230906464 0.0334727130417581 0.0189457195708553"
+        rpy="0 0 0" />
+      <mass
+        value="0.0168985873058009" />
+      <inertia
+        ixx="4.32432106955215E-06"
+        ixy="3.7440216529821E-13"
+        ixz="-2.85103114176803E-13"
+        iyy="3.32872974585563E-06"
+        iyz="-6.50199923857879E-07"
+        izz="5.54892413590826E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zz2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.180392156862745 0.180392156862745 0.180392156862745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zz2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zz2_Joint"
+    type="revolute">
+    <origin
+      xyz="0.0276576493944395 0.0505936187726988 -0.0274739271155451"
+      rpy="0 0 0" />
+    <parent
+      link="zz1_Link" />
+    <child
+      link="zz2_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zz3_Link">
+    <inertial>
+      <origin
+        xyz="-0.0276966292950182 0.0222663472948247 -0.0434999371766091"
+        rpy="0 0 0" />
+      <mass
+        value="0.0280435236825223" />
+      <inertia
+        ixx="1.45305886656455E-05"
+        ixy="1.43743841469645E-17"
+        ixz="-3.4133931803982E-17"
+        iyy="1.69375702139597E-05"
+        iyz="3.5442934085445E-06"
+        izz="7.57905794890989E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zz3_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zz3_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zz3_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.0708479091470208 0.0158615312365403"
+      rpy="0 0 0" />
+    <parent
+      link="zz2_Link" />
+    <child
+      link="zz3_Link" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zh1_Link">
+    <inertial>
+      <origin
+        xyz="-0.0181002673205907 0.0178012272691663 -0.0279577756877339"
+        rpy="0 0 0" />
+      <mass
+        value="0.0188688838363916" />
+      <inertia
+        ixx="3.22608728545895E-06"
+        ixy="3.26300265701652E-09"
+        ixz="-5.46760629414767E-19"
+        iyy="3.22758661978176E-06"
+        iyz="-5.49570695331868E-19"
+        izz="3.19885659442499E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zh1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zh1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zh1_Joint"
+    type="revolute">
+    <origin
+      xyz="-0.10239 0.050692 0.05005"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="zh1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zh2_Link">
+    <inertial>
+      <origin
+        xyz="-0.0441422722561252 0.00345772947092224 0.0189457195464457"
+        rpy="0 0 0" />
+      <mass
+        value="0.0168985875743192" />
+      <inertia
+        ixx="3.83292293333914E-06"
+        ixy="4.97754568640324E-07"
+        ixz="4.56796476656585E-07"
+        iyy="3.82012786081265E-06"
+        iyz="-4.6270607301294E-07"
+        izz="5.5489241135711E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zh2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.223529411764706 0.223529411764706 0.223529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zh2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zh2_Joint"
+    type="revolute">
+    <origin
+      xyz="-0.0158622603425981 0.0554350839033061 -0.0274739271155447"
+      rpy="0 0 0" />
+    <parent
+      link="zh1_Link" />
+    <child
+      link="zh2_Link" />
+    <axis
+      xyz="0.711636313809332 0.702548045949789 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="zh3_Link">
+    <inertial>
+      <origin
+        xyz="-0.0351361806333497 -0.00505512891625734 -0.0420701160845455"
+        rpy="0 0 0" />
+      <mass
+        value="0.0274532348818043" />
+      <inertia
+        ixx="1.57159087042596E-05"
+        ixy="-1.2034586004771E-06"
+        ixz="-2.4897768472684E-06"
+        iyy="1.57468461299405E-05"
+        iyz="2.52198497734393E-06"
+        izz="7.57730376534619E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zh3_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/zh3_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="zh3_Joint"
+    type="revolute">
+    <origin
+      xyz="-0.049587285328241 0.0514454617130769 0.0161615312365663"
+      rpy="0 0 0" />
+    <parent
+      link="zh2_Link" />
+    <child
+      link="zh3_Link" />
+    <axis
+      xyz="-0.711636313809358 -0.702548045949762 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yq1_Link">
+    <inertial>
+      <origin
+        xyz="0.0181002672813575 -0.0178012272427251 -0.0279577757351035"
+        rpy="0 0 0" />
+      <mass
+        value="0.0188688838363916" />
+      <inertia
+        ixx="3.22608728545895E-06"
+        ixy="3.26300265701639E-09"
+        ixz="5.45895965314032E-19"
+        iyy="3.22758661978176E-06"
+        iyz="5.50745927319901E-19"
+        izz="3.19885659442498E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yq1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yq1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yq1_Joint"
+    type="revolute">
+    <origin
+      xyz="0.10239 -0.050692 0.05005"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="yq1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yq2_Link">
+    <inertial>
+      <origin
+        xyz="0.0441422722576702 -0.00345772947453886 0.0189457195462829"
+        rpy="0 0 0" />
+      <mass
+        value="0.0168985875743192" />
+      <inertia
+        ixx="3.83292293333915E-06"
+        ixy="4.97754568640329E-07"
+        ixz="-4.56796476656596E-07"
+        iyy="3.82012786081265E-06"
+        iyz="4.62706073012936E-07"
+        izz="5.5489241135711E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yq2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.223529411764706 0.223529411764706 0.223529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yq2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yq2_Joint"
+    type="revolute">
+    <origin
+      xyz="0.0158622603425983 -0.0554350839033059 -0.027473927115545"
+      rpy="0 0 0" />
+    <parent
+      link="yq1_Link" />
+    <child
+      link="yq2_Link" />
+    <axis
+      xyz="-0.711636313809368 -0.702548045949752 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yq3_Link">
+    <inertial>
+      <origin
+        xyz="0.0346246548796171 0.00450579393629685 -0.0412584530194489"
+        rpy="0 0 0" />
+      <mass
+        value="0.0295670688235905" />
+      <inertia
+        ixx="1.57761940315402E-05"
+        ixy="-1.18518257421762E-06"
+        ixz="2.49003640840394E-06"
+        iyy="1.58066616336625E-05"
+        iyz="-2.5222478962015E-06"
+        izz="7.61819604152697E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yq3_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yq3_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yq3_Joint"
+    type="revolute">
+    <origin
+      xyz="0.049774060130825 -0.0504179449064464 0.0158615312365191"
+      rpy="0 0 0" />
+    <parent
+      link="yq2_Link" />
+    <child
+      link="yq3_Link" />
+    <axis
+      xyz="0.711636313809377 0.702548045949743 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yz1_Link">
+    <inertial>
+      <origin
+        xyz="0.000374589776918613 -0.0253843067353992 -0.0279577757427604"
+        rpy="0 0 0" />
+      <mass
+        value="0.018868883529333" />
+      <inertia
+        ixx="3.23009005065797E-06"
+        ixy="7.91542915535701E-10"
+        ixz="-7.09893971440753E-23"
+        iyy="3.22358385361411E-06"
+        iyz="8.11680940659148E-21"
+        izz="3.19885659347593E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yz1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yz1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yz1_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.0809 0.05005"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="yz1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yz2_Link">
+    <inertial>
+      <origin
+        xyz="0.0289840230813178 -0.0334727130431799 0.0189457195605106"
+        rpy="0 0 0" />
+      <mass
+        value="0.0168985873058008" />
+      <inertia
+        ixx="4.32432106955216E-06"
+        ixy="3.74402177734463E-13"
+        ixz="2.85103116487183E-13"
+        iyy="3.32872974585564E-06"
+        iyz="6.50199923857887E-07"
+        izz="5.54892413590825E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yz2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.223529411764706 0.223529411764706 0.223529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yz2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yz2_Joint"
+    type="revolute">
+    <origin
+      xyz="-0.0276576493944395 -0.0505936187726991 -0.0274739271155447"
+      rpy="0 0 0" />
+    <parent
+      link="yz1_Link" />
+    <child
+      link="yz2_Link" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yz3_Link">
+    <inertial>
+      <origin
+        xyz="-0.167878639323886 -0.0669156700894921 -0.0412584534257358"
+        rpy="0 0 0" />
+      <mass
+        value="0.0295670684923118" />
+      <inertia
+        ixx="1.46061473581415E-05"
+        ixy="1.43453899477432E-17"
+        ixz="3.41039519536991E-17"
+        iyy="1.69767083057896E-05"
+        iyz="-3.54429340854454E-06"
+        izz="7.61819604073987E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yz3_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yz3_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yz3_Joint"
+    type="revolute">
+    <origin
+      xyz="0.195684337632199 -0.0250512362876254 0.015861531236519"
+      rpy="0 0 0" />
+    <parent
+      link="yz2_Link" />
+    <child
+      link="yz3_Link" />
+    <axis
+      xyz="0.711636313809377 0.702548045949743 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yh1_Link">
+    <inertial>
+      <origin
+        xyz="-0.016827111973395 -0.0175630071191649 -0.0285434095538369"
+        rpy="0 0 0" />
+      <mass
+        value="0.0194148702931148" />
+      <inertia
+        ixx="3.23022541247353E-06"
+        ixy="-3.24265606811337E-09"
+        ixz="-5.44377548131861E-19"
+        iyy="3.22855883664923E-06"
+        iyz="5.49413956615871E-19"
+        izz="3.19948286958117E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yh1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yh1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yh1_Joint"
+    type="revolute">
+    <origin
+      xyz="-0.10239 -0.050691 0.05005"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="yh1_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yh2_Link">
+    <inertial>
+      <origin
+        xyz="-0.00289010592677472 -0.0441830666975163 0.0189457195557352"
+        rpy="0 0 0" />
+      <mass
+        value="0.0168985875743191" />
+      <inertia
+        ixx="3.83292368499587E-06"
+        ixy="-4.97754558978871E-07"
+        ixz="4.56796884616836E-07"
+        iyy="3.82012710915593E-06"
+        iyz="4.6270567026273E-07"
+        izz="5.5489241135711E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yh2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.180392156862745 0.180392156862745 0.180392156862745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yh2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yh2_Link"
+    type="revolute">
+    <origin
+      xyz="-0.055226635669978 -0.0165734288280502 -0.027473927115545"
+      rpy="0 0 0" />
+    <parent
+      link="yh1_Link" />
+    <child
+      link="yh2_Link" />
+    <axis
+      xyz="-0.711636313809332 0.702548045949788 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="yh3_Link">
+    <inertial>
+      <origin
+        xyz="0.00495043469053491 -0.0345638843381661 -0.0412584530215589"
+        rpy="0 0 0" />
+      <mass
+        value="0.0295670688235906" />
+      <inertia
+        ixx="1.57761940315882E-05"
+        ixy="1.18518257421779E-06"
+        ixz="-2.49003640832863E-06"
+        iyy="1.58066616336139E-05"
+        iyz="-2.52224789627681E-06"
+        izz="7.61819604152758E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yh3_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/yh3_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="yh3_Link"
+    type="revolute">
+    <origin
+      xyz="-0.0497740601308654 -0.0504179449064808 0.0158615312365509"
+      rpy="0 0 0" />
+    <parent
+      link="yh2_Link" />
+    <child
+      link="yh3_Link" />
+    <axis
+      xyz="0.711636313809335 -0.702548045949785 0" />
+    <limit
+      lower="-1.57"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="imu_link">
+    <inertial>
+      <origin
+        xyz="-0.000910092446800674 -0.0065195279197112 -0.000480055900084734"
+        rpy="0 0 0" />
+      <mass
+        value="0.0134273601439689" />
+      <inertia
+        ixx="2.12144315224431E-06"
+        ixy="1.7026788431989E-09"
+        ixz="1.46463767185235E-10"
+        iyy="1.59374728452982E-06"
+        iyz="5.01702081593436E-10"
+        izz="3.6423165530104E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/imu_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/imu_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="imu_link"
+    type="fixed">
+    <origin
+      xyz="0.050316 0.0047788 0.053291"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="imu_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="camera_link">
+    <inertial>
+      <origin
+        xyz="-0.00558719116041202 -1.373307293714E-06 -0.0108563081871119"
+        rpy="0 0 0" />
+      <mass
+        value="0.257656834979983" />
+      <inertia
+        ixx="0.000400968452088975"
+        ixy="2.26137188104008E-08"
+        ixz="1.29728467013186E-07"
+        iyy="4.9566916220523E-05"
+        iyz="-5.02691107175678E-08"
+        izz="0.000421508462494344" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/camera_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.0823529411764706 0.0823529411764706 0.0823529411764706 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/camera_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="camera_Joint"
+    type="fixed">
+    <origin
+      xyz="0.070673 0 0.12267"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="camera_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="laser">
+    <inertial>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="0"
+        ixy="0"
+        ixz="0"
+        iyy="0"
+        iyz="0"
+        izz="0" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/LD_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://yahboomcar_description/meshes/LD_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="LD_Joint"
+    type="fixed">
+    <origin
+      xyz="-0.0316436626639546 0 0.183666853069193"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="laser" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="laser_scan_fix"/>
+  <joint
+    name="laser_scan_fix_joint"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 3.141592653589793" />
+    <parent
+      link="laser" />
+    <child
+      link="laser_scan_fix" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link name="base_footprint"/>
+  <joint
+    name="footprint_Joint"
+    type="fixed">
+    <origin
+      xyz="0 0 -0.113"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="base_footprint" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+</robot>

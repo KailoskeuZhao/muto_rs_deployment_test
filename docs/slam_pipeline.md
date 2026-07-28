@@ -344,7 +344,10 @@ The current Nav2 launch starts:
 - the associated lifecycle manager and local/global costmaps
 
 The local costmap uses `odom`; the global costmap uses `map`. Both use
-`base_frame` as the robot frame and consume `/fused/laserscan`.
+`base_frame` as the robot frame and consume `/fused/laserscan`. The path
+smoother's collision checker also explicitly uses `base_frame` with the global
+raw costmap and published footprint; it does not rely on Nav2's upstream
+`base_link` default.
 
 This is the current planner/controller/navigation-action stack, not every
 optional Nav2 server. It does not start AMCL, waypoint following, route,

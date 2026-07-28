@@ -182,6 +182,10 @@ Both costmaps use:
 - marking and raytracing;
 - the same inflation settings.
 
+The path smoother's collision checker reads the global raw costmap and global
+published footprint with `robot_base_frame: base_frame`. This explicit setting
+overrides Humble's otherwise incompatible `base_link` default.
+
 ## Robot Footprint Assumption
 
 > **Important:** The costmaps model a body-and-fixed-sensor radius of

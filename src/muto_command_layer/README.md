@@ -14,11 +14,8 @@ Start the SAM 2 image annotator, object registry, VLM socket, and command layer
 from one launch file:
 
 ```bash
-export DASHSCOPE_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py \
-  vlm_base_url:=http://vlm-host:8000/v1 \
-  vlm_wire_api:=responses \
-  vlm_model:=gpt-5.5
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
 ```
 
 Credentials remain environment-only. The launch shares the annotator detection
@@ -29,15 +26,37 @@ similarly named child launch arguments cannot leak into another package.
 The deployment-level VLM settings live in
 `config/object_pipeline_vlm.yaml`. It contains the provider URL, wire API,
 model, request limits, and the *name* of the credential environment variable.
-Select another file at launch time with
-`vlm_params_file:=/absolute/path/to/vlm.yaml`; the explicit `vlm_base_url`,
-`vlm_wire_api`, and `vlm_model` launch arguments take precedence over that
-file.
+The checked-in profile selects the tested `hkuproxy` Responses endpoint,
+`gpt-5.6-sol`, and `HKU_API_KEY`. Select another file at launch time with
+`vlm_params_file:=/absolute/path/to/vlm.yaml`. The top-level launch always sets
+the provider URL, wire API, and model from `vlm_base_url`, `vlm_wire_api`, and
+`vlm_model`; their defaults mirror the checked-in profile. When selecting a
+file for a different provider, override those three launch arguments as well.
 
-The command layer starts last, but dependency readiness is checked when an
-action goal is executed rather than through arbitrary startup delays. The
-`/go_to_object` action still requires Nav2 to be running; `/find_object` needs
-only the four packages launched here plus camera and TF inputs.
+> **Transport warning:** the current proxy URL uses plain HTTP. Although the
+> key is absent from launch arguments and YAML, its bearer header is not
+> encrypted in transit. Use this endpoint only through a trusted network,
+> VPN, or secure tunnel, or replace it with an HTTPS endpoint.
+
+The included processes are launched together; dependency readiness is checked
+when an action goal is executed rather than through arbitrary startup delays.
+The `/go_to_object` action still requires Nav2 to be running. `/find_object`
+requires the registry and VLM socket; camera and TF inputs are additionally
+needed to create new registry entries.
+
+`muto_nav2_pipeline_launch.py` independently owns hardware, localization,
+mapping, and Nav2. It does not start the annotator, registry, VLM socket, or
+command layer. For a complete deployment, run the Nav2 and object pipelines
+alongside each other:
+
+```bash
+# Terminal 1: hardware, localization, mapping, and Nav2.
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
+
+# Terminal 2: perception, registry, VLM, and both object commands.
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
+```
 
 ## Go-to-object pipeline
 
@@ -74,8 +93,8 @@ standoff point is occupied or unreachable, Nav2 can reject or abort the goal.
 
 ## Launch and call
 
-Start the object registry, Nav2, and this package, or use the full Muto Nav2
-pipeline which includes the command layer by default:
+When the registry and Nav2 are already running, the command layer can also be
+started by itself:
 
 ```bash
 ros2 launch muto_command_layer command_layer_launch.py
@@ -154,11 +173,20 @@ batch total, exact registry ID, registry label, and VLM-produced description.
 Start the VLM socket alongside the command layer:
 
 ```bash
-export DASHSCOPE_API_KEY='your-key'
+export HKU_API_KEY='your-key'
+vlm_share="$(ros2 pkg prefix muto_command_layer)/share/muto_command_layer"
+vlm_params="${vlm_share}/config/object_pipeline_vlm.yaml"
 ros2 launch muto_vlm_socket vlm_socket_launch.py \
-  base_url:=http://vlm-host:8000/v1
+  params_file:="$vlm_params" \
+  base_url:=http://43.165.176.234:8080/ \
+  wire_api:=responses \
+  default_model:=gpt-5.6-sol
 ros2 launch muto_command_layer command_layer_launch.py
 ```
+
+The explicit provider arguments are required here because the lower-level
+`muto_vlm_socket` launch has independent generic defaults. Prefer
+`object_pipeline_launch.py` for the normal integrated deployment.
 
 Search using natural language and inspect the per-object publications:
 

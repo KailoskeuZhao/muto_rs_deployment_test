@@ -119,7 +119,11 @@ does not stop 2D detection outputs, but it prevents that frame from contributing
 
 The C++ registry synchronizes typed detections with instance point clouds,
 computes one centroid per instance, and transforms it into `target_frame`
-(`map` by default) using TF2 at the observation timestamp.
+(`map` by default) using TF2 at the observation timestamp. If the exact
+historical transform has not arrived yet, the paired observation is retained
+for up to `registry_tf_retry_window` (1 second by default) and retried at
+`registry_tf_retry_rate` (20 Hz by default); the current/latest robot pose is
+never substituted for that historical pose.
 
 New observations are not immediately treated as real objects. Under the
 registry defaults, a tentative object needs:
@@ -297,7 +301,7 @@ Topic and action names shown above are defaults. The endpoints routed through
 | --- | --- |
 | RGB camera | No YOLO/SAM processing or new observations. |
 | Depth image, valid intrinsics, or depth-to-color TF | 2D outputs continue, but no instance point cloud or new 3D registry entries. |
-| TF into `target_frame` | The registry skips observations it cannot transform. |
+| TF into `target_frame` | The registry retries the exact observation time for a bounded window, then skips observations it still cannot transform. |
 | VLM endpoint or credential | `/find_object` fails; perception, registry queries, visualization, and `/go_to_object` remain usable. |
 | Nav2 or global/base TF | `/go_to_object` fails; perception, registry, and `/find_object` remain usable. |
 | Stored candidate JPEGs | Metadata search works; ambiguous visual refinement normally aborts. |
@@ -316,7 +320,8 @@ The top-level launch exposes the controls most likely to vary by deployment:
 - inference: `yolo_model`, `yolo_device`, `yolo_confidence`,
   `detection_crop_jpeg_quality`, and `max_publish_rate`;
 - registry: `registry_output_yaml`, `registry_image_directory`,
-  `registry_store_images`, and `target_frame`;
+  `registry_store_images`, `registry_tf_retry_window`,
+  `registry_tf_retry_rate`, and `target_frame`;
 - VLM: `vlm_params_file`, `vlm_action`, `vlm_base_url`, `vlm_wire_api`, and
   `vlm_model`; and
 - commands: `go_to_object_action`, `find_object_action`, `object_match_topic`,

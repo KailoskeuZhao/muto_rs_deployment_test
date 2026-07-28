@@ -7,7 +7,11 @@ registry.
 The node synchronizes `/sam2/detections` with
 `/sam2/instance_pointcloud`, computes one centroid per instance, and asks TF2
 for `target_frame <- cloud_frame` at the cloud timestamp. It does not substitute
-the latest transform when historical TF is missing.
+the latest transform when historical TF is missing. Instead, an already-paired
+observation waits in a bounded queue for up to `tf_retry_window` (1 second by
+default), with exact historical lookups retried at `tf_retry_rate` (20 Hz by
+default). It is discarded only if that original timestamp is still unavailable
+when the window expires.
 
 Objects are held in hash maps while the node runs. Unique-name queries are
 constant-time, label queries use a label index, and same-label spatial matching
@@ -91,11 +95,11 @@ ros2 service call /sam2/clear_stored_objects std_srvs/srv/Trigger "{}"
 ```
 
 It clears confirmed objects, tentative candidates, name/spatial indexes,
-pending synchronized observations, and record-owned images inside the
-configured image directory. It immediately publishes empty object and marker
-snapshots, then atomically rewrites the YAML as an empty registry. An
-observation already processing when the service starts is invalidated so it
-cannot restore pre-clear state.
+pending synchronized observations, observations waiting for historical TF,
+and record-owned images inside the configured image directory. It immediately
+publishes empty object and marker snapshots, then atomically rewrites the YAML
+as an empty registry. An observation already processing when the service starts
+is invalidated so it cannot restore pre-clear state.
 
 SIGKILL and sudden power loss cannot run a shutdown hook, so use the save
 service when an immediate checkpoint is important. If an existing YAML file is

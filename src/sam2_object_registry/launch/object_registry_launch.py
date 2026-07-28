@@ -51,6 +51,8 @@ def generate_launch_description():
         DeclareLaunchArgument('confirmation_window', default_value='3.0'),
         DeclareLaunchArgument('confirmation_max_gap', default_value='1.5'),
         DeclareLaunchArgument('tf_timeout', default_value='0.1'),
+        DeclareLaunchArgument('tf_retry_window', default_value='1.0'),
+        DeclareLaunchArgument('tf_retry_rate', default_value='20.0'),
         DeclareLaunchArgument('tf_cache_time', default_value='30.0'),
         DeclareLaunchArgument('snapshot_publish_rate', default_value='2.0'),
         DeclareLaunchArgument('marker_scale', default_value='0.12'),
@@ -101,6 +103,10 @@ def generate_launch_description():
                 LaunchConfiguration('confirmation_max_gap'), value_type=float),
             'tf_timeout': ParameterValue(
                 LaunchConfiguration('tf_timeout'), value_type=float),
+            'tf_retry_window': ParameterValue(
+                LaunchConfiguration('tf_retry_window'), value_type=float),
+            'tf_retry_rate': ParameterValue(
+                LaunchConfiguration('tf_retry_rate'), value_type=float),
             'tf_cache_time': ParameterValue(
                 LaunchConfiguration('tf_cache_time'), value_type=float),
             'snapshot_publish_rate': ParameterValue(

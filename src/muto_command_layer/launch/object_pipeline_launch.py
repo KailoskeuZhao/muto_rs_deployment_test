@@ -129,6 +129,19 @@ def generate_launch_description():
             description='Registry storage and Nav2 global frame.',
         ),
         DeclareLaunchArgument(
+            'registry_tf_retry_window',
+            default_value='1.0',
+            description=(
+                'Maximum seconds to retain a paired observation while its '
+                'exact timestamped TF becomes available.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'registry_tf_retry_rate',
+            default_value='20.0',
+            description='Rate in Hz for exact timestamped registry TF retries.',
+        ),
+        DeclareLaunchArgument(
             'vlm_params_file',
             default_value=default_vlm_params,
             description='Deployment-level VLM socket parameter file.',
@@ -215,6 +228,9 @@ def generate_launch_description():
             'store_images': LaunchConfiguration('registry_store_images'),
             'target_frame': LaunchConfiguration('target_frame'),
             'yolo_confidence': LaunchConfiguration('yolo_confidence'),
+            'tf_retry_window': LaunchConfiguration(
+                'registry_tf_retry_window'),
+            'tf_retry_rate': LaunchConfiguration('registry_tf_retry_rate'),
         },
     )
     vlm_socket = include_launch(

@@ -175,6 +175,8 @@ public:
     confirmation_window_ = declare_parameter<double>("confirmation_window", 3.0);
     confirmation_max_gap_ = declare_parameter<double>("confirmation_max_gap", 1.5);
     tf_timeout_ = declare_parameter<double>("tf_timeout", 0.1);
+    tf_retry_window_ = declare_parameter<double>("tf_retry_window", 1.0);
+    tf_retry_rate_ = declare_parameter<double>("tf_retry_rate", 20.0);
     tf_cache_time_ = declare_parameter<double>("tf_cache_time", 30.0);
     snapshot_publish_rate_ = declare_parameter<double>("snapshot_publish_rate", 2.0);
     marker_scale_ = declare_parameter<double>("marker_scale", 0.12);
@@ -224,6 +226,10 @@ public:
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / snapshot_publish_rate_)),
       std::bind(&ObjectRegistryNode::publish_periodic_snapshot, this));
+    tf_retry_timer_ = create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(1.0 / tf_retry_rate_)),
+      std::bind(&ObjectRegistryNode::retry_pending_transforms, this));
     RCLCPP_INFO(
       get_logger(),
       "Indexing %s + %s in %s; query %s, save %s, clear %s, "
@@ -239,6 +245,11 @@ public:
       "average confidence >= %.2f before publication or persistence",
       confirmation_min_observations_, confirmation_window_, confirmation_max_gap_,
       confirmation_min_average_confidence_);
+    RCLCPP_INFO(
+      get_logger(),
+      "Timestamped centroid TF retries are bounded to %.2fs at %.1f Hz; "
+      "latest-transform fallback is disabled",
+      tf_retry_window_, tf_retry_rate_);
   }
 
   ~ObjectRegistryNode() override
@@ -263,6 +274,21 @@ private:
   using DetectionsPtr = DetectedObjectArray::ConstSharedPtr;
   using SpatialCells = std::unordered_map<
     CellKey, std::unordered_set<std::uint64_t>, CellKeyHash>;
+
+  enum class ObservationResult
+  {
+    completed,
+    discarded,
+    transform_unavailable
+  };
+
+  struct PendingTransformObservation
+  {
+    CloudPtr cloud;
+    DetectionsPtr detections;
+    std::uint64_t generation{};
+    std::chrono::steady_clock::time_point deadline;
+  };
 
   static std::optional<fs::path> workspace_root_from_prefix(const fs::path & prefix)
   {
@@ -413,6 +439,14 @@ private:
       RCLCPP_WARN(get_logger(), "tf_timeout must be non-negative; using 0.1");
       tf_timeout_ = 0.1;
     }
+    if (tf_retry_window_ < 0.0) {
+      RCLCPP_WARN(get_logger(), "tf_retry_window must be non-negative; using 1.0");
+      tf_retry_window_ = 1.0;
+    }
+    if (!(tf_retry_rate_ > 0.0 && tf_retry_rate_ <= 1000.0)) {
+      RCLCPP_WARN(get_logger(), "tf_retry_rate must be in (0, 1000] Hz; using 20.0");
+      tf_retry_rate_ = 20.0;
+    }
     if (!(tf_cache_time_ > 0.0)) {
       RCLCPP_WARN(get_logger(), "tf_cache_time must be positive; using 30.0");
       tf_cache_time_ = 30.0;
@@ -523,21 +557,37 @@ private:
         pending_detections_.erase(
           pending_detections_.begin() + static_cast<std::ptrdiff_t>(best_detections));
       }
-      process_observation(*cloud, *detections, observation_generation);
+      process_paired_observation(cloud, detections, observation_generation);
     }
   }
 
-  void process_observation(
-    const PointCloud2 & cloud, const DetectedObjectArray & detections,
+  void process_paired_observation(
+    const CloudPtr & cloud, const DetectionsPtr & detections,
     std::uint64_t observation_generation)
   {
-    if (observation_generation != clear_generation_.load(std::memory_order_acquire)) {
-      return;
+    std::string transform_error;
+    const auto result = process_observation(
+      cloud, detections, observation_generation, tf_timeout_, transform_error);
+    if (result == ObservationResult::transform_unavailable) {
+      enqueue_transform_retry(
+        cloud, detections, observation_generation, transform_error);
     }
+  }
+
+  ObservationResult process_observation(
+    const CloudPtr & cloud_message, const DetectionsPtr & detections_message,
+    std::uint64_t observation_generation, double transform_timeout,
+    std::string & transform_error)
+  {
+    if (observation_generation != clear_generation_.load(std::memory_order_acquire)) {
+      return ObservationResult::discarded;
+    }
+    const auto & cloud = *cloud_message;
+    const auto & detections = *detections_message;
     if (cloud.header.frame_id.empty()) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000, "Ignoring instance cloud with an empty frame_id");
-      return;
+      return ObservationResult::discarded;
     }
 
     std::unordered_map<std::uint16_t, const DetectedObject *> metadata_by_id;
@@ -549,7 +599,21 @@ private:
       }
     }
     if (metadata_by_id.empty()) {
-      return;
+      return ObservationResult::discarded;
+    }
+
+    geometry_msgs::msg::TransformStamped transform;
+    const bool transform_required = cloud.header.frame_id != target_frame_;
+    if (transform_required) {
+      try {
+        transform = tf_buffer_->lookupTransform(
+          target_frame_, cloud.header.frame_id,
+          tf2_ros::fromMsg(cloud.header.stamp),
+          tf2::durationFromSec(transform_timeout));
+      } catch (const tf2::TransformException & error) {
+        transform_error = error.what();
+        return ObservationResult::transform_unavailable;
+      }
     }
 
     std::unordered_map<std::uint16_t, Accumulator> accumulators;
@@ -578,24 +642,7 @@ private:
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000,
         "Ignoring incompatible instance cloud: %s", error.what());
-      return;
-    }
-
-    geometry_msgs::msg::TransformStamped transform;
-    const bool transform_required = cloud.header.frame_id != target_frame_;
-    if (transform_required) {
-      try {
-        transform = tf_buffer_->lookupTransform(
-          target_frame_, cloud.header.frame_id,
-          tf2_ros::fromMsg(cloud.header.stamp),
-          tf2::durationFromSec(tf_timeout_));
-      } catch (const tf2::TransformException & error) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 5000,
-          "Cannot transform object centroids from %s to %s: %s",
-          cloud.header.frame_id.c_str(), target_frame_.c_str(), error.what());
-        return;
-      }
+      return ObservationResult::discarded;
     }
 
     bool inserted = false;
@@ -630,7 +677,7 @@ private:
       {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         if (observation_generation != clear_generation_.load(std::memory_order_acquire)) {
-          return;
+          return ObservationResult::discarded;
         }
         inserted = merge_observation_locked(
           label, detection->class_id, position, accumulator.count,
@@ -644,6 +691,116 @@ private:
     // a newly inserted object is made visible without waiting for that timer.
     if (inserted) {
       publish_snapshot();
+    }
+    return ObservationResult::completed;
+  }
+
+  void enqueue_transform_retry(
+    const CloudPtr & cloud, const DetectionsPtr & detections,
+    std::uint64_t observation_generation, const std::string & transform_error)
+  {
+    if (tf_retry_window_ <= 0.0) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Cannot transform object centroids from %s to %s at the observation timestamp: %s",
+        cloud->header.frame_id.c_str(), target_frame_.c_str(), transform_error.c_str());
+      return;
+    }
+
+    bool dropped_oldest = false;
+    {
+      std::lock_guard<std::mutex> lock(tf_retry_mutex_);
+      if (observation_generation != clear_generation_.load(std::memory_order_acquire)) {
+        return;
+      }
+      if (pending_tf_observations_.size() >= static_cast<std::size_t>(sync_queue_size_)) {
+        pending_tf_observations_.pop_front();
+        dropped_oldest = true;
+      }
+      pending_tf_observations_.push_back(PendingTransformObservation{
+          cloud,
+          detections,
+          observation_generation,
+          std::chrono::steady_clock::now() +
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(tf_retry_window_))});
+    }
+
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Timestamped transform %s <- %s is not available yet; retaining the paired "
+      "observation for up to %.2fs: %s",
+      target_frame_.c_str(), cloud->header.frame_id.c_str(), tf_retry_window_,
+      transform_error.c_str());
+    if (dropped_oldest) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Timestamped-TF retry queue reached %d entries; dropped its oldest observation",
+        sync_queue_size_);
+    }
+  }
+
+  void retry_pending_transforms()
+  {
+    std::deque<PendingTransformObservation> pending;
+    {
+      std::lock_guard<std::mutex> lock(tf_retry_mutex_);
+      pending.swap(pending_tf_observations_);
+    }
+    if (pending.empty()) {
+      return;
+    }
+
+    std::deque<PendingTransformObservation> retry_again;
+    std::size_t expired_count = 0U;
+    const auto generation = clear_generation_.load(std::memory_order_acquire);
+    for (auto & observation : pending) {
+      if (observation.generation != generation) {
+        continue;
+      }
+      if (std::chrono::steady_clock::now() >= observation.deadline) {
+        ++expired_count;
+        continue;
+      }
+
+      std::string transform_error;
+      const auto result = process_observation(
+        observation.cloud, observation.detections, observation.generation, 0.0,
+        transform_error);
+      if (result == ObservationResult::transform_unavailable) {
+        retry_again.push_back(std::move(observation));
+      }
+    }
+
+    std::size_t capacity_drops = 0U;
+    {
+      std::lock_guard<std::mutex> lock(tf_retry_mutex_);
+      const auto current_generation = clear_generation_.load(std::memory_order_acquire);
+      while (!retry_again.empty()) {
+        auto observation = std::move(retry_again.back());
+        retry_again.pop_back();
+        if (observation.generation == current_generation) {
+          pending_tf_observations_.push_front(std::move(observation));
+        }
+      }
+      while (pending_tf_observations_.size() > static_cast<std::size_t>(sync_queue_size_)) {
+        pending_tf_observations_.pop_front();
+        ++capacity_drops;
+      }
+    }
+
+    if (expired_count > 0U) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Discarded %zu paired object observation(s): exact timestamped TF remained "
+        "unavailable for %.2fs; latest-transform fallback is disabled",
+        expired_count, tf_retry_window_);
+    }
+    if (capacity_drops > 0U) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Timestamped-TF retry queue overflow discarded %zu oldest observation(s)",
+        capacity_drops);
     }
   }
 
@@ -1188,6 +1345,10 @@ private:
       pending_clouds_.clear();
       pending_detections_.clear();
     }
+    {
+      std::lock_guard<std::mutex> lock(tf_retry_mutex_);
+      pending_tf_observations_.clear();
+    }
 
     std::size_t confirmed_count = 0U;
     std::size_t tentative_count = 0U;
@@ -1678,6 +1839,8 @@ private:
   double confirmation_window_{};
   double confirmation_max_gap_{};
   double tf_timeout_{};
+  double tf_retry_window_{};
+  double tf_retry_rate_{};
   double tf_cache_time_{};
   double snapshot_publish_rate_{};
   double marker_scale_{};
@@ -1695,12 +1858,15 @@ private:
   rclcpp::Service<Trigger>::SharedPtr save_service_;
   rclcpp::Service<Trigger>::SharedPtr clear_service_;
   rclcpp::TimerBase::SharedPtr snapshot_timer_;
+  rclcpp::TimerBase::SharedPtr tf_retry_timer_;
 
   std::mutex publish_mutex_;
   std::mutex queue_mutex_;
   std::atomic<std::uint64_t> clear_generation_{0U};
   std::deque<CloudPtr> pending_clouds_;
   std::deque<DetectionsPtr> pending_detections_;
+  std::mutex tf_retry_mutex_;
+  std::deque<PendingTransformObservation> pending_tf_observations_;
 
   mutable std::mutex registry_mutex_;
   std::unordered_map<std::uint64_t, ObjectRecord> records_;

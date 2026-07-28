@@ -325,8 +325,12 @@ target_frame <- instance_cloud_frame
 ```
 
 at the cloud timestamp, where `target_frame` normally defaults to `map`.
-It does not fall back to the latest transform. If the timestamped chain is
-missing, the complete observation is rejected.
+It does not fall back to the latest transform. If the timestamped chain is not
+ready, the registry retains the already-paired cloud and detection messages for
+up to `tf_retry_window` (1 second by default) and retries that same historical
+timestamp at `tf_retry_rate` (20 Hz by default). The queue is bounded by
+`sync_queue_size`; the observation is rejected if its exact transform remains
+unavailable when the retry window expires.
 
 Persisted positions assume objects are static in the target frame. TF only
 places an observation in that frame; it does not detect or compensate for

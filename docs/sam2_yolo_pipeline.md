@@ -335,17 +335,22 @@ For every accepted pair, the registry:
 
 1. Repeats the `yolo_confidence` check defensively.
 2. Builds a lookup from frame-local `instance_id` to typed metadata.
-3. Scans the cloud once and accumulates finite XYZ values for each known ID.
-4. Rejects an instance with fewer than `min_points` retained cloud points.
-5. Computes the arithmetic mean XYZ centroid in the cloud frame.
-6. Requests `target_frame <- cloud_frame` from TF2 at the cloud timestamp.
+3. Requests `target_frame <- cloud_frame` from TF2 at the cloud timestamp.
+4. If that exact historical transform is not ready, retains the already-paired
+   messages for at most `tf_retry_window` and retries at `tf_retry_rate`.
+5. Scans the cloud once and accumulates finite XYZ values for each known ID.
+6. Rejects an instance with fewer than `min_points` retained cloud points and
+   computes the arithmetic mean XYZ centroid for every remaining instance.
 7. Applies that transform to the centroid and submits the resulting map-frame
    observation to the registry.
 
 The registry does not substitute the latest transform when the timestamped
-map-frame lookup fails. This differs from the annotator depth-to-color lookup:
-camera extrinsics are normally static, so that lookup first tries the depth
-timestamp and then permits the latest transform as a fallback.
+map-frame lookup fails. Its retry queue is bounded by `sync_queue_size`, and the
+default one-second window uses the TF buffer's stored dynamic history to match
+the original cloud time even though processing happens later. This differs from
+the annotator depth-to-color lookup: camera extrinsics are normally static, so
+that lookup first tries the depth timestamp and then permits the latest
+transform as a fallback.
 
 The point cloud keeps XYZ in the depth optical frame. It is transformed only
 for centroid localization; the published cloud itself is not rewritten into
@@ -693,7 +698,7 @@ does not retroactively remove an older false record.
 | Instance point cloud | Selected depth image timestamp | Depth optical frame |
 | Depth-to-color projection TF | Depth timestamp, then latest fallback | `color_optical <- depth_optical` |
 | Registry cloud/metadata pairing | Absolute header timestamp difference | No frame conversion during pairing |
-| Registry centroid TF | Point-cloud timestamp only | `target_frame <- cloud_frame` |
+| Registry centroid TF | Point-cloud timestamp only; may be retried later against TF history | `target_frame <- cloud_frame` |
 | Stored object array and markers | Publish time | `target_frame` |
 
 This separation matters: the depth-to-color transform is camera calibration
@@ -774,6 +779,8 @@ ros2 launch sam2_image_annotator sam2_image_annotator_launch.py \
 | `confirmation_window` | `3.0` | Rolling candidate window in seconds. |
 | `confirmation_max_gap` | `1.5` | Maximum consecutive-observation gap in seconds. |
 | `tf_timeout` | `0.1` | Timestamped cloud-to-target TF timeout. |
+| `tf_retry_window` | `1.0` | Maximum wall-clock time to retain a paired observation for exact historical TF. Set to `0` to disable retries. |
+| `tf_retry_rate` | `20.0` | Exact timestamped-TF retry rate in Hz. |
 | `tf_cache_time` | `30.0` | Registry TF buffer history in seconds. |
 | `snapshot_publish_rate` | `2.0` | Changed-object snapshot coalescing and periodic marker rate. |
 | `marker_scale` | `0.12` | Stored centroid sphere diameter in metres. |
@@ -845,8 +852,10 @@ The registry launch exposes every row above, including topic and service names.
   `metadata_sync_tolerance`; bounded queues eventually discard older messages.
 - Registry observations below the defensive confidence threshold or
   `min_points` are ignored.
-- A missing timestamped `target_frame <- cloud_frame` transform rejects the
-  complete centroid observation. No latest-TF fallback is used at this stage.
+- A missing timestamped `target_frame <- cloud_frame` transform retains the
+  paired observation for up to `tf_retry_window`; it is rejected only if the
+  exact historical transform remains unavailable. No latest-TF fallback is
+  used at this stage.
 - A valid new object remains invisible on stored topics and markers until its
   temporal candidate is promoted.
 - A malformed or frame-incompatible YAML disables ordinary persistence but not

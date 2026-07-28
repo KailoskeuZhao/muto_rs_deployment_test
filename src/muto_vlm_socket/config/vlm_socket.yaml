@@ -1,0 +1,24 @@
+vlm_socket:
+  ros__parameters:
+    action_name: /vlm/generate
+
+    # OpenAI-compatible base URL. /chat/completions is appended when absent.
+    base_url: http://127.0.0.1:8000/v1
+    default_model: gpt-5.5
+    system_prompt: ""
+
+    # Credentials are read only from this environment variable.
+    api_key_env: DASHSCOPE_API_KEY
+    require_api_key: true
+
+    request_timeout: 120.0
+    max_content_parts: 16
+    max_text_characters: 65536
+    max_jpeg_bytes: 8388608        # 8 MiB per JPEG
+    max_total_jpeg_bytes: 25165824 # 24 MiB across one goal
+    max_request_bytes: 41943040    # Includes base64 and JSON overhead
+    max_response_bytes: 4194304
+
+    # Zero and -1 respectively omit these optional API fields.
+    max_tokens: 0
+    temperature: -1.0

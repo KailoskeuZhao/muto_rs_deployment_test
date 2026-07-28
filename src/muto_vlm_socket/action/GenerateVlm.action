@@ -1,0 +1,19 @@
+# Ordered multimodal content for one user message. At least one part is required.
+muto_vlm_socket/VlmContent[] content
+
+# Empty selects the node's default_model parameter.
+string model
+---
+bool success
+string response_text
+string error_message
+uint32 prompt_tokens
+uint32 completion_tokens
+---
+uint8 PHASE_VALIDATING=1
+uint8 PHASE_CONNECTING=2
+uint8 PHASE_WAITING_FOR_MODEL=3
+uint8 PHASE_DECODING=4
+
+uint8 phase
+string status

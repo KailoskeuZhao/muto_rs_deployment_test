@@ -2,16 +2,16 @@ vlm_socket:
   ros__parameters:
     action_name: /vlm/generate
 
-    # OpenAI-compatible provider selection. The socket appends the endpoint
-    # suffix selected by wire_api.
-    base_url: http://127.0.0.1:8000/v1
+    # Match the hkuproxy provider in ~/.codex/config.toml. The socket appends
+    # the endpoint suffix selected by wire_api.
+    base_url: http://43.165.176.234:8080/
     wire_api: responses
-    default_model: gpt-5.5
+    default_model: gpt-5.6-sol
     system_prompt: ""
 
     # Store only the environment-variable name here. Never put the key itself
     # in this file.
-    api_key_env: DASHSCOPE_API_KEY
+    api_key_env: HKU_API_KEY
     require_api_key: true
 
     request_timeout: 120.0

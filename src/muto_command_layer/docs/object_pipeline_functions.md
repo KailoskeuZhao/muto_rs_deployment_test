@@ -39,12 +39,37 @@ the configured provider must already be reachable.
 Start the complete object pipeline with:
 
 ```bash
-export DASHSCOPE_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py \
-  vlm_base_url:=http://vlm-host:8000/v1 \
-  vlm_wire_api:=responses \
-  vlm_model:=gpt-5.5
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
 ```
+
+This command uses `config/object_pipeline_vlm.yaml`, whose checked-in profile
+selects the tested `hkuproxy` Responses endpoint, `gpt-5.6-sol`, and the
+`HKU_API_KEY` environment-variable name. The top-level provider arguments
+always override the corresponding file fields; their defaults mirror this
+profile. When selecting a parameter file for another provider, also set
+`vlm_base_url`, `vlm_wire_api`, and `vlm_model`.
+
+> **Transport warning:** the checked-in proxy URL uses plain HTTP. The API key
+> is not stored in ROS configuration, but its bearer header is not encrypted
+> in transit. Use a trusted network, VPN, or secure tunnel, or configure an
+> HTTPS endpoint.
+
+For a full robot deployment, run the independent Nav2 and object pipelines
+alongside each other:
+
+```bash
+# Terminal 1
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
+
+# Terminal 2
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
+```
+
+The Nav2 pipeline does not start the annotator, registry, VLM socket, or command
+layer. The object pipeline owns both `/find_object` and `/go_to_object`; its
+go-to-object command consumes the independent Nav2 `/navigate_to_pose` action.
 
 ## Functions enabled by the pipeline
 
@@ -59,11 +84,11 @@ The annotator publishes:
 
 | Output | Type | Function |
 | --- | --- | --- |
-| `/sam2/annotated_image` | `sensor_msgs/Image` | RGB image with boxes and mask overlays. |
-| `/sam2/mask` | `sensor_msgs/Image` | Mono8 union of accepted instance masks. |
-| `/sam2/instance_mask` | `sensor_msgs/Image` | 16UC1 mask whose nonzero pixels are instance IDs. |
-| `/sam2/segments` | `std_msgs/String` | JSON segmentation metadata for inspection. |
-| `/sam2/detections` | `sam2_object_registry/DetectedObjectArray` | Typed detections, confidence, boxes, mask data, and JPEG crops. |
+| `/sam2/annotated_image` | `sensor_msgs/msg/Image` | RGB image with boxes and mask overlays. |
+| `/sam2/mask` | `sensor_msgs/msg/Image` | Mono8 union of accepted instance masks. |
+| `/sam2/instance_mask` | `sensor_msgs/msg/Image` | 16UC1 mask whose nonzero pixels are instance IDs. |
+| `/sam2/segments` | `std_msgs/msg/String` | JSON segmentation metadata for inspection. |
+| `/sam2/detections` | `sam2_object_registry/msg/DetectedObjectArray` | Typed detections, confidence, boxes, mask statistics, and JPEG crops. |
 
 Processing starts at no more than `max_publish_rate` (`7 Hz` by default). The
 camera may publish faster; only the newest pending RGB work item is retained.
@@ -251,17 +276,17 @@ or ROS parameters.
 
 | Name | Kind and type | Purpose |
 | --- | --- | --- |
-| `/find_object` | Action: `muto_command_layer/FindObject` | Select registered objects from a natural-language prompt. |
-| `/go_to_object` | Action: `muto_command_layer/GoToObject` | Approach and face one exact object ID through Nav2. |
-| `/vlm/generate` | Action: `muto_vlm_socket/GenerateVlm` | Ordered text/JPEG VLM request with optional structured output. |
-| `/sam2/get_stored_objects` | Service: `sam2_object_registry/GetStoredObjects` | Query confirmed objects by exact ID and/or label. |
-| `/sam2/save_stored_objects` | Service: `std_srvs/Trigger` | Atomically checkpoint the registry YAML. |
-| `/sam2/clear_stored_objects` | Service: `std_srvs/Trigger` | Destructively clear dynamic and persistent registry state. |
-| `/object_search/matches` | Topic: `muto_command_layer/ObjectMatch` | One publication per final natural-language match. |
-| `/object_navigation/target_pose` | Topic: `geometry_msgs/PoseStamped` | Latest computed object approach pose. |
-| `/sam2/stored_objects` | Topic: `sam2_object_registry/StoredObjectArray` | Confirmed registry snapshot. |
-| `/sam2/stored_object_markers` | Topic: `visualization_msgs/MarkerArray` | RViz centroid and ID markers. |
-| `/sam2/instance_pointcloud` | Topic: `sensor_msgs/PointCloud2` | Current per-instance masked 3D surfaces. |
+| `/find_object` | Action: `muto_command_layer/action/FindObject` | Select registered objects from a natural-language prompt. |
+| `/go_to_object` | Action: `muto_command_layer/action/GoToObject` | Approach and face one exact object ID through Nav2. |
+| `/vlm/generate` | Action: `muto_vlm_socket/action/GenerateVlm` | Ordered text/JPEG VLM request with optional structured output. |
+| `/sam2/get_stored_objects` | Service: `sam2_object_registry/srv/GetStoredObjects` | Query confirmed objects by exact ID and/or label. |
+| `/sam2/save_stored_objects` | Service: `std_srvs/srv/Trigger` | Atomically checkpoint the registry YAML. |
+| `/sam2/clear_stored_objects` | Service: `std_srvs/srv/Trigger` | Destructively clear dynamic and persistent registry state. |
+| `/object_search/matches` | Topic: `muto_command_layer/msg/ObjectMatch` | One publication per final natural-language match. |
+| `/object_navigation/target_pose` | Topic: `geometry_msgs/msg/PoseStamped` | Latest computed object approach pose. |
+| `/sam2/stored_objects` | Topic: `sam2_object_registry/msg/StoredObjectArray` | Confirmed registry snapshot. |
+| `/sam2/stored_object_markers` | Topic: `visualization_msgs/msg/MarkerArray` | RViz centroid and ID markers. |
+| `/sam2/instance_pointcloud` | Topic: `sensor_msgs/msg/PointCloud2` | Current per-instance masked 3D surfaces. |
 
 Topic and action names shown above are defaults. The endpoints routed through
 `object_pipeline_launch.py` can be renamed with launch arguments.
@@ -302,4 +327,3 @@ the complete argument list. Lower-level tuning such as point-cloud stride,
 mask trimming, registry confirmation thresholds, and spatial merge distance
 currently remains in the child package launch/configuration surfaces; it is not
 forwarded by this top-level launch.
-

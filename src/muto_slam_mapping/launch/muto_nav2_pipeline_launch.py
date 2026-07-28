@@ -124,11 +124,6 @@ def generate_launch_description():
         'config',
         'nav2_params.yaml',
     )
-    default_command_layer_params_file = os.path.join(
-        get_package_share_directory('muto_command_layer'),
-        'config',
-        'command_layer.yaml',
-    )
 
     localization_actions = readiness_gated_include(
         'localization',
@@ -234,36 +229,6 @@ def generate_launch_description():
             description='Start Nav2 planner, controller, and navigator servers.',
         ),
         DeclareLaunchArgument(
-            'launch_command_layer',
-            default_value='true',
-            description='Start the high-level go-to-object action server.',
-        ),
-        DeclareLaunchArgument(
-            'command_layer_params_file',
-            default_value=default_command_layer_params_file,
-            description='High-level command-layer parameter file.',
-        ),
-        DeclareLaunchArgument(
-            'go_to_object_action',
-            default_value='/go_to_object',
-            description='Public object-navigation action name.',
-        ),
-        DeclareLaunchArgument(
-            'object_registry_service',
-            default_value='/sam2/get_stored_objects',
-            description='Stored-object registry query service.',
-        ),
-        DeclareLaunchArgument(
-            'object_navigation_action',
-            default_value='/navigate_to_pose',
-            description='Nav2 action used by the object command layer.',
-        ),
-        DeclareLaunchArgument(
-            'object_approach_distance',
-            default_value='0.75',
-            description='Object-centroid standoff distance in metres.',
-        ),
-        DeclareLaunchArgument(
             'sensor_tf_delay',
             default_value='1.0',
             description='Minimum delay before static sensor TF starts.',
@@ -366,27 +331,4 @@ def generate_launch_description():
         *localization_actions,
         *mapping_actions,
         *nav2_actions,
-        scoped_include(
-            'muto_command_layer',
-            'command_layer_launch.py',
-            {
-                'params_file': LaunchConfiguration(
-                    'command_layer_params_file'
-                ),
-                'use_sim_time': LaunchConfiguration('use_sim_time'),
-                'action_name': LaunchConfiguration('go_to_object_action'),
-                'registry_service': LaunchConfiguration(
-                    'object_registry_service'
-                ),
-                'navigate_to_pose_action': LaunchConfiguration(
-                    'object_navigation_action'
-                ),
-                'approach_distance': LaunchConfiguration(
-                    'object_approach_distance'
-                ),
-            },
-            condition=IfCondition(
-                LaunchConfiguration('launch_command_layer')
-            ),
-        ),
     ])

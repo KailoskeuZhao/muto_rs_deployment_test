@@ -139,7 +139,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'vlm_base_url',
-            default_value='http://127.0.0.1:8000/v1',
+            default_value='http://43.165.176.234:8080/',
         ),
         DeclareLaunchArgument(
             'vlm_wire_api',
@@ -148,7 +148,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'vlm_model',
-            default_value='gpt-5.5',
+            default_value='gpt-5.6-sol',
         ),
         DeclareLaunchArgument(
             'command_params_file',

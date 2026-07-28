@@ -1,0 +1,15 @@
+# Persistent sam2_object_registry/StoredObject.name, for example "chair_2".
+string object_id
+---
+bool success
+string message
+geometry_msgs/PoseStamped target_pose
+---
+uint8 PHASE_LOOKUP=1
+uint8 PHASE_PLANNING=2
+uint8 PHASE_NAVIGATING=3
+
+uint8 phase
+string status
+float32 distance_remaining
+geometry_msgs/PoseStamped target_pose

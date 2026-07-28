@@ -14,6 +14,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>lidar_pointcloud_filter</exec_depend>
+  <exec_depend>muto_command_layer</exec_depend>
   <exec_depend>nav2_behaviors</exec_depend>
   <exec_depend>nav2_behavior_tree</exec_depend>
   <exec_depend>nav2_bt_navigator</exec_depend>

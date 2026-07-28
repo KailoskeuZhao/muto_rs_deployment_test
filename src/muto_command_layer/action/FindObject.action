@@ -1,0 +1,15 @@
+# Natural-language description of the kind of registered object to find.
+string prompt
+---
+bool success
+string message
+muto_command_layer/ObjectMatch[] matches
+---
+uint8 PHASE_REGISTRY_LOOKUP=1
+uint8 PHASE_TEXT_SHORTLIST=2
+uint8 PHASE_VISUAL_REFINEMENT=3
+uint8 PHASE_PUBLISHING=4
+
+uint8 phase
+string status
+uint32 candidate_count

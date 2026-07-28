@@ -1,0 +1,47 @@
+command_layer:
+  ros__parameters:
+    action_name: /go_to_object
+    registry_service: /sam2/get_stored_objects
+    navigate_to_pose_action: /navigate_to_pose
+    target_pose_topic: /object_navigation/target_pose
+
+    global_frame: map
+    robot_base_frame: base_frame
+
+    # Stop on the robot-facing side of the object and look at its centroid.
+    approach_distance: 0.75
+
+    registry_timeout: 3.0
+    nav_server_timeout: 5.0
+    tf_timeout: 0.2
+
+    # Zero leaves the Nav2 execution time unlimited. Cancellation still works.
+    navigation_timeout: 0.0
+    cancel_timeout: 2.0
+
+    # Empty selects Nav2's configured default NavigateToPose behavior tree.
+    behavior_tree: ""
+
+object_search:
+  ros__parameters:
+    action_name: /find_object
+    registry_service: /sam2/get_stored_objects
+    vlm_action: /vlm/generate
+    match_topic: /object_search/matches
+
+    # Empty selects the VLM socket's default model.
+    vlm_model: ""
+
+    registry_timeout: 3.0
+    vlm_server_timeout: 5.0
+    vlm_result_timeout: 180.0
+    cancel_timeout: 2.0
+
+    max_prompt_characters: 8192
+    max_registry_objects: 256
+    max_shortlist_size: 8
+    max_description_characters: 4096
+    max_candidate_jpeg_bytes: 8388608
+
+    # Refuse ambiguous visual refinement when any shortlisted JPEG is missing.
+    require_all_candidate_images: true

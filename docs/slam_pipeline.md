@@ -1,6 +1,6 @@
 # SLAM and Nav2 Pipeline
 
-Date: 2026-07-24
+Date: 2026-07-28
 
 This runbook describes the active ROS 2 Humble mapping and navigation pipeline
 for the Muto RS deployment on aarch64. It is derived from the current launch
@@ -41,7 +41,10 @@ depth image + depth CameraInfo                    |
                    -> /fused/laserscan
                    -> SLAM Toolbox
                         -> /map + map -> odom
-                        -> Nav2 planner/controller/costmaps
+                        -> Nav2 planner/path smoother/controller/costmaps
+                             -> /cmd_vel_nav
+                             -> velocity smoother
+                             -> /cmd_vel
 ```
 
 Static sensor transforms provide:
@@ -80,7 +83,7 @@ while the EKF runs creates competing `odom -> base_frame` publishers.
 On the Humble target:
 
 ```bash
-cd ~/Documents/testground/muto_rs_deployment_test
+cd /opt/muto_rs_ws
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src --rosdistro humble -y
 colcon build --symlink-install
@@ -100,6 +103,10 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 ```
+
+This entry point owns hardware, TF, localization, mapping, and Nav2 only. The
+GPU perception/object command pipeline and frontier-exploration client are
+independent launches; neither is started implicitly.
 
 The launch combines minimum delays with observable readiness checks. A delay
 does not declare a stage ready; it only determines when that stage begins
@@ -132,6 +139,20 @@ Useful top-level switches include:
 If a prerequisite stage is disabled, any enabled downstream stage must already
 have equivalent topics and TF supplied externally.
 
+For a complete deployment with object commands, run a second terminal:
+
+```bash
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
+```
+
+That independent launch starts SAM2/YOLO, the object registry, VLM socket,
+`/find_object`, and `/go_to_object`. The latter consumes the Nav2
+`/navigate_to_pose` action started by this pipeline. For autonomous map
+exploration, start `frontier_exploration_launch.py` separately only after Nav2
+is active; do not run it concurrently with another navigation command client
+unless preemption is intentional.
+
 ## Layer-By-Layer Debug Startup
 
 Use separate terminals, sourcing the Humble installation and workspace in each.
@@ -160,10 +181,17 @@ Fused scan and mapping:
 ros2 launch muto_slam_mapping online_async_mapping_launch.py
 ```
 
-Nav2 planner, controller, behavior, smoother, and navigator servers:
+Nav2 planner, controller, path smoother, velocity smoother, behavior, and
+navigator servers:
 
 ```bash
 ros2 launch muto_slam_mapping nav2_planner_controller_launch.py
+```
+
+Optional frontier exploration after Nav2 is ready:
+
+```bash
+ros2 launch muto_slam_mapping frontier_exploration_launch.py
 ```
 
 `online_async_mapping_launch.py` starts scan fusion by default. Do not also
@@ -201,6 +229,14 @@ The important live sensor inputs are:
 | `/camera/depth/image_raw` | `sensor_msgs/msg/Image`, encoding `16UC1`. |
 | `/camera/depth/camera_info` | `sensor_msgs/msg/CameraInfo` matching the depth profile. |
 | `/imu/data_processed` | `sensor_msgs/msg/Imu`, frame `imu_link`; yaw rate is the active EKF field. |
+
+Current Astra Pro Plus launch defaults request color at `640x480 @ 30 Hz` and
+depth at `320x240 @ 30 Hz`. The downstream depth-to-scan and SAM2 projection
+branches each cap their own processing at 7 Hz, so the supported 30 Hz hardware
+profile does not imply 30 heavy projections per second. Orbbec point-cloud and
+IR publication are disabled; current consumers use raw depth directly. The
+serial-specific color calibration fallback is
+`yahboomcar_bringup/config/astra_pro_plus_acrf35300kr_color_640x480.yaml`.
 
 The Orbbec launch must publish the internal transform from `camera_link` to
 the depth optical frame. The local TF package owns only the camera-body mount.
@@ -302,6 +338,7 @@ The current Nav2 launch starts:
 - `controller_server`
 - `planner_server`
 - `smoother_server`
+- `velocity_smoother`
 - `behavior_server`
 - `bt_navigator`
 - the associated lifecycle manager and local/global costmaps
@@ -312,6 +349,16 @@ The local costmap uses `odom`; the global costmap uses `map`. Both use
 This is the current planner/controller/navigation-action stack, not every
 optional Nav2 server. It does not start AMCL, waypoint following, route,
 docking, or a full saved-map localization workflow.
+
+The Humble behavior trees explicitly compute a Navfn path, collision-check a
+Simple Smoother result, and feed that `smoothed_path` to Regulated Pure
+Pursuit. They replan at 1 Hz. The controller reads `/odometry/filtered`, uses a
+fixed 0.25 m lookahead, and is limited to 0.2 m/s linear and 0.2 rad/s angular
+commands. Its output is remapped to `/cmd_vel_nav`; the lifecycle-managed
+velocity smoother publishes the normal follow-path `/cmd_vel` at 20 Hz.
+Recovery behaviors currently publish directly to `/cmd_vel` and therefore
+bypass the smoother, while retaining the behavior server's conservative
+rotation limits and the BT's bounded backup speed.
 
 ## Main Runtime Contract
 
@@ -327,6 +374,8 @@ docking, or a full saved-map localization workflow.
 | `/camera/filtered_laserscan` | Depth-to-scan node | Scan fusion. |
 | `/fused/laserscan` | Scan fusion | SLAM Toolbox and Nav2 costmaps. |
 | `/map` and `map -> odom` | SLAM Toolbox | Nav2 global planning and TF. |
+| `/cmd_vel_nav` | Nav2 controller | Nav2 velocity smoother. |
+| `/cmd_vel` | Nav2 velocity smoother or recovery behavior server | Muto driver and RF2O command-aware guard. |
 
 ## Runtime Checks
 
@@ -370,6 +419,8 @@ ros2 run tf2_ros tf2_echo map base_frame
 ros2 node list
 ros2 lifecycle get /controller_server
 ros2 lifecycle get /planner_server
+ros2 lifecycle get /smoother_server
+ros2 lifecycle get /velocity_smoother
 ```
 
 ## Failure Isolation
@@ -480,6 +531,9 @@ Those changes increase CPU, memory, or both.
 - Online mapping does not provide a saved-map localization workflow.
 - Calibration and filter bounds remain deployment-specific and must be checked
   on the physical robot.
+- Nav2's current `0.16 m` radius models the central body, not the roughly
+  `0.295 m` zero-pose leg envelope measured from the reference Yahboom tutorial
+  URDF. Validate the swept gait envelope before using narrow clearances.
 
 ## Removed Legacy Paths
 
@@ -504,9 +558,14 @@ The current implementation uses TG30 `LaserScan`, raw `16UC1` depth images,
 | `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Full readiness-gated startup. |
 | `src/muto_slam_mapping/launch/online_async_mapping_launch.py` | Fused scan plus SLAM Toolbox mapping. |
 | `src/muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Current Nav2 server set. |
+| `src/muto_slam_mapping/launch/frontier_exploration_launch.py` | Optional exploration client launch; not part of one-shot Nav2 startup. |
+| `src/muto_slam_mapping/config/frontier_exploration_params.yaml` | Muto frame, topic, QoS, and bounded-DP exploration profile. |
 | `src/muto_slam_mapping/config/mapper_params_online_async.yaml` | SLAM frames, topic, and map timing. |
+| `src/muto_slam_mapping/config/nav2_params.yaml` | Humble planner, path smoother, controller, velocity smoother, behavior, and costmap settings. |
 | `src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | LiDAR scan filtering, RF2O, and odometry guard. |
 | `src/lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Depth conversion and scan fusion component launch. |
 | `src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Normal localization layer. |
 | `src/yahboomcar_bringup/config/ekf_lidar_imu.yaml` | EKF frame and source configuration. |
 | `src/tf2_publisher/launch/all_tf2_publishers_launch.py` | Static sensor mounts. |
+| `src/muto_command_layer/launch/object_pipeline_launch.py` | Independent SAM2/registry/VLM/object-command startup. |
+| `src/yahboomcar_description/README.md` | Reference-only Yahboom tutorial URDF boundary and footprint measurements. |

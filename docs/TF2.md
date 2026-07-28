@@ -1,6 +1,6 @@
 # TF2 Frames And Ownership
 
-Date: 2026-07-24
+Date: 2026-07-28
 
 This document defines the active TF2 contract for the Muto RS ROS 2 Humble
 workspace. It covers frame names, transform ownership, static calibration,
@@ -10,8 +10,9 @@ For the complete startup sequence, see [slam_pipeline.md](slam_pipeline.md).
 
 ## Non-Negotiable Rules
 
-1. The robot frame is `base_frame`. This workspace does not use
-   `base_link`.
+1. The deployed robot frame is `base_frame`. The reference-only
+   `yahboomcar_description` URDF uses `base_link`, but no active launch starts
+   its robot-state publisher or introduces that frame into the deployed tree.
 2. Every child frame must have one parent in the active TF tree.
 3. Every dynamic transform must have one authoritative publisher.
 4. Sensor data must be transformed at a timestamp compatible with its header.
@@ -83,6 +84,8 @@ Important qualifications:
 - Raw IMU inspection messages use `raw_imu_link`. The active navigation tree
   and processed EKF input use `imu_link`.
 - No active package should introduce `base_link`.
+- `src/yahboomcar_description` is copied Yahboom tutorial reference material,
+  not an active TF source.
 
 ## Transform Ownership
 
@@ -329,6 +332,22 @@ Persisted positions assume objects are static in the target frame. TF only
 places an observation in that frame; it does not detect or compensate for
 object motion.
 
+### Object command layer
+
+The go-to-object server receives a registry centroid already expressed in the
+registry target frame, normally `map`. If that differs from its configured
+Nav2 global frame, it transforms the stored point using the latest available
+frame relationship; a persistent object has no single live sensor timestamp.
+It also requests the latest:
+
+```text
+global_frame <- base_frame
+```
+
+to choose the robot-facing side of the object and construct a planar standoff
+pose. It publishes no TF edge. Object search and the VLM socket use registry
+metadata/images and do not query TF.
+
 ## Pipeline Startup
 
 Preferred startup:
@@ -354,6 +373,19 @@ Nav2:         map <- base_frame
 
 A gate timeout shuts down the pipeline rather than launching the next layer
 with an incomplete tree.
+
+The perception and command nodes are deliberately outside that launch. Start
+them separately when needed:
+
+```bash
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
+```
+
+That launch consumes the existing camera optical frames and, for registry and
+navigation functions, the existing `map -> odom -> base_frame` chain. It does
+not create a second TF tree. Frontier exploration is also a separate Nav2
+client and only consumes `map <- base_frame`.
 
 ## Basic Verification
 
@@ -562,5 +594,7 @@ Current scan fusion uses raw `16UC1` depth, the TG30 LaserScan path, and
 | `src/yahboomcar_bringup/config/ekf_lidar_imu.yaml` | Normal dynamic odom TF owner. |
 | `src/muto_slam_mapping/config/mapper_params_online_async.yaml` | SLAM frame contract. |
 | `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Topic and TF readiness gates. |
+| `src/muto_command_layer/launch/object_pipeline_launch.py` | Independent object consumers of camera and map TF. |
 | `src/lidar_pointcloud_filter/src/camera_depth_to_laserscan_node.cpp` | Depth-frame lookup and output-frame behavior. |
 | `src/lidar_pointcloud_filter/src/laserscan_fusion_node.cpp` | Scan-frame conversion. |
+| `src/yahboomcar_description/README.md` | Boundary between reference `base_link` URDF data and deployed `base_frame` TF. |

@@ -1,5 +1,7 @@
 # Odometry And Localization Notes
 
+Date: 2026-07-28
+
 This document describes the odometry-related behavior in this workspace. It is
 intended to be a working engineering note for the Muto RS deployment, not a
 general ROS localization tutorial.
@@ -31,6 +33,9 @@ ros2 launch yahboomcar_bringup muto_hardware_launch.py
 ros2 launch tf2_publisher all_tf2_publishers_launch.py
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
 ```
+
+The one-shot `muto_nav2_pipeline_launch.py` starts these same layers with
+readiness gates before mapping and Nav2.
 
 The normal odometry flow is:
 
@@ -88,7 +93,7 @@ frame tree for camera optical/depth frames. The local camera publisher only owns
 ## LiDAR Input
 
 `muto_hardware_launch.py` starts `lidar_tg30/lidar_node`. The driver publishes
-`/lidar/raw_laserscan` as `sensor_msgs/LaserScan` in `lidar_frame`. This is
+`/lidar/raw_laserscan` as `sensor_msgs/msg/LaserScan` in `lidar_frame`. This is
 the only TG30 data path; downstream filtering produces the two scans needed by
 RF2O and fusion.
 
@@ -154,6 +159,15 @@ Current default filters:
 | `cmd_vel_timeout` | `0.5` s | If no fresh `cmd_vel` is seen, assume stationary and apply the filters. |
 | `cmd_vel_stationary_linear_threshold` | `0.03` m/s | Translation filters apply at or below this commanded planar speed. |
 | `cmd_vel_stationary_angular_threshold` | `0.03` rad/s | Yaw filters apply at or below this commanded yaw rate. |
+
+In normal Nav2 operation, the controller publishes `/cmd_vel_nav` and the
+lifecycle-managed velocity smoother publishes the follow-path `/cmd_vel`
+consumed by both the Muto driver and this guard. The guard therefore sees the
+bounded command presented to the hardware, not the controller's unsmoothed
+request.
+Recovery behaviors are the exception: they currently publish directly to
+`/cmd_vel`, so the guard still sees their actual command but no velocity-smoother
+stage precedes it.
 
 In standalone mode, `filter_lidar_odometry_launch.py` defaults
 `rf2o_publish_tf:=true`, so the deadband wrapper can publish `odom -> base_frame`
@@ -301,6 +315,24 @@ Nav2 costmaps are configured around the same frame chain:
 - local costmap: `global_frame=odom`, `robot_base_frame=base_frame`;
 - global costmap: `global_frame=map`, `robot_base_frame=base_frame`;
 - both consume `/fused/laserscan`.
+
+The Nav2 controller and BT navigator read odometry from
+`/odometry/filtered`. Command routing is:
+
+```text
+controller_server /cmd_vel_nav
+  -> nav2_velocity_smoother
+  -> /cmd_vel
+  -> Muto driver + RF2O command-aware deadband/jump guard
+
+behavior_server recovery command
+  -> /cmd_vel
+  -> Muto driver + RF2O command-aware deadband/jump guard
+```
+
+The smoother is configured open-loop at 20 Hz, so it shapes commands from its
+last commanded velocity. `/odometry/filtered` remains its configured odometry
+topic but is not used as closed-loop feedback unless `feedback` is changed.
 
 ## Duplicate TF Publisher Rules
 

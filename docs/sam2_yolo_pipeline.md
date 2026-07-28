@@ -1,10 +1,14 @@
-# SAM2 + YOLO + Object Registry Pipeline
+# SAM2 + YOLO + Object Registry And Command Pipeline
+
+Date: 2026-07-28
 
 This document describes the complete perception-to-persistence path implemented
 by `sam2_image_annotator` and `sam2_object_registry`. It covers YOLO
 detection, SAM2 segmentation, RGB/depth geometry, the instance-marked point
 cloud, TF2 centroid localization, temporal confirmation, indexed object storage,
-RViz visualization, services, and YAML persistence.
+RViz visualization, services, and YAML persistence. It also documents the
+independent `muto_command_layer` launch that adds VLM-based object selection and
+Nav2 go-to-object commands above the registry.
 
 ## Static-Object Assumption
 
@@ -71,6 +75,9 @@ TF: color <- depth ---------> extrinsic transform                        |
                          |                                      + object JPEG
                          +---- image_path ------------------------------+
                                                 services: query / save / clear
+                         |
+                         +-> object_search <-> /vlm/generate -> /find_object
+                         +-> command_layer -> /navigate_to_pose -> /go_to_object
 ```
 
 The Python annotator owns image inference and depth-to-mask projection. The C++
@@ -96,21 +103,47 @@ node. End-to-end runtime requires:
   configured registry `target_frame`, normally `map`.
 - The `sam2_object_registry` C++ package and yaml-cpp for registry and
   persistence features.
+- For natural-language search: `muto_vlm_socket`, a reachable configured VLM
+  endpoint, and the `HKU_API_KEY` environment variable used by the checked-in
+  provider profile.
+- For `/go_to_object`: an independently running Nav2 `/navigate_to_pose`
+  action and a current `map <- base_frame` transform.
 
 Pre-stage both model files on the robot. A named Ultralytics model can trigger
 a download when it is not cached.
 
+The current hardware launch requests `640x480 @ 30 Hz` RGB and
+`320x240 @ 30 Hz` depth, while this node caps processing starts at 7 Hz. It
+loads the serial-specific 640x480 color calibration fallback from
+`yahboomcar_bringup`; the depth driver currently supplies valid native
+320x240 intrinsics. Color intrinsics are used for depth-point projection into
+the RGB SAM mask, not for YOLO or SAM2's 2D inference itself. Invalid color
+intrinsics therefore leave 2D outputs alive but block the instance-cloud and
+registry observation path.
+
 ## Start
+
+The normal integrated object launch starts the annotator, registry, VLM socket,
+go-to-object server, and natural-language object-search server:
 
 ```bash
 source /opt/ros/humble/setup.bash
+cd /opt/muto_rs_ws
 source install/setup.bash
-ros2 launch sam2_image_annotator sam2_image_annotator_launch.py
+export HKU_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py
 ```
 
-Start the registry in another terminal after sourcing the same workspace:
+This does not start the camera driver, TF publishers, SLAM, or Nav2. Run
+`muto_nav2_pipeline_launch.py` independently when hardware/navigation is
+needed. Keeping the launches separate also allows navigation without making
+the GPU/network VLM path a prerequisite.
+
+For component debugging, perception and registry can still be started in
+separate terminals:
 
 ```bash
+ros2 launch sam2_image_annotator sam2_image_annotator_launch.py
 ros2 launch sam2_object_registry object_registry_launch.py
 ```
 
@@ -513,6 +546,78 @@ the service reports failure but the in-memory registry remains cleared. New
 camera observations arriving after the clear can begin fresh tentative
 confirmation normally.
 
+## VLM Search And Object Navigation
+
+`muto_command_layer/launch/object_pipeline_launch.py` adds two independent
+action servers above the confirmed registry. These servers never consume
+tentative candidates.
+
+### Find an object from a prompt
+
+```bash
+ros2 action send_goal /find_object \
+  muto_command_layer/action/FindObject \
+  "{prompt: 'find the red cup'}" --feedback
+```
+
+The search node first queries every confirmed object and sends only IDs,
+labels, and class IDs to the VLM. This text-only pass returns a shortlist. If
+more than one candidate remains, a second pass loads the shortlisted objects'
+representative JPEGs and compares them with the original prompt. Final matches
+are returned in the action result and published individually on
+`/object_search/matches` as `muto_command_layer/msg/ObjectMatch`.
+
+Both VLM passes request strict JSON Schema output. The schema's ID enum is
+built from the exact eligible registry IDs, and the node independently parses
+one complete JSON object and validates every returned ID. Refusals, incomplete
+responses, unknown IDs, or required candidate images that cannot be loaded
+abort the action instead of silently producing a partial match. Validated
+shortlist and final-filter judgements are logged by default, with bounded
+description and ID lengths.
+
+The VLM socket is configured by
+`muto_command_layer/config/object_pipeline_vlm.yaml`. The checked-in profile
+uses the Responses protocol, model `gpt-5.6-sol`, and reads the credential from
+`HKU_API_KEY`; no key is stored in YAML. The current URL is plain HTTP, so use a
+trusted network, VPN, or secure tunnel, or switch to HTTPS. Top-level launch
+arguments for provider URL, protocol, and model override the corresponding file
+values and currently default to the same tested profile.
+
+### Approach an exact stored object
+
+```bash
+ros2 action send_goal /go_to_object \
+  muto_command_layer/action/GoToObject \
+  "{object_id: 'chair_2'}" --feedback
+```
+
+The command node performs an exact registry-name lookup, transforms the stored
+centroid into the configured global frame when necessary, reads the current
+robot pose through TF2, and builds a planar pose `0.75 m` from the object that
+faces its centroid. It publishes the computed pose on the transient-local
+`/object_navigation/target_pose` topic and delegates execution to Nav2
+`/navigate_to_pose`. Cancellation is forwarded to the active Nav2 goal.
+
+The persistent `StoredObject.name`, such as `chair_2`, is the command ID. A
+frame-local `instance_id` or generic YOLO label is not sufficient. This command
+does not visually re-identify the object at arrival, and Nav2 can reject an
+occupied or unreachable approach pose.
+
+### Command-layer interfaces
+
+| Default name | Type | Purpose |
+| --- | --- | --- |
+| `/vlm/generate` | `muto_vlm_socket/action/GenerateVlm` | General ordered text/JPEG VLM action with optional structured output. |
+| `/find_object` | `muto_command_layer/action/FindObject` | Natural-language selection of confirmed registry IDs. |
+| `/object_search/matches` | `muto_command_layer/msg/ObjectMatch` | One publication for each final match and description. |
+| `/go_to_object` | `muto_command_layer/action/GoToObject` | Approach and face one exact confirmed object. |
+| `/object_navigation/target_pose` | `geometry_msgs/msg/PoseStamped` | Latest generated Nav2 standoff pose. |
+
+The object launch is not owned by the Nav2 launch. `/find_object` needs the
+registry and VLM provider; `/go_to_object` needs the registry, Nav2 action, and
+map TF. A failure in one higher-level command does not stop image annotation or
+registry services.
+
 ## YAML Persistence
 
 Only confirmed objects are persistent. The default empty `output_yaml` resolves
@@ -728,6 +833,12 @@ The registry launch exposes every row above, including topic and service names.
 - Missing, stale, or invalid depth data, calibration mismatch, and TF failures
   skip only point-cloud publication.
 - Rejected YOLO scores are reported in throttled batch and cumulative logs.
+  The cumulative value is a node-lifetime count of discarded raw candidates,
+  not a count of unique objects or queued work, so it only increases until the
+  node restarts.
+- When an accepted 2D detection cannot enter the 3D branch, the annotator emits
+  a throttled `Skipping instance point cloud` report containing the current
+  missing calibration, timestamp, encoding, or TF reasons.
 - A valid no-detection frame publishes image-sized empty masks, empty typed
   metadata, and an empty instance cloud when the 3D inputs are available.
 - The registry waits when no cloud/metadata pair falls inside
@@ -762,6 +873,11 @@ ros2 topic echo /sam2/stored_object_markers --once
 ros2 service call /sam2/get_stored_objects sam2_object_registry/srv/GetStoredObjects "{name: '', label: ''}"
 ros2 param get /object_registry target_frame
 ros2 param get /object_registry confirmation_min_average_confidence
+ros2 action info /vlm/generate
+ros2 action info /find_object
+ros2 action info /go_to_object
+ros2 topic echo /object_search/matches --once
+ros2 topic echo /object_navigation/target_pose --once
 ```
 
 Manual prompts can isolate detector problems from SAM2 or camera problems:

@@ -1,6 +1,6 @@
 # Muto Mapping and Costmap Notes
 
-Date: 2026-07-24
+Date: 2026-07-28
 
 This document describes the current mapping and Nav2 costmap design for the
 Muto RS ROS 2 Humble deployment. It focuses on how the fused scan becomes a
@@ -165,6 +165,7 @@ The costmaps are created inside their Nav2 servers:
 - `controller_server`
 - `planner_server`
 - `smoother_server`
+- `velocity_smoother`
 - `behavior_server`
 - `bt_navigator`
 
@@ -184,8 +185,10 @@ Both costmaps use:
 ## Robot Footprint Assumption
 
 > **Important:** The costmaps model a body-and-fixed-sensor radius of
-> `0.16 m` with `0.01 m` footprint padding. The approximately `0.30 m`
-> full zero-pose leg collision radius is intentionally not represented.
+> `0.16 m` with `0.01 m` footprint padding. Measurements from the Yahboom
+> tutorial URDF put the central body near `0.144 m` radius but the full
+> zero-pose leg envelope near `0.295 m`; the legs are intentionally not
+> represented by the current costmap model.
 
 This configuration assumes navigation clearance is based on the compact body,
 not every possible leg pose or gait sweep. Inflation does not correct an
@@ -195,6 +198,8 @@ footprint, while collision checks still depend on the footprint model.
 Before autonomous operation near furniture, walls, people, or narrow passages,
 validate the real swept leg envelope for the active gait. Increase the modeled
 footprint or impose equivalent clearance elsewhere if leg contact is possible.
+The copied `src/yahboomcar_description` package is reference-only and is not
+started by the deployed TF or Nav2 launches.
 
 ## Local Costmap
 
@@ -249,7 +254,7 @@ Both costmaps use the same obstacle-source policy:
 | --- | ---: |
 | Topic | `/fused/laserscan` |
 | Data type | `LaserScan` |
-| Expected update period | `0.1 s` |
+| Expected update period | `0.2 s` |
 | Obstacle marking range | `2.5 m` |
 | Raytrace clearing range | `3.0 m` |
 | Minimum obstacle range | `0.0 m` |
@@ -257,7 +262,7 @@ Both costmaps use the same obstacle-source policy:
 | Marking | enabled |
 | Clearing | enabled |
 | Footprint clearing | enabled |
-| `inf_is_valid` | `false` |
+| `inf_is_valid` | `true` |
 | Combination method | `1` |
 
 The fused scan can contain LiDAR returns out to 15 m and camera returns out to
@@ -265,15 +270,14 @@ The fused scan can contain LiDAR returns out to 15 m and camera returns out to
 3 m. Long-range LiDAR data can still help SLAM even though the costmap obstacle
 layer ignores it beyond those limits.
 
-`expected_update_rate: 0.1` is a period in seconds, not 0.1 Hz. It expects
-observations roughly every 100 ms. Sustained fused-scan output below 10 Hz may
-produce stale-source warnings even though the camera conversion itself is
-capped at 7 Hz; the LiDAR-driven fusion output is expected to continue at the
-LiDAR rate.
+`expected_update_rate: 0.2` is a period in seconds, not 0.2 Hz. It allows about
+three nominal 16 Hz LiDAR periods before treating the observation source as
+stale. The camera conversion itself is capped at 7 Hz, but LiDAR-driven fusion
+is expected to continue at the LiDAR rate.
 
-With `inf_is_valid: false`, infinite ranges are not treated as explicit
-clearing observations. Clearing relies on valid finite ray endpoints and
-raytracing behavior.
+The fusion node uses positive infinity for angular bins with no return. With
+`inf_is_valid: true`, Nav2 retains those open rays for clearing instead of
+discarding them as invalid observations.
 
 ## Inflation Layer
 
@@ -302,8 +306,8 @@ The global planner is Navfn:
 | Planner plugin | `nav2_navfn_planner/NavfnPlanner` |
 | `use_astar` | `false` |
 | `allow_unknown` | `true` |
-| Goal tolerance | `0.5 m` |
-| Expected planner frequency | `20 Hz` |
+| Goal tolerance | `0.15 m` |
+| Expected planner frequency | `1 Hz` |
 
 Because both `track_unknown_space` and `allow_unknown` are enabled, the
 planner may route through unknown global-map space when a path is otherwise
@@ -314,17 +318,66 @@ The controller is Regulated Pure Pursuit:
 
 | Setting | Value |
 | --- | --- |
-| Desired linear velocity | `0.3 m/s` |
-| Lookahead distance | `0.2 m` |
+| Desired linear velocity | `0.2 m/s` |
+| Fixed lookahead distance | `0.25 m` |
 | Collision detection | enabled |
 | Maximum collision lookahead | `1.0 s` |
 | Rotate to heading | enabled |
+| Rotate-to-heading velocity | `0.2 rad/s` |
+| Maximum angular acceleration | `0.4 rad/s^2` |
 | Reversing | disabled |
+| Curvature-regulated linear scaling | enabled |
 | Cost-regulated velocity scaling | disabled |
+| Controller odometry input | `/odometry/filtered` |
 
 The controller's collision checks depend on the local costmap and configured
 footprint. A clean global plan does not make an unsafe or stale local costmap
 acceptable.
+
+The Humble behavior trees replan at 1 Hz, run each Navfn result through the
+Simple Smoother with collision checking, and pass the resulting
+`smoothed_path` to Regulated Pure Pursuit. Velocity-scaled lookahead is
+disabled, so `min_lookahead_dist`, `max_lookahead_dist`, and `lookahead_time`
+do not control the active carrot distance.
+
+Controller output is intentionally separated from the hardware command topic:
+
+```text
+controller_server /cmd_vel_nav
+  -> velocity_smoother at 20 Hz
+  -> /cmd_vel
+  -> Muto driver and RF2O command-aware guard
+```
+
+The velocity smoother is open-loop and enforces limits of `0.2 m/s` forward,
+`0.15 m/s` reverse, `0.2 rad/s` yaw, `0.2 m/s^2` linear acceleration, and
+`0.4 rad/s^2` angular acceleration. Its odometry topic is
+`/odometry/filtered`; open-loop mode means that topic is configured but is not
+used as closed-loop velocity feedback.
+
+The current launch remaps only `controller_server`. Nav2 recovery behaviors
+still publish directly to `/cmd_vel`, so Spin and BackUp bypass the velocity
+smoother but remain bounded by `behavior_server`'s `0.2 rad/s` rotational limit
+and the BT's `0.15 m/s` backup command. Do not describe the smoother as the
+exclusive `/cmd_vel` publisher until the behavior server is routed through it.
+
+## Optional Navigation Clients
+
+Frontier exploration and object navigation are separate Nav2 action clients;
+neither is included by `muto_nav2_pipeline_launch.py`.
+
+`frontier_exploration_launch.py` consumes `/map`, both costmaps,
+`map <- base_frame`, and `/navigate_to_pose`. Its Muto profile uses a bounded
+12-candidate, 8-step DP horizon at 1 Hz, enables the CLI control service, and
+settles for 3.2 seconds after success to align with SLAM's 3-second map update.
+Its `0.30 m/s` and `0.50 rad/s` speed values are scoring estimates only and are
+currently optimistic relative to Nav2's `0.20 m/s` and `0.20 rad/s` command
+limits; they do not bypass the controller or velocity smoother.
+
+`object_pipeline_launch.py` provides `/go_to_object`, which derives a
+robot-facing standoff pose from a confirmed registry centroid and delegates it
+to the same `/navigate_to_pose` action. Stop exploration before issuing an
+object goal unless Nav2 preemption between clients is intentional.
 
 ## Static And Dynamic Environment Assumptions
 
@@ -396,6 +449,7 @@ Lifecycle state:
 ros2 lifecycle get /controller_server
 ros2 lifecycle get /planner_server
 ros2 lifecycle get /smoother_server
+ros2 lifecycle get /velocity_smoother
 ros2 lifecycle get /behavior_server
 ros2 lifecycle get /bt_navigator
 ```
@@ -485,7 +539,8 @@ Measure before changing behavior. The main cost drivers are:
 - 0.04 m SLAM and costmap resolution;
 - full-costmap publication;
 - local 5 Hz updates;
-- planner expected at 20 Hz;
+- controller and velocity smoothing at 20 Hz;
+- collision-checked path smoothing on each 1 Hz replan;
 - depth conversion rate and 4x4 sampling;
 - fused scan density.
 
@@ -514,8 +569,10 @@ incorrect camera projection, or discontinuous odometry.
 | --- | --- |
 | `src/muto_slam_mapping/config/mapper_params_online_async.yaml` | SLAM frames, resolution, scan topic, and map timing. |
 | `src/muto_slam_mapping/config/nav2_params.yaml` | Costmaps, planner, controller, behaviors, and BT navigator parameters. |
+| `src/muto_slam_mapping/behavior_trees/muto_nav_to_pose.xml` | Plan, collision-checked smoothing, and follow-path sequence. |
 | `src/muto_slam_mapping/launch/online_async_mapping_launch.py` | Scan fusion plus online mapping. |
 | `src/muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Nav2 server and lifecycle ownership. |
 | `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Readiness-gated full startup. |
 | `src/lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Raw depth conversion and scan fusion. |
 | `src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | LiDAR scans and RF2O input. |
+| `src/yahboomcar_description/README.md` | Reference-only Yahboom tutorial URDF provenance and measured footprint bounds. |

@@ -58,11 +58,14 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.2
-      lookahead_dist: 0.15
+      # Fixed accuracy-oriented carrot distance. With velocity scaling disabled,
+      # min/max lookahead and lookahead_time are not used by Humble RPP.
+      lookahead_dist: 0.25
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.5
+      # The Muto driver accepts at most angular level 20 (0.2 rad/s).
+      rotate_to_heading_angular_vel: 0.2
       transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.1
@@ -75,12 +78,10 @@ controller_server:
       cost_scaling_gain: 1.0
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.1
-      use_fixed_curvature_lookahead: false
-      curvature_lookahead_dist: 0.25
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 1.0
+      max_angular_accel: 0.4
 
 local_costmap:
   local_costmap:
@@ -111,8 +112,8 @@ local_costmap:
         combination_method: 1
         scan:
           topic: /fused/laserscan
-          # Seconds between observations, with margin above the nominal 62.5 ms period.
-          expected_update_rate: 0.1
+          # Treat the source as stale only after about three nominal 16 Hz periods.
+          expected_update_rate: 0.2
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
           raytrace_max_range: 3.0
@@ -122,7 +123,8 @@ local_costmap:
           clearing: true
           marking: true
           data_type: "LaserScan"
-          inf_is_valid: false
+          # The fusion node uses +inf for open angular bins; retain those rays for clearing.
+          inf_is_valid: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
@@ -135,11 +137,13 @@ local_costmap:
 planner_server:
   ros__parameters:
     use_sim_time: false
-    expected_planner_frequency: 20.0
+    # Match the 1 Hz RateController in the navigation behavior trees.
+    expected_planner_frequency: 1.0
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.5
+      # Do not substitute a plan endpoint outside the goal checker's XY tolerance.
+      tolerance: 0.15
       use_astar: false
       allow_unknown: true
 
@@ -152,6 +156,21 @@ smoother_server:
       tolerance: 1.0e-10
       max_its: 1000
       do_refinement: true
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.2, 0.0, 0.2]
+    min_velocity: [-0.15, 0.0, -0.2]
+    max_accel: [0.2, 0.0, 0.4]
+    max_decel: [-0.3, 0.0, -0.5]
+    odom_topic: /odometry/filtered
+    odom_duration: 0.2
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 0.5
 
 behavior_server:
   ros__parameters:
@@ -170,9 +189,9 @@ behavior_server:
     robot_base_frame: base_frame
     transform_tolerance: 0.1
     simulate_ahead_time: 1.5
-    max_rotational_vel: 0.5
+    max_rotational_vel: 0.2
     min_rotational_vel: 0.1
-    rotational_acc_lim: 1.0
+    rotational_acc_lim: 0.4
 
 global_costmap:
   global_costmap:
@@ -204,8 +223,8 @@ global_costmap:
         combination_method: 1
         scan:
           topic: /fused/laserscan
-          # Seconds between observations, with margin above the nominal 62.5 ms period.
-          expected_update_rate: 0.1
+          # Treat the source as stale only after about three nominal 16 Hz periods.
+          expected_update_rate: 0.2
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
           raytrace_max_range: 3.0
@@ -215,7 +234,8 @@ global_costmap:
           clearing: true
           marking: true
           data_type: "LaserScan"
-          inf_is_valid: false
+          # The fusion node uses +inf for open angular bins; retain those rays for clearing.
+          inf_is_valid: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true

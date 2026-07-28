@@ -37,6 +37,11 @@ def generate_launch_description():
             description='OpenAI-compatible API base URL.',
         ),
         DeclareLaunchArgument(
+            'wire_api',
+            default_value='responses',
+            description='Wire API: responses or chat_completions.',
+        ),
+        DeclareLaunchArgument(
             'default_model',
             default_value='gpt-5.5',
             description='Model used when an action goal leaves model empty.',
@@ -59,6 +64,10 @@ def generate_launch_description():
                     ),
                     'base_url': ParameterValue(
                         LaunchConfiguration('base_url'),
+                        value_type=str,
+                    ),
+                    'wire_api': ParameterValue(
+                        LaunchConfiguration('wire_api'),
                         value_type=str,
                     ),
                     'default_model': ParameterValue(

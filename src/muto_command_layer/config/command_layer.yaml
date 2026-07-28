@@ -43,5 +43,10 @@ object_search:
     max_description_characters: 4096
     max_candidate_jpeg_bytes: 8388608
 
+    # Emit validated shortlist/filter decisions without raw prompts or images.
+    log_vlm_judgements: true
+    max_log_description_characters: 240
+    max_log_filtered_ids: 32
+
     # Refuse ambiguous visual refinement when any shortlisted JPEG is missing.
     require_all_candidate_images: true

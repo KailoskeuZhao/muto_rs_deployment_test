@@ -13,9 +13,11 @@ from muto_command_layer.msg import ObjectMatch
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
 from object_search_protocol import (
+    build_selection_schema,
     build_shortlist_prompt,
     build_visual_refinement_prompt,
     candidate_image_tag,
+    format_judgement_log,
     parse_selection,
     SearchProtocolError,
 )
@@ -98,6 +100,9 @@ class ObjectSearchNode(Node):
         self.declare_parameter('max_shortlist_size', 8)
         self.declare_parameter('max_description_characters', 4096)
         self.declare_parameter('max_candidate_jpeg_bytes', 8388608)
+        self.declare_parameter('log_vlm_judgements', True)
+        self.declare_parameter('max_log_description_characters', 240)
+        self.declare_parameter('max_log_filtered_ids', 32)
         self.declare_parameter('require_all_candidate_images', True)
 
     def _read_parameters(self):
@@ -123,6 +128,12 @@ class ObjectSearchNode(Node):
             'max_description_characters').value
         self.max_candidate_jpeg_bytes = self.get_parameter(
             'max_candidate_jpeg_bytes').value
+        self.log_vlm_judgements = self.get_parameter(
+            'log_vlm_judgements').value
+        self.max_log_description_characters = self.get_parameter(
+            'max_log_description_characters').value
+        self.max_log_filtered_ids = self.get_parameter(
+            'max_log_filtered_ids').value
         self.require_all_candidate_images = self.get_parameter(
             'require_all_candidate_images').value
 
@@ -143,7 +154,8 @@ class ObjectSearchNode(Node):
         for parameter_name in (
                 'max_prompt_characters', 'max_registry_objects',
                 'max_shortlist_size', 'max_description_characters',
-                'max_candidate_jpeg_bytes'):
+                'max_candidate_jpeg_bytes',
+                'max_log_description_characters', 'max_log_filtered_ids'):
             value = getattr(self, parameter_name)
             if not isinstance(value, int) or value <= 0:
                 raise ValueError(
@@ -151,6 +163,19 @@ class ObjectSearchNode(Node):
         if self.max_shortlist_size > self.max_registry_objects:
             raise ValueError(
                 'max_shortlist_size must not exceed max_registry_objects')
+
+    def _log_vlm_judgement(
+            self, stage, selections, considered_ids):
+        """Log one validated VLM decision without raw response content."""
+        if not self.log_vlm_judgements:
+            return
+        payload = format_judgement_log(
+            selections,
+            considered_ids,
+            self.max_log_description_characters,
+            self.max_log_filtered_ids,
+        )
+        self.get_logger().info(f'VLM {stage} judgement: {payload}')
 
     def _goal_callback(self, goal_request):
         """Reject empty, oversized, or overlapping searches."""
@@ -250,7 +275,7 @@ class ObjectSearchNode(Node):
                 'object registry contains empty or duplicate IDs')
         return registry.header, objects
 
-    def _call_vlm(self, content, goal_handle):
+    def _call_vlm(self, content, response_json_schema, goal_handle):
         """Send one child action goal and return its successful result."""
         self._wait_for_endpoint(
             self._vlm_client.server_is_ready,
@@ -261,6 +286,7 @@ class ObjectSearchNode(Node):
         child_goal = GenerateVlm.Goal()
         child_goal.content = content
         child_goal.model = self.vlm_model
+        child_goal.response_json_schema = response_json_schema
         send_future = self._vlm_client.send_goal_async(child_goal)
         try:
             child_handle = self._wait_for_future(
@@ -431,8 +457,17 @@ class ObjectSearchNode(Node):
             )
             shortlist_prompt = build_shortlist_prompt(
                 prompt, inventory, self.max_shortlist_size)
+            shortlist_schema = build_selection_schema(
+                'candidates',
+                list(objects_by_id),
+                self.max_shortlist_size,
+                self.max_description_characters,
+            )
             shortlist_result = self._call_vlm(
-                [self._text_content(shortlist_prompt)], goal_handle)
+                [self._text_content(shortlist_prompt)],
+                shortlist_schema,
+                goal_handle,
+            )
             shortlist = parse_selection(
                 shortlist_result.response_text,
                 'candidates',
@@ -440,6 +475,8 @@ class ObjectSearchNode(Node):
                 self.max_shortlist_size,
                 self.max_description_characters,
             )
+            self._log_vlm_judgement(
+                'metadata shortlist', shortlist, list(objects_by_id))
 
             final_selections = shortlist
             if len(shortlist) > 1:
@@ -451,8 +488,14 @@ class ObjectSearchNode(Node):
                 )
                 visual_content, visual_ids = self._build_visual_content(
                     prompt, shortlist, objects_by_id)
+                visual_schema = build_selection_schema(
+                    'matches',
+                    visual_ids,
+                    len(visual_ids),
+                    self.max_description_characters,
+                )
                 visual_result = self._call_vlm(
-                    visual_content, goal_handle)
+                    visual_content, visual_schema, goal_handle)
                 final_selections = parse_selection(
                     visual_result.response_text,
                     'matches',
@@ -460,6 +503,18 @@ class ObjectSearchNode(Node):
                     len(visual_ids),
                     self.max_description_characters,
                 )
+                self._log_vlm_judgement(
+                    'visual target filtering',
+                    final_selections,
+                    visual_ids,
+                )
+            elif self.log_vlm_judgements:
+                reason = (
+                    'no metadata candidates'
+                    if not shortlist else 'one metadata candidate'
+                )
+                self.get_logger().info(
+                    f'VLM visual target filtering skipped: {reason}')
 
             self._publish_feedback(
                 goal_handle,

@@ -14,14 +14,16 @@ from rclpy.node import Node
 
 from vlm_socket_protocol import (
     build_request_body,
+    decode_response_json_schema,
     encode_content,
     extract_response,
     parse_endpoint,
-    post_chat_completion,
+    post_vlm_request,
     ProtocolError,
     ProtocolLimits,
     TransportError,
     validate_limits,
+    validate_wire_api,
 )
 
 
@@ -54,13 +56,15 @@ class VlmSocketNode(Node):
         )
         self.get_logger().info(
             f'VLM socket ready: action={self.action_name} '
-            f'endpoint={self.base_url} model={self.default_model} '
+            f'endpoint={self.base_url} wire_api={self.wire_api} '
+            f'model={self.default_model} '
             f'credentials={auth_description}')
 
     def _declare_parameters(self):
         """Declare the complete configuration surface."""
         self.declare_parameter('action_name', '/vlm/generate')
         self.declare_parameter('base_url', 'http://127.0.0.1:8000/v1')
+        self.declare_parameter('wire_api', 'responses')
         self.declare_parameter('api_key_env', 'DASHSCOPE_API_KEY')
         self.declare_parameter('require_api_key', True)
         self.declare_parameter('default_model', 'gpt-5.5')
@@ -74,11 +78,13 @@ class VlmSocketNode(Node):
         self.declare_parameter('max_response_bytes', 4194304)
         self.declare_parameter('max_tokens', 0)
         self.declare_parameter('temperature', -1.0)
+        self.declare_parameter('store_response', False)
 
     def _read_parameters(self):
         """Read parameters once because transport identity is immutable."""
         self.action_name = self.get_parameter('action_name').value
         self.base_url = self.get_parameter('base_url').value
+        self.wire_api = self.get_parameter('wire_api').value
         self.api_key_env = self.get_parameter('api_key_env').value
         self.require_api_key = self.get_parameter('require_api_key').value
         self.default_model = self.get_parameter('default_model').value
@@ -86,6 +92,7 @@ class VlmSocketNode(Node):
         self.request_timeout = self.get_parameter('request_timeout').value
         self.max_tokens = self.get_parameter('max_tokens').value
         self.temperature = self.get_parameter('temperature').value
+        self.store_response = self.get_parameter('store_response').value
         self.limits = ProtocolLimits(
             self.get_parameter('max_content_parts').value,
             self.get_parameter('max_text_characters').value,
@@ -99,7 +106,8 @@ class VlmSocketNode(Node):
         """Fail at startup instead of failing every action request."""
         if not self.action_name:
             raise ValueError('action_name must not be empty')
-        self.endpoint = parse_endpoint(self.base_url)
+        validate_wire_api(self.wire_api)
+        self.endpoint = parse_endpoint(self.base_url, self.wire_api)
         validate_limits(self.limits)
         if not self.default_model.strip():
             raise ValueError('default_model must not be empty')
@@ -186,6 +194,10 @@ class VlmSocketNode(Node):
                     f'{self.api_key_env} is not set')
 
             encoded = encode_content(goal_handle.request.content, self.limits)
+            response_json_schema = decode_response_json_schema(
+                goal_handle.request.response_json_schema,
+                self.limits.max_text_characters,
+            )
             request_body = build_request_body(
                 encoded,
                 selected_model,
@@ -193,6 +205,9 @@ class VlmSocketNode(Node):
                 self.max_tokens,
                 self.temperature,
                 self.limits.max_request_bytes,
+                self.wire_api,
+                self.store_response,
+                response_json_schema,
             )
             if goal_handle.is_cancel_requested:
                 return self._canceled_result(
@@ -202,13 +217,14 @@ class VlmSocketNode(Node):
                 goal_handle, 2, 'connecting to VLM endpoint')
             self._publish_feedback(
                 goal_handle, 3, 'waiting for VLM response')
-            response = post_chat_completion(
+            response = post_vlm_request(
                 self.endpoint,
                 request_body,
                 api_key,
                 self.request_timeout,
                 self.limits.max_response_bytes,
                 self._set_active_connection,
+                self.wire_api,
             )
             if goal_handle.is_cancel_requested:
                 return self._canceled_result(
@@ -217,7 +233,7 @@ class VlmSocketNode(Node):
             self._publish_feedback(
                 goal_handle, 4, 'decoding VLM response')
             response_text, prompt_tokens, completion_tokens = \
-                extract_response(response)
+                extract_response(response, self.wire_api)
             result.success = True
             result.response_text = response_text
             result.prompt_tokens = prompt_tokens

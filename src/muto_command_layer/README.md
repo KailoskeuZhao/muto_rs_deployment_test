@@ -4,6 +4,41 @@
 registry, the VLM socket, and Nav2. It provides cancellable `/go_to_object` and
 `/find_object` actions.
 
+See [Object pipeline functions](docs/object_pipeline_functions.md) for the
+complete functional interface, runtime dependencies, operator commands, and
+degraded-operation behavior of `object_pipeline_launch.py`.
+
+## Complete object pipeline launch
+
+Start the SAM 2 image annotator, object registry, VLM socket, and command layer
+from one launch file:
+
+```bash
+export DASHSCOPE_API_KEY='your-key'
+ros2 launch muto_command_layer object_pipeline_launch.py \
+  vlm_base_url:=http://vlm-host:8000/v1 \
+  vlm_wire_api:=responses \
+  vlm_model:=gpt-5.5
+```
+
+Credentials remain environment-only. The launch shares the annotator detection
+and point-cloud topics with the registry, and shares the registry service and
+VLM action endpoints with the command layer. Each included package is scoped so
+similarly named child launch arguments cannot leak into another package.
+
+The deployment-level VLM settings live in
+`config/object_pipeline_vlm.yaml`. It contains the provider URL, wire API,
+model, request limits, and the *name* of the credential environment variable.
+Select another file at launch time with
+`vlm_params_file:=/absolute/path/to/vlm.yaml`; the explicit `vlm_base_url`,
+`vlm_wire_api`, and `vlm_model` launch arguments take precedence over that
+file.
+
+The command layer starts last, but dependency readiness is checked when an
+action goal is executed rather than through arbitrary startup delays. The
+`/go_to_object` action still requires Nav2 to be running; `/find_object` needs
+only the four packages launched here plus camera and TF inputs.
+
 ## Go-to-object pipeline
 
 ```text
@@ -98,14 +133,18 @@ VLM pass 1: text only, return an exact-ID shortlist
 
 The first pass never receives images or filesystem paths. It receives only the
 user prompt and a JSON inventory containing each registered object's exact ID,
-YOLO label, and class ID. The VLM must return a strict JSON shortlist, and every
-returned ID is checked against the registry before it can proceed.
+YOLO label, and class ID. The command layer sends a strict provider JSON Schema
+whose ID enum contains only the current registry IDs. It then requires the
+response to be exactly one JSON object and checks every returned ID against the
+same registry snapshot before it can proceed.
 
 Visual refinement happens only when the shortlist contains more than one
 candidate. The command layer reads the representative `image_path` stored by
 the registry and sends ordered `candidate ID tag -> JPEG` pairs through
 `muto_vlm_socket`. By default, a missing, oversized, or invalid candidate JPEG
 aborts an ambiguous search so candidates are not silently discarded.
+This pass receives a separate strict schema limited to the IDs whose JPEGs were
+actually included.
 
 Every final result is returned in the `FindObject` action result and published
 individually as `muto_command_layer/msg/ObjectMatch` on
@@ -154,3 +193,7 @@ unavailable, the action aborts with a bounded error instead of waiting forever.
   is unavailable; default `true`.
 - `vlm_result_timeout`: upper bound for either VLM inference pass; default
   `180` seconds.
+- `log_vlm_judgements`: emit validated metadata-shortlist and visual-filter
+  decisions as single-line JSON; default `true`.
+- `max_log_description_characters` and `max_log_filtered_ids`: bound judgement
+  log volume; defaults are `240` and `32`.

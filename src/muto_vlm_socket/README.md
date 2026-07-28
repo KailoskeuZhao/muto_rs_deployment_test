@@ -1,9 +1,9 @@
 # Muto VLM socket
 
 `muto_vlm_socket` is a ROS 2 action bridge to an OpenAI-compatible multimodal
-`/chat/completions` endpoint. It has no camera subscription and no fixed prompt:
-each caller supplies one ordered request containing any interleaving of text and
-JPEG parts.
+endpoint. It supports both the Responses API and Chat Completions. It has no
+camera subscription and no fixed prompt: each caller supplies one ordered
+request containing any interleaving of text and JPEG parts.
 
 ## Interface
 
@@ -15,6 +15,7 @@ GenerateVlm goal
     type = TYPE_TEXT  -> text is populated, jpeg_data is empty
     type = TYPE_JPEG  -> jpeg_data is populated, text is empty
   model               -> empty uses default_model
+  response_json_schema -> empty requests text; otherwise a JSON Schema object
 ```
 
 Order is preserved. These are all valid requests:
@@ -28,6 +29,13 @@ The entire ordered array becomes one OpenAI-compatible `user` message. The
 result contains response text and prompt/completion token counts when supplied
 by the endpoint. Progress feedback covers validation, connection, model wait,
 and response decoding.
+
+When `response_json_schema` is nonempty, the socket requests strict structured
+output. It maps the schema to Responses `text.format` or Chat Completions
+`response_format`, depending on `wire_api`. The schema must describe a root
+object and is bounded by `max_text_characters` and `max_request_bytes`.
+Incomplete, failed, refused, or content-filtered generations fail the action;
+partial text is never returned as a successful result.
 
 Only one request is executed at a time; overlapping goals are rejected. Action
 cancellation closes the active HTTP connection on a best-effort basis, while
@@ -43,8 +51,14 @@ environment variable before launch:
 export DASHSCOPE_API_KEY='your-key'
 ros2 launch muto_vlm_socket vlm_socket_launch.py \
   base_url:=http://vlm-host:8000/v1 \
+  wire_api:=responses \
   default_model:=gpt-5.5
 ```
+
+`wire_api` accepts `responses` (the default) or `chat_completions`. The socket
+appends `/responses` or `/chat/completions` to `base_url` when the suffix is not
+already present. Responses requests use `store: false` by default; change
+`store_response` only in a parameter file when retention is intentional.
 
 For an unauthenticated local endpoint, set `require_api_key: false` in a custom
 parameter file.
@@ -54,7 +68,7 @@ Text-only goals can be sent from the CLI:
 ```bash
 ros2 action send_goal /vlm/generate \
   muto_vlm_socket/action/GenerateVlm \
-  "{content: [{type: 1, text: 'Describe your capabilities.', jpeg_data: []}], model: ''}" \
+  "{content: [{type: 1, text: 'Describe your capabilities.', jpeg_data: []}], model: '', response_json_schema: ''}" \
   --feedback
 ```
 
@@ -79,6 +93,7 @@ question.text = 'What obstacles are visible?'
 
 goal.content = [image, question]
 goal.model = ''
+goal.response_json_schema = ''
 # Send goal with rclpy.action.ActionClient.
 ```
 

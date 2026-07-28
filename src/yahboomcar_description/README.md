@@ -2,6 +2,9 @@
 
 This package is retained as reference material for the original Muto robot
 geometry. It is not part of the deployed navigation, TF, or hardware pipeline.
+The package was copied from the Yahboom tutorial materials and is preserved
+here as an upstream reference rather than project-authored robot-description
+code.
 
 The package contains:
 
@@ -38,4 +41,3 @@ legs. A radius of approximately 0.30 m represents the zero-pose leg envelope;
 the existing 0.01 m costmap footprint padding would make its effective radius
 0.31 m. The final deployed value should still be checked against physical leg
 motion, gait poses, mounts, and cabling.
-

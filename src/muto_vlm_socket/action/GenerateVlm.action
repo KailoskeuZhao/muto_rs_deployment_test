@@ -3,6 +3,9 @@ muto_vlm_socket/VlmContent[] content
 
 # Empty selects the node's default_model parameter.
 string model
+
+# Empty requests ordinary text. Otherwise this must be a JSON Schema object.
+string response_json_schema
 ---
 bool success
 string response_text

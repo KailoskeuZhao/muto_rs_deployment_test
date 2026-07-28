@@ -14,13 +14,16 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
 
 from vlm_socket_protocol import (  # noqa: E402
     build_request_body,
+    decode_response_body,
+    decode_response_json_schema,
     encode_content,
     extract_response,
     parse_endpoint,
-    post_chat_completion,
+    post_vlm_request,
     ProtocolError,
     ProtocolLimits,
     TransportError,
+    WIRE_API_RESPONSES,
 )
 
 
@@ -87,6 +90,99 @@ def test_payload_contains_optional_fields(limits):
     assert payload['stream'] is False
 
 
+def test_responses_payload_maps_ordered_multimodal_content(limits):
+    """Responses requests use input content types and disable storage."""
+    jpeg = b'\xff\xd8payload\xff\xd9'
+    encoded = encode_content([
+        part(1, text='before'),
+        part(2, jpeg_data=jpeg),
+        part(1, text='after'),
+    ], limits)
+    body = build_request_body(
+        encoded, 'model-r', 'be concise', 128, 0.2,
+        limits.max_request_bytes, WIRE_API_RESPONSES, False)
+    payload = json.loads(body)
+
+    content = payload['input'][0]['content']
+    assert [item['type'] for item in content] == [
+        'input_text', 'input_image', 'input_text']
+    assert content[0]['text'] == 'before'
+    assert content[1]['image_url'].startswith(
+        'data:image/jpeg;base64,')
+    assert content[2]['text'] == 'after'
+    assert payload['instructions'] == 'be concise'
+    assert payload['max_output_tokens'] == 128
+    assert payload['temperature'] == 0.2
+    assert payload['stream'] is False
+    assert payload['store'] is False
+    assert 'messages' not in payload
+
+
+def test_responses_payload_carries_strict_json_schema(limits):
+    """Responses structured output uses the documented text format shape."""
+    encoded = encode_content([part(1, text='select')], limits)
+    schema = {
+        'type': 'object',
+        'properties': {'matches': {'type': 'array'}},
+        'required': ['matches'],
+        'additionalProperties': False,
+    }
+    body = build_request_body(
+        encoded, 'model-r', '', 0, -1.0,
+        limits.max_request_bytes, WIRE_API_RESPONSES, False, schema)
+    payload = json.loads(body)
+
+    assert payload['text']['format'] == {
+        'type': 'json_schema',
+        'name': 'ros_vlm_response',
+        'schema': schema,
+        'strict': True,
+    }
+
+
+def test_chat_payload_carries_strict_json_schema(limits):
+    """Chat Completions receives its corresponding response_format shape."""
+    encoded = encode_content([part(1, text='select')], limits)
+    schema = {
+        'type': 'object',
+        'properties': {},
+        'additionalProperties': False,
+    }
+    body = build_request_body(
+        encoded, 'model-c', '', 0, -1.0,
+        limits.max_request_bytes,
+        response_json_schema=schema,
+    )
+    payload = json.loads(body)
+
+    assert payload['response_format'] == {
+        'type': 'json_schema',
+        'json_schema': {
+            'name': 'ros_vlm_response',
+            'schema': schema,
+            'strict': True,
+        },
+    }
+
+
+def test_optional_response_schema_is_bounded_and_validated(limits):
+    """Malformed or unsuitable schemas fail before request dispatch."""
+    schema = decode_response_json_schema(
+        '{"type":"object","additionalProperties":false}', 100)
+
+    assert schema == {
+        'type': 'object',
+        'additionalProperties': False,
+    }
+    assert decode_response_json_schema('  ', 100) is None
+    with pytest.raises(ProtocolError):
+        decode_response_json_schema('{bad json', 100)
+    with pytest.raises(ProtocolError):
+        decode_response_json_schema('{"type":"array"}', 100)
+    with pytest.raises(ProtocolError):
+        decode_response_json_schema('{"type":"object"}', 4)
+
+
 def test_endpoint_appends_chat_completions():
     """Base and complete endpoint forms normalize identically."""
     base = parse_endpoint('https://example.test:8443/v1/')
@@ -96,6 +192,22 @@ def test_endpoint_appends_chat_completions():
     assert base == complete
     assert base.target == '/v1/chat/completions'
     assert base.port == 8443
+
+
+def test_endpoint_appends_responses():
+    """Responses mode targets the Responses API and rejects conflicts."""
+    base = parse_endpoint(
+        'https://example.test:8443/v1/', WIRE_API_RESPONSES)
+    complete = parse_endpoint(
+        'https://example.test:8443/v1/responses', WIRE_API_RESPONSES)
+
+    assert base == complete
+    assert base.target == '/v1/responses'
+    with pytest.raises(ProtocolError):
+        parse_endpoint(
+            'https://example.test/v1/chat/completions',
+            WIRE_API_RESPONSES,
+        )
 
 
 @pytest.mark.parametrize('url', [
@@ -130,6 +242,143 @@ def test_response_text_and_usage_are_extracted():
     assert text == 'hello world'
     assert prompt_tokens == 12
     assert completion_tokens == 3
+
+
+@pytest.mark.parametrize('choice', [
+    {
+        'finish_reason': 'length',
+        'message': {'content': 'partial'},
+    },
+    {
+        'finish_reason': 'content_filter',
+        'message': {'content': ''},
+    },
+    {
+        'finish_reason': 'stop',
+        'message': {'content': '', 'refusal': 'cannot comply'},
+    },
+])
+def test_chat_incomplete_filtered_and_refused_outputs_are_rejected(choice):
+    """Non-success Chat terminal states never become action success."""
+    with pytest.raises(ProtocolError):
+        extract_response({'choices': [choice]})
+
+
+def test_responses_output_and_usage_are_extracted():
+    """Raw Responses output messages map to the existing ROS result."""
+    text, input_tokens, output_tokens = extract_response({
+        'status': 'completed',
+        'output': [
+            {'type': 'reasoning', 'content': []},
+            {
+                'type': 'message',
+                'content': [
+                    {'type': 'output_text', 'text': 'hello '},
+                    {'type': 'output_text', 'text': 'world'},
+                ],
+            },
+        ],
+        'usage': {
+            'input_tokens': 15,
+            'output_tokens': 4,
+        },
+    }, WIRE_API_RESPONSES)
+
+    assert text == 'hello world'
+    assert input_tokens == 15
+    assert output_tokens == 4
+
+
+@pytest.mark.parametrize('response', [
+    {
+        'status': 'incomplete',
+        'incomplete_details': {'reason': 'max_output_tokens'},
+        'output_text': 'partial',
+    },
+    {
+        'status': 'failed',
+        'output': [],
+    },
+    {
+        'status': 'completed',
+        'output': [{
+            'type': 'message',
+            'content': [{'type': 'refusal', 'refusal': 'cannot comply'}],
+        }],
+    },
+])
+def test_responses_incomplete_failed_and_refused_outputs_are_rejected(
+        response):
+    """Non-success Responses terminal states never become action success."""
+    with pytest.raises(ProtocolError):
+        extract_response(response, WIRE_API_RESPONSES)
+
+
+def test_responses_output_text_shortcut_is_supported():
+    """Compatible proxies may expose the SDK-style output_text field."""
+    text, input_tokens, output_tokens = extract_response({
+        'output_text': 'direct',
+        'usage': {},
+    }, WIRE_API_RESPONSES)
+
+    assert text == 'direct'
+    assert input_tokens == 0
+    assert output_tokens == 0
+
+
+def test_responses_sse_returns_only_completed_response():
+    """A proxy-forced SSE envelope yields its final response object."""
+    completed = {
+        'output': [{
+            'type': 'message',
+            'content': [{'type': 'output_text', 'text': 'done'}],
+        }],
+        'usage': {'input_tokens': 2, 'output_tokens': 1},
+    }
+    body = (
+        'event: response.created\n'
+        'data: {"type":"response.created","response":{}}\n\n'
+        'event: response.output_text.delta\n'
+        'data: {"type":"response.output_text.delta","delta":"done"}\n\n'
+        'event: response.completed\n'
+        'data: ' + json.dumps({
+            'type': 'response.completed',
+            'response': completed,
+        }) + '\n\n'
+    ).encode()
+
+    assert decode_response_body(
+        body, 'text/event-stream; charset=utf-8',
+        WIRE_API_RESPONSES) == completed
+
+
+def test_responses_sse_requires_completed_event():
+    """Truncated or failed event streams cannot become successful results."""
+    body = (
+        'event: response.output_text.delta\n'
+        'data: {"type":"response.output_text.delta","delta":"partial"}\n\n'
+    ).encode()
+
+    with pytest.raises(TransportError):
+        decode_response_body(
+            body, 'text/event-stream', WIRE_API_RESPONSES)
+
+
+def test_responses_sse_recovers_text_from_done_event():
+    """Sparse proxy snapshots inherit text from output_text.done."""
+    body = (
+        'event: response.output_text.done\n'
+        'data: {"type":"response.output_text.done",'
+        '"output_index":0,"content_index":0,"text":"recovered"}\n\n'
+        'event: response.completed\n'
+        'data: {"type":"response.completed","response":'
+        '{"status":"completed","output":[],"usage":{}}}\n\n'
+    ).encode()
+
+    response = decode_response_body(
+        body, 'text/event-stream', WIRE_API_RESPONSES)
+
+    assert response['output_text'] == 'recovered'
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -172,7 +421,7 @@ def test_http_transport_sends_bounded_authenticated_request(limits):
             limits.max_request_bytes)
         endpoint = parse_endpoint(
             f'http://127.0.0.1:{server.server_port}/v1')
-        response = post_chat_completion(
+        response = post_vlm_request(
             endpoint, body, 'test-token', 2.0,
             limits.max_response_bytes, connections.append)
     finally:
@@ -208,7 +457,7 @@ def test_http_error_does_not_expose_response_body(limits):
         endpoint = parse_endpoint(
             f'http://127.0.0.1:{server.server_port}/v1')
         with pytest.raises(TransportError) as error:
-            post_chat_completion(
+            post_vlm_request(
                 endpoint, b'{}', None, 2.0,
                 limits.max_response_bytes, lambda _connection: None)
     finally:

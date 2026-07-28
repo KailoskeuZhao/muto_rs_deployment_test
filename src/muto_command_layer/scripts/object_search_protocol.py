@@ -68,6 +68,85 @@ def candidate_image_tag(object_id: str) -> str:
         object_id, ensure_ascii=False)
 
 
+def build_selection_schema(
+        collection_key: str,
+        allowed_ids: Sequence[str],
+        max_results: int,
+        max_description_characters: int) -> str:
+    """Build the strict provider schema for one exact-ID selection stage."""
+    if collection_key not in ('candidates', 'matches'):
+        raise SearchProtocolError('unsupported selection collection key')
+    if max_results <= 0 or max_description_characters <= 0:
+        raise SearchProtocolError('selection limits must be positive')
+    if not allowed_ids or any(
+            not isinstance(object_id, str) or not object_id
+            for object_id in allowed_ids):
+        raise SearchProtocolError('allowed object IDs must be nonempty strings')
+    if len(allowed_ids) != len(set(allowed_ids)):
+        raise SearchProtocolError('allowed object IDs must be unique')
+
+    schema = {
+        'type': 'object',
+        'properties': {
+            collection_key: {
+                'type': 'array',
+                'maxItems': max_results,
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'id': {
+                            'type': 'string',
+                            'enum': list(allowed_ids),
+                        },
+                        'description': {
+                            'type': 'string',
+                            'minLength': 1,
+                            'maxLength': max_description_characters,
+                        },
+                    },
+                    'required': ['id', 'description'],
+                    'additionalProperties': False,
+                },
+            },
+        },
+        'required': [collection_key],
+        'additionalProperties': False,
+    }
+    return json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
+
+
+def format_judgement_log(
+        selections: Sequence[Selection],
+        considered_ids: Sequence[str],
+        max_description_characters: int,
+        max_filtered_ids: int) -> str:
+    """Format one bounded, single-line JSON decision record for ROS logs."""
+    if max_description_characters <= 0 or max_filtered_ids <= 0:
+        raise SearchProtocolError('judgement log limits must be positive')
+    selected_ids = {selection.object_id for selection in selections}
+    filtered_ids = [
+        object_id for object_id in considered_ids
+        if object_id not in selected_ids
+    ]
+    selected = []
+    for selection in selections:
+        description = selection.description
+        if len(description) > max_description_characters:
+            description = description[:max_description_characters] + '...'
+        selected.append({
+            'id': selection.object_id,
+            'description': description,
+        })
+    payload = {
+        'selected': selected,
+        'filtered_out_count': len(filtered_ids),
+        'filtered_out_ids': filtered_ids[:max_filtered_ids],
+        'filtered_out_ids_truncated': len(filtered_ids) > max_filtered_ids,
+    }
+    return json.dumps(
+        payload, ensure_ascii=True, separators=(',', ':'))
+
+
 def parse_selection(
         response_text: str,
         collection_key: str,
@@ -118,17 +197,14 @@ def parse_selection(
 
 
 def _extract_json_object(response_text: str) -> Dict[str, Any]:
-    """Find the first decodable JSON object in an otherwise noisy response."""
+    """Decode a response that consists of exactly one JSON object."""
     if not isinstance(response_text, str) or not response_text.strip():
         raise SearchProtocolError('VLM returned an empty response')
-    decoder = json.JSONDecoder()
-    for index, character in enumerate(response_text):
-        if character != '{':
-            continue
-        try:
-            payload, _end = decoder.raw_decode(response_text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    raise SearchProtocolError('VLM response contains no valid JSON object')
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError as error:
+        raise SearchProtocolError(
+            'VLM response is not exact JSON') from error
+    if not isinstance(payload, dict):
+        raise SearchProtocolError('VLM response root must be an object')
+    return payload

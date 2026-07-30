@@ -33,6 +33,12 @@ class yahboomcar_driver(Node):
 			"gait_state_topic", "/muto/commanded_gait_state").value
 		self.gait_state_frame_id = self.declare_parameter(
 			"gait_state_frame_id", "base_frame").value
+		self.gait_state_publish_rate_hz = float(self.declare_parameter(
+			"gait_state_publish_rate_hz", 5.0).value)
+		if self.gait_state_publish_rate_hz <= 0.0:
+			self.get_logger().warn(
+				"gait_state_publish_rate_hz must be positive; using 5.0")
+			self.gait_state_publish_rate_hz = 5.0
 		gait_state_qos = QoSProfile(
 			depth=100,
 			reliability=ReliabilityPolicy.RELIABLE,
@@ -46,6 +52,10 @@ class yahboomcar_driver(Node):
 
 		self.muto = Muto(gait_step_callback=self.publish_commanded_gait_state)
 		self.publish_commanded_gait_state(self.muto.commanded_gait_state)
+		self.gait_state_timer = self.create_timer(
+			1.0 / self.gait_state_publish_rate_hz,
+			self.publish_standby_gait_state_heartbeat,
+		)
 
 		self.vel_x = 0.0
 		self.vel_y = 0.0
@@ -68,6 +78,15 @@ class yahboomcar_driver(Node):
 		self.imu = ImuPublisher(self, self.muto, imu_link)
 		self.imu_timer = self.create_timer(1.0 / imu_publish_rate_hz, self.imu.publish_imu_data)
 		self.get_logger().info("IMU publish rate set to {:.1f} Hz".format(imu_publish_rate_hz))
+		self.get_logger().info(
+			"Standby gait-state heartbeat set to {:.1f} Hz".format(
+				self.gait_state_publish_rate_hz))
+
+	def publish_standby_gait_state_heartbeat(self):
+		"""Keep the latched stationary gait state fresh for late consumers."""
+		state = self.muto.commanded_gait_state
+		if state.mode == "standby":
+			self.publish_commanded_gait_state(state)
 
 	def publish_commanded_gait_state(self, state):
 		"""Publish nominal gait support; this is not measured foot contact."""

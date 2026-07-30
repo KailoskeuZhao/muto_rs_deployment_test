@@ -1,13 +1,14 @@
 import json
 from types import SimpleNamespace
 
+from builtin_interfaces.msg import Time
 from muto_hexapod_interfaces_custom.msg import CommandedGaitState
 from yahboomcar_bringup.muto_driver import yahboomcar_driver
 
 
 class FakeStamp:
     def to_msg(self):
-        return SimpleNamespace(sec=12, nanosec=34)
+        return Time(sec=12, nanosec=34)
 
 
 class FakeClock:
@@ -74,6 +75,38 @@ class FakeMuto:
     @staticmethod
     def read_motor():
         return [0, -30, -15] * 6
+
+
+def gait_state(mode='standby'):
+    return SimpleNamespace(
+        sequence=0,
+        mode=mode,
+        phase_index=0,
+        cycle_length=1,
+        cycle_complete=True,
+        commanded_stance=(True,) * 6,
+        foot_positions_mm=((100.0, 200.0, -90.0),) * 6,
+    )
+
+
+def test_standby_heartbeat_refreshes_latched_gait_state():
+    driver = FakeDriver()
+    driver.muto = FakeMuto(gait_state())
+
+    yahboomcar_driver.publish_standby_gait_state_heartbeat(driver)
+
+    assert driver.gait_state_pub.message is not None
+    assert driver.gait_state_pub.message.header.stamp.sec == 12
+    assert driver.gait_state_pub.message.mode == 'standby'
+
+
+def test_gait_heartbeat_does_not_duplicate_moving_phases():
+    driver = FakeDriver()
+    driver.muto = FakeMuto(gait_state(mode='move_x'))
+
+    yahboomcar_driver.publish_standby_gait_state_heartbeat(driver)
+
+    assert driver.gait_state_pub.message is None
 
 
 def test_motor_service_returns_synchronized_calibrated_gait_snapshot():

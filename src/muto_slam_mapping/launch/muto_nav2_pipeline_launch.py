@@ -210,6 +210,13 @@ def generate_launch_description():
             description='Start TG30 LiDAR, Orbbec camera, and Muto base driver.',
         ),
         DeclareLaunchArgument(
+            'gait_state_publish_rate_hz',
+            default_value='5.0',
+            description=(
+                'Standby commanded-gait heartbeat rate for foot odometry.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'launch_sensor_tf',
             default_value='true',
             description='Start static sensor TF publishers.',
@@ -343,6 +350,11 @@ def generate_launch_description():
         scoped_include(
             'yahboomcar_bringup',
             'muto_hardware_launch.py',
+            {
+                'gait_state_publish_rate_hz': LaunchConfiguration(
+                    'gait_state_publish_rate_hz'
+                ),
+            },
             condition=IfCondition(LaunchConfiguration('launch_hardware')),
         ),
         *localization_actions,

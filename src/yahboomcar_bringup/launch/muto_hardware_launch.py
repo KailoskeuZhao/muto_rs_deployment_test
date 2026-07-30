@@ -23,6 +23,13 @@ def generate_launch_description():
         default_value="50.0",
         description="Processed/raw IMU publish rate in Hz.",
     )
+    gait_state_publish_rate_hz_arg = DeclareLaunchArgument(
+        "gait_state_publish_rate_hz",
+        default_value="5.0",
+        description=(
+            "Standby commanded-gait heartbeat rate used by foot odometry."
+        ),
+    )
     imu_calibration_sample_count_arg = DeclareLaunchArgument(
         "imu_calibration_sample_count",
         default_value="1200",
@@ -145,6 +152,10 @@ def generate_launch_description():
         parameters=[{
             "gait_state_topic": "/muto/commanded_gait_state",
             "gait_state_frame_id": "base_frame",
+            "gait_state_publish_rate_hz": ParameterValue(
+                LaunchConfiguration("gait_state_publish_rate_hz"),
+                value_type=float,
+            ),
             "imu_gyro_lsb_per_dps": ParameterValue(
                 LaunchConfiguration("imu_gyro_lsb_per_dps"),
                 value_type=float,
@@ -172,6 +183,7 @@ def generate_launch_description():
         imu_gyro_lsb_per_dps_arg,
         imu_yaw_rate_deadband_rad_s_arg,
         imu_publish_rate_hz_arg,
+        gait_state_publish_rate_hz_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,
         lidar_scan_topic_arg,

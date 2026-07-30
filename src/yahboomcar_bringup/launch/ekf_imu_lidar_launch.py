@@ -137,8 +137,12 @@ def generate_launch_description():
     )
     launch_foot_odometry_arg = DeclareLaunchArgument(
         "launch_foot_odometry",
-        default_value="false",
-        description="Whether to launch rough Muto gait/cmd_vel foot odometry and fuse /foot_odom into the EKF.",
+        default_value="true",
+        description=(
+            "Whether to launch motor-validated commanded-stance Muto foot "
+            "odometry and fuse "
+            "/foot_odom planar velocity into the EKF."
+        ),
     )
     imu_only_arg = DeclareLaunchArgument(
         "imu_only",
@@ -220,9 +224,15 @@ def generate_launch_description():
             condition=IfCondition(use_foot_odometry),
             parameters=[{
                 'odom_topic': '/foot_odom',
+                'gait_state_topic': '/muto/commanded_gait_state',
                 'frame_id': 'odom',
                 'child_frame_id': 'base_frame',
                 'publish_tf': False,
+                'motor_poll_rate': 2.0,
+                'motor_stale_timeout': 1.0,
+                'gait_state_stale_timeout': 1.0,
+                'motor_tracking_good_residual_m': 0.005,
+                'motor_tracking_reject_residual_m': 0.03,
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration("use_sim_time"),
                     value_type=bool,
@@ -252,6 +262,7 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(use_foot_ekf),
             parameters=[
+                ekf_config,
                 ekf_with_foot_config,
                 {
                     'use_sim_time': ParameterValue(

@@ -68,7 +68,7 @@ pipeline.
 | [`src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py`](../src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py) | Main EKF launch for LiDAR plus IMU odometry. |
 | [`src/yahboomcar_bringup/config/ekf_lidar_imu.yaml`](../src/yahboomcar_bringup/config/ekf_lidar_imu.yaml) | Default EKF fusion configuration. |
 | [`src/yahboomcar_imu/yahboomcar_imu/imu_node.py`](../src/yahboomcar_imu/yahboomcar_imu/imu_node.py) | Publishes raw and processed IMU messages. |
-| [`src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py`](../src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py) | Optional command/gait dead-reckoned odometry. |
+| [`src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py`](../src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py) | Motor-validated commanded-stance odometry, enabled as a low-trust EKF velocity input by default. |
 | [`src/muto_slam_mapping/config/mapper_params_online_async.yaml`](../src/muto_slam_mapping/config/mapper_params_online_async.yaml) | SLAM Toolbox frame and scan-topic settings. |
 
 ## Frames And TF Ownership
@@ -245,25 +245,54 @@ secondary yaw-rate source, not the source of absolute orientation.
 The EKF publishes the filtered odometry topic and the authoritative
 `odom -> base_frame` TF.
 
-## Optional Foot Odometry
+## Commanded-Stance Foot Odometry
 
-Foot/gait odometry is disabled by default. It can be launched with:
+Foot/gait odometry is enabled by default. It can be disabled with:
 
 ```bash
-ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=true
+ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
 ```
 
-`foot_odometry_node` is not contact-sensed foot odometry. It:
+`foot_odometry_node` is not contact-sensed foot odometry. Its motion
+estimate remains based on the host gait trajectory because the 2 Hz motor read
+service is too sparse to establish consecutive planted-foot transforms. The
+node:
 
-- listens to `cmd_vel`;
-- mirrors the Muto gait command mapping;
-- polls the `get_motor_angles` service for rough motion evidence;
-- integrates a high-covariance dead-reckoned pose;
-- publishes `/foot_odom`.
+- consumes `/muto/commanded_gait_state` from the custom Muto driver;
+- treats feet commanded in stance in two consecutive phases as stationary;
+- fits the planar body transform from those common-stance foot targets;
+- rejects dropped or stale phases, malformed support sets, excessive fit
+  residuals, and implausible per-phase motion;
+- polls `get_motor_angles`, whose response pairs all 18 motor values with the
+  gait target and stance mask that were current during that serial read;
+- converts the calibrated logical motor angles through the custom library's
+  forward kinematics and checks each sampled stance foot against its target;
+- publishes and integrates `/foot_odom` only while motor validation is fresh.
 
-In `ekf_lidar_imu_with_foot.yaml`, `/foot_odom` contributes only planar body
-velocity (`vx`, `vy`). Pose and yaw still come from RF2O, and yaw rate still
-comes from the IMU. The node is launched with `publish_tf:=false`.
+Motor values are already in firmware-calibrated logical degrees. The node does
+not read or subtract raw servo calibration offsets a second time. The factory
+standing command is `(0, -30, -15)` degrees per leg. That pose and generated
+gait commands are regression-tested against the custom model's `27.5`, `50.59`,
+`72.60`, and `134.5` mm leg dimensions.
+
+The motor check uses the worst sampled stance-foot FK error. Errors up to 5 mm
+retain full motor confidence; confidence decreases from 5 mm to 30 mm; an error
+above 30 mm suppresses output. Missing, stale, malformed, wrong-frame, or
+wrong-angle-space samples also suppress output. A future-sequence motor sample
+cannot validate replayed older gait phases.
+
+The custom driver converts vendor-model `x=right, y=forward` foot coordinates
+to ROS `base_frame` axes (`x=forward, y=left`) before publishing. A stance label
+means only that the commanded target is on the nominal ground plane. The
+estimator therefore assumes those stance feet are static relative to the
+ground. Servo tracking can expose gross command, calibration, or actuator
+errors, but it still cannot measure ground contact, load, foot slip, or body
+motion caused by external forces.
+
+`ekf_lidar_imu_with_foot.yaml` is loaded as an overlay on the primary
+`ekf_lidar_imu.yaml` configuration. `/foot_odom` contributes only planar body
+velocity (`vx`, `vy`). Pose and yaw still come from RF2O, yaw rate still comes
+from the IMU, and the foot node runs with `publish_tf:=false`.
 
 ## IMU-Only EKF Test
 
@@ -424,7 +453,8 @@ EKF pipeline.
 - Compare RF2O behavior with any separately reintroduced point-cloud ICP
   experiment only after the normal RF2O/EKF baseline is stable.
 - Revisit EKF covariances after collecting repeatable bag data.
-- Decide whether `/foot_odom` should remain optional or be removed if it does
-  not improve robustness.
+- Compare localization with `launch_foot_odometry:=true` and `false` using
+  repeatable bags; disable the input if commanded stance does not improve
+  robustness on the physical robot.
 - Consider depth-camera odometry only as a separate future experiment; the
   current depth-camera path is for scan fusion, mapping, and Nav2 costmaps.

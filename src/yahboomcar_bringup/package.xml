@@ -12,6 +12,8 @@
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
   <depend>geometry_msgs</depend>
+  <depend>muto_hexapod_interfaces_custom</depend>
+  <exec_depend>muto_hexapod_lib_custom</exec_depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclpy</depend>

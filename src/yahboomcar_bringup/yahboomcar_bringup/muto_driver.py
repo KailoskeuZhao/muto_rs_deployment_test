@@ -3,15 +3,18 @@
 
 import json
 
-#public lib
-#from MutoLib import Muto 
-from muto_hexapod_lib.core.MutoLibCore import Muto
+from muto_hexapod_lib_custom.core.MutoLibCore import Muto
+from muto_hexapod_lib_custom.core.config import (
+	STANDBY_SERVO_ANGLES_DEG,
+)
+from muto_hexapod_interfaces_custom.msg import CommandedGaitState
 from yahboomcar_imu.imu_node import ImuPublisher
 
 
 #ros lib
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 from geometry_msgs.msg import Twist
 from std_srvs.srv import Trigger
@@ -26,7 +29,23 @@ class yahboomcar_driver(Node):
 		self.srv_motor_angles = self.create_service(Trigger, "get_motor_angles", self.get_motor_angles_callback)
 		self.srv_release_motors = self.create_service(Trigger, "release_motors", self.release_motors_callback)
 		
-		self.muto = Muto()
+		self.gait_state_topic = self.declare_parameter(
+			"gait_state_topic", "/muto/commanded_gait_state").value
+		self.gait_state_frame_id = self.declare_parameter(
+			"gait_state_frame_id", "base_frame").value
+		gait_state_qos = QoSProfile(
+			depth=100,
+			reliability=ReliabilityPolicy.RELIABLE,
+			durability=DurabilityPolicy.TRANSIENT_LOCAL,
+		)
+		self.gait_state_pub = self.create_publisher(
+			CommandedGaitState,
+			self.gait_state_topic,
+			gait_state_qos,
+		)
+
+		self.muto = Muto(gait_step_callback=self.publish_commanded_gait_state)
+		self.publish_commanded_gait_state(self.muto.commanded_gait_state)
 
 		self.vel_x = 0.0
 		self.vel_y = 0.0
@@ -49,6 +68,28 @@ class yahboomcar_driver(Node):
 		self.imu = ImuPublisher(self, self.muto, imu_link)
 		self.imu_timer = self.create_timer(1.0 / imu_publish_rate_hz, self.imu.publish_imu_data)
 		self.get_logger().info("IMU publish rate set to {:.1f} Hz".format(imu_publish_rate_hz))
+
+	def publish_commanded_gait_state(self, state):
+		"""Publish nominal gait support; this is not measured foot contact."""
+		msg = CommandedGaitState()
+		msg.header.stamp = self.get_clock().now().to_msg()
+		msg.header.frame_id = self.gait_state_frame_id
+		msg.sequence = state.sequence
+		msg.mode = state.mode
+		msg.phase_index = state.phase_index
+		msg.cycle_length = state.cycle_length
+		msg.cycle_complete = state.cycle_complete
+		msg.leg_state = [
+			CommandedGaitState.STANCE if in_stance
+			else CommandedGaitState.SWING
+			for in_stance in state.commanded_stance
+		]
+		# The vendor model uses x=right/y=forward. Publish REP-103 base-frame
+		# coordinates: x=forward/y=left.
+		msg.foot_x_mm = [point[1] for point in state.foot_positions_mm]
+		msg.foot_y_mm = [-point[0] for point in state.foot_positions_mm]
+		msg.foot_z_mm = [point[2] for point in state.foot_positions_mm]
+		self.gait_state_pub.publish(msg)
 
 	def cmd_vel_callback(self,msg):
 		if not isinstance(msg, Twist): return
@@ -100,21 +141,52 @@ class yahboomcar_driver(Node):
 			})
 			return response
 
-		if not angles:
+		if not angles or len(angles) != 18:
 			response.success = False
 			response.message = json.dumps({
-				"error": "no_motor_angle_data",
-				"angles": []
+				"error": "invalid_motor_angle_data",
+				"angles": angles or [],
+				"expected_count": 18,
 			})
 			return response
 
+		state = self.muto.commanded_gait_state
+		stamp = self.get_clock().now().to_msg()
+		leg_state = [
+			CommandedGaitState.STANCE if in_stance
+			else CommandedGaitState.SWING
+			for in_stance in state.commanded_stance
+		]
 		response.success = True
 		response.message = json.dumps({
 			"count": len(angles),
 			"angles": angles,
+			"angle_space": "firmware_calibrated_logical_degrees",
+			"standby_leg_angles_deg": list(STANDBY_SERVO_ANGLES_DEG),
+			"sample_stamp": {
+				"sec": stamp.sec,
+				"nanosec": stamp.nanosec,
+			},
+			"gait_state": {
+				"frame_id": self.gait_state_frame_id,
+				"sequence": state.sequence,
+				"mode": state.mode,
+				"phase_index": state.phase_index,
+				"cycle_length": state.cycle_length,
+				"leg_state": leg_state,
+				"foot_x_mm": [
+					point[1] for point in state.foot_positions_mm
+				],
+				"foot_y_mm": [
+					-point[0] for point in state.foot_positions_mm
+				],
+				"foot_z_mm": [
+					point[2] for point in state.foot_positions_mm
+				],
+			},
 			"servo_angles": {
 				str(index + 1): angle for index, angle in enumerate(angles)
-			}
+			},
 		})
 		return response
 	
@@ -154,6 +226,12 @@ class yahboomcar_driver(Node):
 		else:
 			for i in range(3): 
 				self.muto.buzzer(0)
+
+	def destroy_node(self):
+		try:
+			self.muto.close()
+		finally:
+			return super().destroy_node()
 			
 def main():
 	rclpy.init() 

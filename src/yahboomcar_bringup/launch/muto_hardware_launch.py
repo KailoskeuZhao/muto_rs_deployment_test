@@ -143,6 +143,8 @@ def generate_launch_description():
         name="muto_driver",
         output="screen",
         parameters=[{
+            "gait_state_topic": "/muto/commanded_gait_state",
+            "gait_state_frame_id": "base_frame",
             "imu_gyro_lsb_per_dps": ParameterValue(
                 LaunchConfiguration("imu_gyro_lsb_per_dps"),
                 value_type=float,

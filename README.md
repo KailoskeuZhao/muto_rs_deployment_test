@@ -207,11 +207,13 @@ the EKF:
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_lidar_odometry:=false
 ```
 
-Rough gait/cmd_vel dead-reckoned odometry is disabled by default. To launch it
-and fuse `/foot_odom` into the EKF as a low-trust planar velocity source:
+Motor-validated commanded-stance foot odometry is enabled by default and
+contributes low-trust planar body velocity from `/foot_odom`. It publishes only
+while fresh calibrated servo readback agrees with the synchronized commanded
+stance geometry. To disable it:
 
 ```bash
-ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=true
+ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
 ```
 
 To test the EKF with only `/imu/data_processed` and no LiDAR or foot odometry:
@@ -235,7 +237,7 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | `/fused/laserscan` | Fused `LaserScan` generated from `/camera/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
-| `/foot_odom` | Rough command/gait odometry from `cmd_vel` and motor-angle activity. Optional EKF input when `launch_foot_odometry:=true`. |
+| `/foot_odom` | Motor-validated commanded-stance odometry. Consecutive stance targets estimate motion; synchronized calibrated servo FK must track each sampled stance foot. Missing, stale, malformed, or excessive tracking error suppresses publication. Enabled as a low-trust EKF planar-velocity input by default. |
 
 ## Fused LaserScan Notes
 

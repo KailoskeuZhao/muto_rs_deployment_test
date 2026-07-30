@@ -20,6 +20,7 @@ setup(
         (os.path.join('share', package_name, 'param'), glob(os.path.join('param', '*.yaml'))),
     ],
     install_requires=['setuptools'],
+    tests_require=['pytest'],
     zip_safe=True,
     maintainer='nx-ros2',
     maintainer_email='nx-ros2@todo.todo',

@@ -1,0 +1,5 @@
+This package contains a focused derivative of Yahboom's muto_hexapod_lib
+version 1.2.3 (last modified 2025-10-31), originally distributed under the
+MIT License. It retains the serial protocol, generated gait, and leg
+kinematics used by this ROS workspace. Large-model interfaces, demos, static
+action tables, and unrelated control APIs were intentionally omitted.

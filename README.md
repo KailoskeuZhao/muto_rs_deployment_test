@@ -13,6 +13,7 @@ Hardware-specific assumptions are currently embedded in several places, especial
 Detailed odometry and localization notes are in [docs/odometry.md](docs/odometry.md).
 Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
 The current SLAM and Nav2 runbook is in [docs/slam_pipeline.md](docs/slam_pipeline.md).
+Repeatable odometry recording and replay is in [src/muto_odometry_bag/README.md](src/muto_odometry_bag/README.md).
 Mapping and costmap design notes are in [docs/Muto Mapping and Costmap Notes.md](<docs/Muto Mapping and Costmap Notes.md>).
 TF2 frame ownership and diagnostics are in [docs/TF2.md](docs/TF2.md).
 
@@ -28,6 +29,7 @@ Some packages in this workspace are original deployment glue, while others were 
 | `src/lidar_pointcloud_filter` | Local filtering and scan-conversion utilities for this deployment. |
 | `src/muto_slam_mapping` | Local SLAM launch/config package for this deployment. |
 | `src/tf2_publisher` | Local TF publisher package for robot sensor frames. |
+| `src/muto_odometry_bag` | Local C++ source-data recorder and original-stack replay layer for repeatable odometry tests. |
 | `src/yahboomcar_imu` | IMU publishing package used by the robot. |
 | `src/lidar_tg30` | TG30 LiDAR driver/package used by the robot. |
 

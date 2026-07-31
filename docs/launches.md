@@ -1,6 +1,6 @@
 # Launch Reference
 
-Date: 2026-07-28
+Date: 2026-07-31
 
 This document summarizes the launch files that matter for the current Muto RS
 workspace. It separates the normal robot sequence from experimental and
@@ -25,6 +25,9 @@ files invoke its installed `ekf_node`; this workspace does not keep
 | `tf2_publisher/launch/all_tf2_publishers_launch.py` | Static TF publishers for `base_frame -> camera_link`, `base_frame -> lidar_frame`, and `base_frame -> imu_link`. Optional odom TF publisher is off by default. | Sensor TF layer. Needed before scan conversion, RF2O, mapping, and Nav2. |
 | `lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | Default path filters `/lidar/raw_laserscan` into `/lidar/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`, then runs RF2O and the odometry deadband/jump wrapper. | LiDAR odometry chain. Direct standalone launch lets the wrapper publish `odom -> base_frame` by default. |
 | `yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Includes the LiDAR odometry launch with odom TF disabled, starts motor-validated commanded-stance `/foot_odom` by default, then runs the installed `robot_localization/ekf_node`. Set `launch_foot_odometry:=false` to disable the foot input. | Preferred odometry/localization layer. EKF owns `odom -> base_frame`. |
+| `muto_odometry_bag/launch/record_odometry_bag_launch.py` | Records raw LiDAR, processed IMU, commanded gait, `cmd_vel`, and polled motor-service snapshots through `rosbag2_cpp::Writer`. | Attach to a live hardware pipeline to capture only odometry source data. |
+| `muto_odometry_bag/launch/replay_odometry_bag_launch.py` | Publishes the recorded source topics and `/clock`, recreates `get_motor_angles`, and starts static sensor TF plus the normal LiDAR/foot/EKF launch. | Offline repeatable odometry run through the original nodes; no hardware, mapping, or Nav2. |
+| `muto_odometry_bag/launch/replay_odometry_comparison_launch.py` | Replays one source bag through LiDAR-only, leg-only, LiDAR-plus-IMU EKF, and LiDAR-plus-leg-plus-IMU EKF paths concurrently. Only the fully fused EKF publishes odom TF. | Side-by-side odometry comparison under one replay clock. |
 | `lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Converts raw depth plus CameraInfo into the narrow, NaN-masked `/camera/filtered_laserscan`. It does not subscribe to LiDAR. | Independent camera preprocessing component. The top-level pipeline includes it when `launch_camera_obstacle_scan:=true`. |
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |

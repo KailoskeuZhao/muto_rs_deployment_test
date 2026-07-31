@@ -74,8 +74,22 @@ class FootOdometryNode(Node):
             self.declare_parameter('max_translation_step_m', 0.05).value)
         self.max_rotation_step_rad = float(
             self.declare_parameter('max_rotation_step_rad', 0.2).value)
+        self.max_linear_speed_mps = float(
+            self.declare_parameter('max_linear_speed_mps', 1.0).value)
+        self.max_angular_speed_radps = float(
+            self.declare_parameter('max_angular_speed_radps', 2.0).value)
         self.max_sample_dt = float(
             self.declare_parameter('max_sample_dt', 2.0).value)
+        self.unobserved_pose_variance = max(
+            0.0,
+            float(self.declare_parameter(
+                'unobserved_pose_variance', 1.0).value),
+        )
+        self.unobserved_twist_variance = max(
+            0.0,
+            float(self.declare_parameter(
+                'unobserved_twist_variance', 1.0).value),
+        )
 
         self.estimator = CommandedStanceOdometry(
             stance_value=CommandedGaitState.STANCE,
@@ -83,6 +97,8 @@ class FootOdometryNode(Node):
             max_fit_residual_m=self.max_fit_residual_m,
             max_translation_step_m=self.max_translation_step_m,
             max_rotation_step_rad=self.max_rotation_step_rad,
+            max_linear_speed_mps=self.max_linear_speed_mps,
+            max_angular_speed_radps=self.max_angular_speed_radps,
             max_sample_dt=self.max_sample_dt,
         )
 
@@ -129,6 +145,14 @@ class FootOdometryNode(Node):
             f'logical angles come from {self.motor_service_name}')
 
     def gait_state_callback(self, msg):
+        if msg.header.frame_id != self.child_frame_id:
+            self.estimator.reset()
+            self.get_logger().warn(
+                f'Ignoring gait state in {msg.header.frame_id!r}; expected '
+                f'{self.child_frame_id!r}',
+                throttle_duration_sec=5.0)
+            return
+
         valid_states = {
             CommandedGaitState.SWING,
             CommandedGaitState.STANCE,
@@ -146,8 +170,10 @@ class FootOdometryNode(Node):
             float(msg.header.stamp.sec)
             + float(msg.header.stamp.nanosec) * 1e-9
         )
+        measurement_stamp = msg.header.stamp
         if stamp_sec <= 0.0:
             stamp_sec = now.nanoseconds * 1e-9
+            measurement_stamp = now.to_msg()
         gait_age = now.nanoseconds * 1e-9 - stamp_sec
         if (gait_age < -0.05
                 or (self.gait_state_stale_timeout > 0.0
@@ -183,7 +209,7 @@ class FootOdometryNode(Node):
             self._set_zero_twist()
             self.geometry_confidence = 1.0
             if motor_confidence is not None:
-                self.publish_odometry(now, motor_confidence)
+                self.publish_odometry(measurement_stamp, motor_confidence)
             return
         if increment is None:
             self._set_zero_twist()
@@ -209,7 +235,9 @@ class FootOdometryNode(Node):
             self.geometry_confidence = 1.0
 
         self.publish_odometry(
-            now, min(self.geometry_confidence, motor_confidence))
+            measurement_stamp,
+            min(self.geometry_confidence, motor_confidence),
+        )
 
     def poll_motor_angles(self):
         if self.motor_future is not None and not self.motor_future.done():
@@ -367,9 +395,9 @@ class FootOdometryNode(Node):
         ratio = (residual - good) / (reject - good)
         return self.clamp(1.0 - 0.75 * ratio, 0.25, 1.0)
 
-    def publish_odometry(self, now, confidence):
+    def publish_odometry(self, stamp, confidence):
         msg = Odometry()
-        msg.header.stamp = now.to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = self.frame_id
         msg.child_frame_id = self.child_frame_id
         msg.pose.pose.position.x = self.x
@@ -385,12 +413,14 @@ class FootOdometryNode(Node):
             0.5 * multiplier,
             0.5 * multiplier,
             0.8 * multiplier,
+            self.unobserved_pose_variance,
         )
         self.set_covariance(
             msg.twist.covariance,
             0.2 * multiplier,
             0.2 * multiplier,
             0.4 * multiplier,
+            self.unobserved_twist_variance,
         )
         self.odom_pub.publish(msg)
 
@@ -409,14 +439,15 @@ class FootOdometryNode(Node):
         self.wz = 0.0
 
     @staticmethod
-    def set_covariance(covariance, x_var, y_var, yaw_var):
+    def set_covariance(
+            covariance, x_var, y_var, yaw_var, unobserved_var):
         for index in range(36):
             covariance[index] = 0.0
         covariance[0] = x_var
         covariance[7] = y_var
-        covariance[14] = 999.0
-        covariance[21] = 999.0
-        covariance[28] = 999.0
+        covariance[14] = unobserved_var
+        covariance[21] = unobserved_var
+        covariance[28] = unobserved_var
         covariance[35] = yaw_var
 
     @staticmethod
@@ -446,9 +477,15 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
         if rclpy.ok():
-            rclpy.shutdown()
+            try:
+                rclpy.shutdown()
+            except KeyboardInterrupt:
+                pass
 
 
 if __name__ == '__main__':

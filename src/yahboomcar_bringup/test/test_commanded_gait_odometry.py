@@ -76,10 +76,8 @@ def test_turn_and_mixed_gaits_produce_expected_nominal_motion():
     mixed = gait_increments('move_xz', x_level=20, z_level=15)
 
     assert sum(increment.dyaw for increment in turn) > math.radians(10.0)
-    assert math.hypot(
-        sum(increment.dx for increment in turn),
-        sum(increment.dy for increment in turn),
-    ) < 0.01
+    assert sum(increment.dx for increment in turn) == pytest.approx(0.0)
+    assert sum(increment.dy for increment in turn) == pytest.approx(0.0)
     assert sum(increment.dx for increment in mixed) > 0.07
     assert sum(increment.dyaw for increment in mixed) > math.radians(2.0)
     assert max(increment.residual_m for increment in turn + mixed) < 0.001
@@ -112,3 +110,18 @@ def test_bad_stance_fit_is_rejected():
 
     assert estimator.update(first) is None
     assert estimator.update(second) is None
+
+
+def test_implausible_phase_velocity_is_rejected():
+    plan = GaitPlan()
+    plan.configure('move_x', x_level=20)
+    first = observation(plan.next_step()[2], 1.0)
+    second = observation(plan.next_step()[2], 1.002)
+
+    permissive = CommandedStanceOdometry(max_linear_speed_mps=10.0)
+    assert permissive.update(first) is None
+    assert permissive.update(second) is not None
+
+    guarded = CommandedStanceOdometry(max_linear_speed_mps=1.0)
+    assert guarded.update(first) is None
+    assert guarded.update(second) is None

@@ -64,6 +64,8 @@ class CommandedStanceOdometry:
         max_fit_residual_m=0.01,
         max_translation_step_m=0.05,
         max_rotation_step_rad=0.2,
+        max_linear_speed_mps=1.0,
+        max_angular_speed_radps=2.0,
         min_sample_dt=0.001,
         max_sample_dt=2.0,
     ):
@@ -74,6 +76,10 @@ class CommandedStanceOdometry:
             0.0, float(max_translation_step_m))
         self.max_rotation_step_rad = max(
             0.0, float(max_rotation_step_rad))
+        self.max_linear_speed_mps = max(
+            0.0, float(max_linear_speed_mps))
+        self.max_angular_speed_radps = max(
+            0.0, float(max_angular_speed_radps))
         self.min_sample_dt = max(0.0, float(min_sample_dt))
         self.max_sample_dt = max(
             self.min_sample_dt, float(max_sample_dt))
@@ -129,6 +135,16 @@ class CommandedStanceOdometry:
             return None
         if abs(dyaw) > self.max_rotation_step_rad:
             return None
+        if math.hypot(dx, dy) / dt > self.max_linear_speed_mps:
+            return None
+        if abs(dyaw) / dt > self.max_angular_speed_radps:
+            return None
+
+        # The generated pure-turn gait has millimetre-scale centroid drift
+        # from rounded path rotations. It is not commanded body translation.
+        if observation.mode == 'turn_z':
+            dx = 0.0
+            dy = 0.0
 
         return GaitIncrement(
             dx=dx,

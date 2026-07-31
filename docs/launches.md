@@ -20,14 +20,14 @@ files invoke its installed `ekf_node`; this workspace does not keep
 
 | Launch file | What it starts | Usual role |
 | --- | --- | --- |
-| `muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Includes hardware, static sensor TF, LiDAR odometry/EKF, online async mapping, fused scan generation, and Nav2 planner/controller/action servers with minimum delays and topic/TF readiness gates. | One-shot full robot Nav2 pipeline. Use this for normal bringup once the robot dependencies are installed. |
+| `muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Includes hardware, static sensor TF, LiDAR odometry/EKF, online async mapping, camera depth projection, and Nav2 planner/controller/action servers with minimum delays and topic/TF readiness gates. | One-shot full robot Nav2 pipeline. Use this for normal bringup once the robot dependencies are installed. |
 | `yahboomcar_bringup/launch/muto_hardware_launch.py` | `lidar_tg30/lidar_node`, Orbbec `astra_pro_plus.launch.py`, and `yahboomcar_bringup/muto_driver`. | Hardware source layer. Run first on the robot. |
 | `tf2_publisher/launch/all_tf2_publishers_launch.py` | Static TF publishers for `base_frame -> camera_link`, `base_frame -> lidar_frame`, and `base_frame -> imu_link`. Optional odom TF publisher is off by default. | Sensor TF layer. Needed before scan conversion, RF2O, mapping, and Nav2. |
 | `lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | Default path filters `/lidar/raw_laserscan` into `/lidar/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`, then runs RF2O and the odometry deadband/jump wrapper. | LiDAR odometry chain. Direct standalone launch lets the wrapper publish `odom -> base_frame` by default. |
 | `yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Includes the LiDAR odometry launch with odom TF disabled, starts motor-validated commanded-stance `/foot_odom` by default, then runs the installed `robot_localization/ekf_node`. Set `launch_foot_odometry:=false` to disable the foot input. | Preferred odometry/localization layer. EKF owns `odom -> base_frame`. |
-| `lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Converts `/camera/depth/image_raw` plus CameraInfo to `/camera/filtered_laserscan` and merges it into the LiDAR-driven `/fused/laserscan`; missing or stale camera scans automatically produce LiDAR-only output. | Component/test launch. Mapping includes it internally when `launch_fused_laserscan:=true`; do not launch separately during normal startup unless testing. |
-| `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts fused LaserScan generation by default, then starts SLAM Toolbox online async mapping. | Mapping layer. Uses `/fused/laserscan` and the EKF odom TF to maintain the map relationship. |
-| `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Current Nav2 planner/controller/action bringup. Requires mapping, TF, EKF, and `/fused/laserscan` already running. |
+| `lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Converts raw depth plus CameraInfo into the narrow, NaN-masked `/camera/filtered_laserscan`. It does not subscribe to LiDAR. | Independent camera preprocessing component. The top-level pipeline includes it when `launch_camera_obstacle_scan:=true`. |
+| `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
+| `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
 | `muto_slam_mapping/launch/frontier_exploration_launch.py` | Starts the submodule's `frontier_explorer` with the Muto-specific map, costmap, TF, Nav2 action, QoS, and bounded-DP configuration. | Optional autonomous exploration client. Start only after mapping and Nav2 are ready; it is not included by the one-shot Nav2 launch. |
 | `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, VLM socket, go-to-object server, and natural-language object-search server. | Independent object/perception pipeline. It consumes camera/TF and delegates `/go_to_object` to an already-running Nav2 `/navigate_to_pose`; it is not included by the Nav2 launch. |
 | `yahboomcar_ctrl/launch/yahboomcar_joy_launch.py` | Starts `joy_node` and `yahboom_joy`. | Joystick teleop. |
@@ -53,10 +53,11 @@ ekf_imu_lidar_launch.py
   -> /odometry/filtered
   -> authoritative odom -> base_frame TF
 
+camera_depth_to_laserscan_launch.py
+  -> /camera/filtered_laserscan (optional Nav2 source)
+
 online_async_mapping_launch.py
-  -> /camera/filtered_laserscan
-  -> /fused/laserscan
-  -> slam_toolbox map relation
+  -> slam_toolbox map relation from /lidar/filtered_laserscan_no_downsample
 
 nav2_planner_controller_launch.py
   -> local_costmap and global_costmap
@@ -106,8 +107,8 @@ prevents unrelated action clients from being started implicitly.
 Subsystem includes are configuration-scoped. Generic child argument names such as
 `input_topic` and `lidar_scan_topic` therefore cannot inherit unrelated values
 from hardware or localization launches. Mapping explicitly binds camera input to
-`/camera/depth/image_raw` plus `/camera/depth/camera_info` and fusion input to
-`/lidar/filtered_laserscan_no_downsample`.
+`/camera/depth/image_raw` plus `/camera/depth/camera_info`. SLAM independently
+subscribes to `/lidar/filtered_laserscan_no_downsample` through its parameter file.
 
 Layer-by-layer startup for debugging:
 
@@ -127,6 +128,12 @@ Start LiDAR odometry and EKF:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
+```
+
+Start the optional independent camera obstacle source:
+
+```bash
+ros2 launch lidar_pointcloud_filter camera_depth_to_laserscan_launch.py
 ```
 
 Start mapping:
@@ -165,6 +172,7 @@ on a trusted network, VPN, or tunnel, or replace it with an HTTPS endpoint.
 ros2 launch yahboomcar_bringup muto_hardware_launch.py
 ros2 launch tf2_publisher all_tf2_publishers_launch.py
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
+ros2 launch lidar_pointcloud_filter camera_depth_to_laserscan_launch.py
 ros2 launch muto_slam_mapping online_async_mapping_launch.py
 ros2 launch muto_slam_mapping nav2_planner_controller_launch.py
 ```
@@ -178,7 +186,6 @@ Expected high-level outputs:
 - `/scan_odom`
 - `/odometry/filtered`
 - `/camera/filtered_laserscan`
-- `/fused/laserscan`
 - `odom -> base_frame` from EKF
 - `map` relation from SLAM Toolbox
 - Nav2 local and global costmaps
@@ -210,34 +217,35 @@ ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py
 This is the preferred odometry-only sequence. It starts RF2O and the EKF, with
 the EKF owning `odom -> base_frame`.
 
-### Fused Scan Test
+### Camera Obstacle Scan Test
 
-This requires hardware, static TF, and the LiDAR odometry/filter path already
-running so `/lidar/filtered_laserscan_no_downsample` exists.
+This requires the depth camera and static camera TF. LiDAR is not an input to the
+component launch.
 
 ```bash
 ros2 launch lidar_pointcloud_filter camera_depth_to_laserscan_launch.py
-ros2 topic hz /fused/laserscan
+ros2 topic hz /camera/filtered_laserscan
+ros2 topic echo /camera/filtered_laserscan --once
 ```
 
-The component launch publishes:
+The output covers only the declared 58.4-degree horizontal camera sector.
+Unobserved bins are NaN so Nav2 does not treat angles outside observed depth as
+clearing rays. Do not launch a second copy while the top-level pipeline owns the topic.
 
-- `/camera/filtered_laserscan`
-- `/fused/laserscan`
+### Running Without Camera Projection
 
-It should not be launched separately during normal mapping if
-`online_async_mapping_launch.py` is already running with
-`launch_fused_laserscan:=true`.
-
-### Mapping Without Starting Fused Scan
-
-Use this only if another process is already publishing `/fused/laserscan`:
+For one-shot startup, disable the independent source explicitly:
 
 ```bash
-ros2 launch muto_slam_mapping online_async_mapping_launch.py launch_fused_laserscan:=false
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py \
+  launch_camera_obstacle_scan:=false
 ```
 
-SLAM Toolbox will still subscribe to `/fused/laserscan`.
+For layer-by-layer startup, simply omit the camera component launch.
+
+SLAM Toolbox still subscribes directly to
+`/lidar/filtered_laserscan_no_downsample`. Nav2 retains its required LiDAR
+observation source.
 
 ### Costmaps/Nav2 After SLAM Is Running
 
@@ -333,11 +341,13 @@ ros2 topic echo /odometry/filtered --once
 ros2 run tf2_ros tf2_echo odom base_frame
 ```
 
-Check mapping scan:
+Check SLAM and costmap scans:
 
 ```bash
-ros2 topic hz /fused/laserscan
-ros2 topic echo /fused/laserscan/header --once
+ros2 topic hz /lidar/filtered_laserscan_no_downsample
+ros2 topic echo /lidar/filtered_laserscan_no_downsample --once
+ros2 topic hz /lidar/filtered_laserscan
+ros2 topic hz /camera/filtered_laserscan
 ```
 
 Check Nav2 servers:

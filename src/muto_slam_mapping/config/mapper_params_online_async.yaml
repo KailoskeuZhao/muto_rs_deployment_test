@@ -4,7 +4,7 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_frame
-    scan_topic: /fused/laserscan
+    scan_topic: /lidar/filtered_laserscan_no_downsample
 
     mode: mapping
 

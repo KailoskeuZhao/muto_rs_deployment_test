@@ -24,12 +24,18 @@ def generate_launch_description():
     no_downsample_scan_topic_arg = DeclareLaunchArgument(
         'no_downsample_scan_topic',
         default_value='/lidar/filtered_laserscan_no_downsample',
-        description='Full-resolution filtered LiDAR LaserScan topic consumed by scan fusion.',
+        description=(
+            'Full-resolution filtered LiDAR LaserScan topic consumed by '
+            'SLAM Toolbox.'
+        ),
     )
     no_downsample_scan_range_max_arg = DeclareLaunchArgument(
         'no_downsample_scan_range_max',
         default_value='15.0',
-        description='Maximum range for the full-resolution LiDAR LaserScan used by fusion.',
+        description=(
+            'Maximum range for the full-resolution LiDAR LaserScan used by '
+            'SLAM Toolbox.'
+        ),
     )
     scan_range_max_arg = DeclareLaunchArgument(
         'scan_range_max',

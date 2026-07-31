@@ -163,15 +163,6 @@ def generate_launch_description():
         'online_async_mapping_launch.py',
         {
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'launch_fused_laserscan': LaunchConfiguration(
-                'launch_fused_laserscan'
-            ),
-            'fused_scan_max_publish_rate': LaunchConfiguration(
-                'fused_scan_max_publish_rate'
-            ),
-            'fused_scan_camera_max_age': LaunchConfiguration(
-                'fused_scan_camera_max_age'
-            ),
             'slam_params_file': LaunchConfiguration('slam_params_file'),
         },
     )
@@ -182,7 +173,7 @@ def generate_launch_description():
         'launch_nav2',
         [
             ('/map', 'nav_msgs/msg/OccupancyGrid'),
-            ('/fused/laserscan', 'sensor_msgs/msg/LaserScan'),
+            ('/lidar/filtered_laserscan', 'sensor_msgs/msg/LaserScan'),
         ],
         [('map', 'base_frame')],
         'muto_slam_mapping',
@@ -230,7 +221,8 @@ def generate_launch_description():
             'launch_foot_odometry',
             default_value='true',
             description=(
-                'Fuse commanded-stance foot velocity into the localization '
+                'Fuse motor-validated commanded-stance foot velocity into '
+                'the localization '
                 'EKF.'
             ),
         ),
@@ -242,7 +234,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'launch_mapping',
             default_value='true',
-            description='Start fused LaserScan generation and SLAM Toolbox.',
+            description='Start SLAM Toolbox online asynchronous mapping.',
         ),
         DeclareLaunchArgument(
             'launch_nav2',
@@ -285,25 +277,19 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav2_readiness_timeout',
             default_value='120.0',
-            description='Seconds to wait for map, fused scan, and map TF.',
+            description='Seconds to wait for map, filtered LiDAR scan, and map TF.',
         ),
         DeclareLaunchArgument(
-            'launch_fused_laserscan',
+            'launch_camera_obstacle_scan',
             default_value='true',
-            description='Let mapping start /fused/laserscan generation.',
+            description=(
+                'Start the independent camera obstacle source used by Nav2.'
+            ),
         ),
         DeclareLaunchArgument(
-            'fused_scan_max_publish_rate',
+            'camera_scan_max_publish_rate',
             default_value='7.0',
             description='Maximum camera-depth-to-scan processing rate in Hz.',
-        ),
-        DeclareLaunchArgument(
-            'fused_scan_camera_max_age',
-            default_value='0.5',
-            description=(
-                'Maximum camera/LiDAR timestamp difference before fused output '
-                'falls back to LiDAR only.'
-            ),
         ),
         DeclareLaunchArgument(
             'slam_params_file',
@@ -346,6 +332,18 @@ def generate_launch_description():
             'tf2_publisher',
             'all_tf2_publishers_launch.py',
             {'publish_odom_tf': 'false'},
+        ),
+        delayed_include(
+            'sensor_tf_delay',
+            'launch_camera_obstacle_scan',
+            'lidar_pointcloud_filter',
+            'camera_depth_to_laserscan_launch.py',
+            {
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'max_publish_rate': LaunchConfiguration(
+                    'camera_scan_max_publish_rate'
+                ),
+            },
         ),
         scoped_include(
             'yahboomcar_bringup',

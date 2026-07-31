@@ -101,7 +101,7 @@ def generate_launch_description():
         "enable_point_cloud",
         default_value="false",
         description=(
-            "Publish the Orbbec XYZ PointCloud2. Disabled because fusion consumes "
+            "Publish the Orbbec XYZ PointCloud2. The active costmap path consumes "
             "the raw depth image directly."
         ),
     )

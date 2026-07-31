@@ -1,3 +1,4 @@
+from builtin_interfaces.msg import Time
 from muto_hexapod_interfaces_custom.msg import CommandedGaitState
 from muto_hexapod_lib_custom.core.base import point3d
 from muto_hexapod_lib_custom.core.config import k_standby
@@ -129,3 +130,83 @@ def test_motor_source_timestamp_is_validated():
         FootOdometryNode.motor_sample_stamp_sec({
             'sample_stamp': {'sec': 12, 'nanosec': 1_000_000_000},
         })
+
+
+class FakePublisher:
+    def __init__(self):
+        self.message = None
+
+    def publish(self, message):
+        self.message = message
+
+
+class FakeFootNode:
+    set_covariance = staticmethod(FootOdometryNode.set_covariance)
+    yaw_to_quaternion = staticmethod(FootOdometryNode.yaw_to_quaternion)
+
+    def __init__(self):
+        self.frame_id = 'odom'
+        self.child_frame_id = 'base_frame'
+        self.x = 1.25
+        self.y = -0.5
+        self.yaw = 0.2
+        self.vx = 0.3
+        self.vy = -0.1
+        self.wz = 0.4
+        self.unobserved_pose_variance = 1.0
+        self.unobserved_twist_variance = 1.0
+        self.odom_pub = FakePublisher()
+        self.tf_broadcaster = None
+
+
+def test_published_odometry_uses_source_stamp_and_bounded_covariance():
+    node = FakeFootNode()
+    stamp = Time(sec=12, nanosec=34)
+
+    FootOdometryNode.publish_odometry(node, stamp, confidence=1.0)
+
+    message = node.odom_pub.message
+    assert message.header.stamp == stamp
+    assert message.header.frame_id == 'odom'
+    assert message.child_frame_id == 'base_frame'
+    assert [message.pose.covariance[index] for index in (0, 7, 14, 21, 28, 35)] == [
+        0.5, 0.5, 1.0, 1.0, 1.0, 0.8,
+    ]
+    assert [message.twist.covariance[index] for index in (0, 7, 14, 21, 28, 35)] == [
+        0.2, 0.2, 1.0, 1.0, 1.0, 0.4,
+    ]
+    assert max(message.pose.covariance) == 1.0
+    assert max(message.twist.covariance) == 1.0
+
+
+class FakeEstimator:
+    def __init__(self):
+        self.reset_called = False
+
+    def reset(self):
+        self.reset_called = True
+
+
+class FakeLogger:
+    def warn(self, *_args, **_kwargs):
+        pass
+
+
+class FakeFrameCheckingNode:
+    def __init__(self):
+        self.child_frame_id = 'base_frame'
+        self.estimator = FakeEstimator()
+
+    @staticmethod
+    def get_logger():
+        return FakeLogger()
+
+
+def test_wrong_gait_frame_resets_estimator_before_processing():
+    node = FakeFrameCheckingNode()
+    message = CommandedGaitState()
+    message.header.frame_id = 'base_link'
+
+    FootOdometryNode.gait_state_callback(node, message)
+
+    assert node.estimator.reset_called

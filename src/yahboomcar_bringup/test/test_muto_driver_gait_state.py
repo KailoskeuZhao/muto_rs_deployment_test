@@ -32,6 +32,9 @@ class FakeDriver:
     def get_clock(self):
         return FakeClock()
 
+    def publish_commanded_gait_state(self, state):
+        yahboomcar_driver.publish_commanded_gait_state(self, state)
+
 
 def test_driver_publishes_vendor_targets_in_ros_base_axes():
     state = SimpleNamespace(

@@ -38,15 +38,17 @@ public:
     depth_scale_ = declare_parameter<double>("depth_scale", 0.001);
     pixel_stride_x_ = declare_parameter<int>("pixel_stride_x", 4);
     pixel_stride_y_ = declare_parameter<int>("pixel_stride_y", 4);
-    min_z_ = declare_parameter<double>("min_z", -0.2);
-    max_z_ = declare_parameter<double>("max_z", 0.05);
-    camera_min_x_ = declare_parameter<double>("camera_min_x", -100.0);
-    range_min_ = declare_parameter<double>("range_min", 0.05);
+    min_z_ = declare_parameter<double>("min_z", -0.07);
+    max_z_ = declare_parameter<double>("max_z", 0.18);
+    camera_min_x_ = declare_parameter<double>("camera_min_x", 0.30);
+    range_min_ = declare_parameter<double>("range_min", 0.30);
     range_max_ = declare_parameter<double>("range_max", 3.0);
 
-    angle_min_ = declare_parameter<double>("angle_min", -M_PI);
-    angle_max_ = declare_parameter<double>("angle_max", M_PI);
-    angle_increment_ = declare_parameter<double>("angle_increment", M_PI / 720.0);
+    horizontal_fov_ = declare_parameter<double>("horizontal_fov", 58.4 * M_PI / 180.0);
+    vertical_fov_ = declare_parameter<double>("vertical_fov", 45.5 * M_PI / 180.0);
+    angle_min_ = declare_parameter<double>("angle_min", -29.2 * M_PI / 180.0);
+    angle_max_ = declare_parameter<double>("angle_max", 29.2 * M_PI / 180.0);
+    angle_increment_ = declare_parameter<double>("angle_increment", M_PI / 180.0);
     scan_time_ = declare_parameter<double>("scan_time", 0.0);
     time_increment_ = declare_parameter<double>("time_increment", 0.0);
 
@@ -138,13 +140,23 @@ private:
       RCLCPP_WARN(get_logger(), "range_max is smaller than range_min; swapping them");
       std::swap(range_max_, range_min_);
     }
+    if (!(horizontal_fov_ > 0.0) || horizontal_fov_ > M_PI ||
+      !std::isfinite(horizontal_fov_))
+    {
+      RCLCPP_WARN(get_logger(), "horizontal_fov must be in (0, pi]; using 58.4 degrees");
+      horizontal_fov_ = 58.4 * M_PI / 180.0;
+    }
+    if (!(vertical_fov_ > 0.0) || vertical_fov_ > M_PI || !std::isfinite(vertical_fov_)) {
+      RCLCPP_WARN(get_logger(), "vertical_fov must be in (0, pi]; using 45.5 degrees");
+      vertical_fov_ = 45.5 * M_PI / 180.0;
+    }
     if (angle_max_ < angle_min_) {
       RCLCPP_WARN(get_logger(), "angle_max is smaller than angle_min; swapping them");
       std::swap(angle_max_, angle_min_);
     }
     if (!(angle_increment_ > 0.0) || !std::isfinite(angle_increment_)) {
-      RCLCPP_WARN(get_logger(), "angle_increment must be finite and positive; using 0.25 degrees");
-      angle_increment_ = M_PI / 720.0;
+      RCLCPP_WARN(get_logger(), "angle_increment must be finite and positive; using 1 degree");
+      angle_increment_ = M_PI / 180.0;
     }
     if (input_stamp_warning_age_ < 0.0) {
       RCLCPP_WARN(get_logger(), "input_stamp_warning_age must be non-negative; using 0.0");
@@ -442,21 +454,24 @@ private:
 
   void initializeScan(const sensor_msgs::msg::Image & image, sensor_msgs::msg::LaserScan & scan)
   {
-    const auto bin_count = static_cast<std::size_t>(
-      std::floor((angle_max_ - angle_min_) / angle_increment_)) + 1U;
+    const double angle_span = angle_max_ - angle_min_;
+    const auto interval_count = std::max<std::size_t>(
+      1U, static_cast<std::size_t>(std::llround(angle_span / angle_increment_)));
+    const auto bin_count = interval_count + 1U;
+    const double output_angle_increment = angle_span / static_cast<double>(interval_count);
     scan.header = image.header;
     scan.header.frame_id = processing_frame_;
     if (restamp_output_) {
       scan.header.stamp = get_clock()->now();
     }
     scan.angle_min = static_cast<float>(angle_min_);
-    scan.angle_max = static_cast<float>(angle_min_ + (bin_count - 1U) * angle_increment_);
-    scan.angle_increment = static_cast<float>(angle_increment_);
+    scan.angle_max = static_cast<float>(angle_max_);
+    scan.angle_increment = static_cast<float>(output_angle_increment);
     scan.time_increment = static_cast<float>(time_increment_);
     scan.scan_time = static_cast<float>(scan_time_);
     scan.range_min = static_cast<float>(range_min_);
     scan.range_max = static_cast<float>(range_max_);
-    scan.ranges.assign(bin_count, std::numeric_limits<float>::infinity());
+    scan.ranges.assign(bin_count, std::numeric_limits<float>::quiet_NaN());
   }
 
   void addDepthImageToScan(
@@ -492,6 +507,14 @@ private:
 
         const double optical_z = static_cast<double>(nearest_depth) * depth_scale_;
         const Ray & ray = rayForPixel(nearest_u, nearest_v, image.width);
+        const double horizontal_angle = std::atan(static_cast<double>(ray.x));
+        const double vertical_angle = std::atan(static_cast<double>(ray.y));
+        if (std::fabs(horizontal_angle) > horizontal_fov_ / 2.0 ||
+          std::fabs(vertical_angle) > vertical_fov_ / 2.0)
+        {
+          ++stats.angle_filtered;
+          continue;
+        }
         const tf2::Vector3 point = transform * tf2::Vector3(
           static_cast<double>(ray.x) * optical_z,
           static_cast<double>(ray.y) * optical_z,
@@ -524,13 +547,13 @@ private:
           continue;
         }
         const auto index = static_cast<std::size_t>(
-          std::floor((angle - angle_min_) / angle_increment_));
+          std::llround((angle - scan.angle_min) / scan.angle_increment));
         if (index >= scan.ranges.size()) {
           ++stats.angle_filtered;
           continue;
         }
         const float range_f = static_cast<float>(range);
-        if (range_f < scan.ranges[index]) {
+        if (!std::isfinite(scan.ranges[index]) || range_f < scan.ranges[index]) {
           scan.ranges[index] = range_f;
           ++stats.updated_bins;
         }
@@ -580,7 +603,8 @@ private:
       return;
     }
     const double age = (
-      get_clock()->now() - rclcpp::Time(image.header.stamp, get_clock()->get_clock_type())).seconds();
+      get_clock()->now() - rclcpp::Time(image.header.stamp,
+      get_clock()->get_clock_type())).seconds();
     if (std::fabs(age) <= input_stamp_warning_age_) {
       return;
     }
@@ -596,7 +620,8 @@ private:
       return false;
     }
     const double age = (
-      get_clock()->now() - rclcpp::Time(image.header.stamp, get_clock()->get_clock_type())).seconds();
+      get_clock()->now() - rclcpp::Time(image.header.stamp,
+      get_clock()->get_clock_type())).seconds();
     if (std::fabs(age) <= max_input_age_) {
       return false;
     }
@@ -619,6 +644,8 @@ private:
   double camera_min_x_{};
   double range_min_{};
   double range_max_{};
+  double horizontal_fov_{};
+  double vertical_fov_{};
   double angle_min_{};
   double angle_max_{};
   double angle_increment_{};

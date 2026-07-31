@@ -98,7 +98,7 @@ Important qualifications:
 | `base_frame -> imu_link` | `tf2_publisher/base_to_imu_publisher` | Static hard-coded IMU mount. |
 | `camera_link -> camera optical frames` | Orbbec driver | Driver-owned static/internal camera tree. |
 
-Consumers such as Nav2, scan fusion, SAM2, and the object registry query TF;
+Consumers such as Nav2, depth projection, SAM2, and the object registry query TF;
 they do not own these tree edges.
 
 There is no current `publish_map_to_odom_tf` launch argument and no identity
@@ -125,7 +125,7 @@ Static transforms are transient-local, so late subscribers can receive them.
 
 These calibration values are deployment-specific and currently require a source
 change and rebuild. Verify physical translation, axis direction, and rotation on
-the robot before trusting fused scans, odometry, maps, or costmaps.
+the robot before trusting filtered scans, odometry, maps, or costmaps.
 
 ## Optional Odometry Republisher
 
@@ -209,7 +209,7 @@ SLAM Toolbox is configured with:
 map_frame: map
 odom_frame: odom
 base_frame: base_frame
-scan_topic: /fused/laserscan
+scan_topic: /lidar/filtered_laserscan_no_downsample
 ```
 
 It consumes the existing `odom -> base_frame` transform and publishes
@@ -234,7 +234,6 @@ Nav2 does not replace either transform. Its local costmap consumes
 | `/camera/depth/image_raw` | Normally a depth optical frame from the Orbbec driver. |
 | `/camera/depth/camera_info` | Must describe the depth profile and frame. |
 | `/camera/filtered_laserscan` | `base_frame` by default. |
-| `/fused/laserscan` | `base_frame` by default. |
 | `/map` | `map`. |
 | SAM2 image and mask outputs | Preserve the color image frame. |
 | `/sam2/instance_pointcloud` | Depth optical frame and depth timestamp. |
@@ -281,19 +280,18 @@ on latest-transform fallback to conceal a missing or stale dynamic
 The output camera scan keeps the depth-image timestamp but changes its frame to
 the configured processing frame, normally `base_frame`.
 
-### LaserScan fusion
+### Nav2 obstacle sources
 
-For each input scan whose frame differs from the output frame, fusion requests:
+The LiDAR costmap source preserves `lidar_frame`. Nav2 transforms it through the
+static lookup:
 
 ```text
-fused_scan_frame <- input_scan_frame
+base_frame <- lidar_frame
 ```
 
-first at the scan timestamp, then at the latest available time. The normal
-camera scan is already in `base_frame`; the LiDAR scan resolves through the
-static LiDAR mount.
-
-The final fused scan is published in `base_frame` by default.
+The camera converter requests `base_frame <- depth_image_frame` at the image
+timestamp and publishes the resulting narrow scan in `base_frame`. The two
+sources remain separate; there is no output-frame lookup for a combined scan.
 
 ### SLAM And Nav2
 
@@ -441,7 +439,8 @@ Verify frame and timestamp fields before blaming TF:
 ros2 topic echo /lidar/raw_laserscan --once
 ros2 topic echo /imu/data_processed --once
 ros2 topic echo /camera/depth/camera_info --once
-ros2 topic echo /fused/laserscan --once
+ros2 topic echo /lidar/filtered_laserscan_no_downsample --once
+ros2 topic echo /camera/filtered_laserscan --once
 ros2 topic echo /odometry/filtered --once
 ros2 topic echo /map --once
 ```
@@ -522,24 +521,25 @@ Check stale inputs, queue growth, CPU load, and inappropriate restamping.
 transform at an older sensor timestamp. Inspect the message stamp and dynamic TF
 history rather than assuming the current lookup proves timestamp compatibility.
 
-### Fused scan missing
+### Camera obstacle scan missing
 
 Check:
 
-1. `/lidar/filtered_laserscan_no_downsample` is live in `lidar_frame`.
-2. `base_frame <- lidar_frame` resolves.
-3. The camera depth frame resolves to `base_frame`.
+1. `camera_depth_to_laserscan_node` is running.
+2. The camera depth frame resolves to `base_frame`.
+3. Depth encoding and CameraInfo dimensions are valid.
 4. Sensor stamps are not rejected as stale.
-5. Only one fusion launch owns `/fused/laserscan`.
+5. Only one converter owns `/camera/filtered_laserscan`.
 
-Because LiDAR drives fusion, missing camera TF should remove the camera
-contribution but should not normally stop valid LiDAR-only output.
+Missing camera TF stops camera scan publication but does not stop the LiDAR
+costmap source or SLAM Toolbox.
 
 ### Map missing or not updating
 
 Check:
 
-1. `/fused/laserscan` is in `base_frame`.
+1. `/lidar/filtered_laserscan_no_downsample` is live and its `lidar_frame`
+   resolves to `base_frame`.
 2. `odom <- base_frame` exists continuously.
 3. SLAM Toolbox is running with `map_frame=map`.
 4. No other node publishes `map -> odom`.
@@ -550,7 +550,7 @@ Check:
 Check the complete timestamped chain:
 
 ```text
-map -> odom -> base_frame -> fused scan frame
+map -> odom -> base_frame -> sensor frame
 ```
 
 A latest `map <- base_frame` lookup can succeed while a costmap still rejects
@@ -579,12 +579,12 @@ The active TF contract does not use:
 - `base_link`;
 - `/lidar/PointCloud` or filtered PointCloud topics;
 - `/camera/depth/points`;
-- `camera_link` as the default fused-scan processing frame;
+- `camera_link` as the depth-scan output frame;
 - an identity `map -> odom` launch helper;
 - `publish_map_to_odom_tf`.
 
-Current scan fusion uses raw `16UC1` depth, the TG30 LaserScan path, and
-`base_frame` as the default processing and fused-scan frame.
+Current camera projection uses raw `16UC1` depth and `base_frame` as its
+processing/output frame. SLAM uses the TG30 no-downsample LaserScan directly.
 
 ## Key Files
 
@@ -600,5 +600,4 @@ Current scan fusion uses raw `16UC1` depth, the TG30 LaserScan path, and
 | `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Topic and TF readiness gates. |
 | `src/muto_command_layer/launch/object_pipeline_launch.py` | Independent object consumers of camera and map TF. |
 | `src/lidar_pointcloud_filter/src/camera_depth_to_laserscan_node.cpp` | Depth-frame lookup and output-frame behavior. |
-| `src/lidar_pointcloud_filter/src/laserscan_fusion_node.cpp` | Scan-frame conversion. |
 | `src/yahboomcar_description/README.md` | Boundary between reference `base_link` URDF data and deployed `base_frame` TF. |

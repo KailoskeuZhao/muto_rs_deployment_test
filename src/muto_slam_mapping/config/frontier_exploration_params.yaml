@@ -59,8 +59,8 @@ frontier_explorer:
     frontier_selection_min_distance: 0.50
     frontier_visit_tolerance: 0.40
 
-    # Active-goal monitoring. The reveal model follows the 360-degree fused
-    # scan; the range matches the fusion node's maximum output range.
+    # Active-goal monitoring. The reveal model follows the 360-degree LiDAR
+    # costmap source; the range matches its configured obstacle range.
     goal_preemption_enabled: true
     goal_preemption_min_interval_s: 2.0
     goal_skip_on_blocked_goal: true

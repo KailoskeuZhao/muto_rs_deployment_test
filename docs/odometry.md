@@ -63,7 +63,7 @@ pipeline.
 | [`src/tf2_publisher/launch/all_tf2_publishers_launch.py`](../src/tf2_publisher/launch/all_tf2_publishers_launch.py) | Starts static sensor TF publishers; optional odom TF publisher is disabled by default. |
 | [`src/lidar_tg30/src/lidar_node.cpp`](../src/lidar_tg30/src/lidar_node.cpp) | Publishes the raw TG30 LaserScan. |
 | [`src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py`](../src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py) | Starts LiDAR scan filtering, RF2O, and the odometry deadband wrapper. |
-| [`src/lidar_pointcloud_filter/src/lidar_laserscan_filter_node.cpp`](../src/lidar_pointcloud_filter/src/lidar_laserscan_filter_node.cpp) | Filters raw LiDAR LaserScan into RF2O and fusion scan topics. |
+| [`src/lidar_pointcloud_filter/src/lidar_laserscan_filter_node.cpp`](../src/lidar_pointcloud_filter/src/lidar_laserscan_filter_node.cpp) | Filters raw LiDAR LaserScan into RF2O/Nav2 and SLAM scan topics. |
 | [`src/lidar_pointcloud_filter/src/odometry_translation_deadband_node.cpp`](../src/lidar_pointcloud_filter/src/odometry_translation_deadband_node.cpp) | Applies RF2O deadbands and jump rejection before publishing `scan_odom`. |
 | [`src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py`](../src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py) | Main EKF launch for LiDAR plus IMU odometry. |
 | [`src/yahboomcar_bringup/config/ekf_lidar_imu.yaml`](../src/yahboomcar_bringup/config/ekf_lidar_imu.yaml) | Default EKF fusion configuration. |
@@ -95,7 +95,7 @@ frame tree for camera optical/depth frames. The local camera publisher only owns
 `muto_hardware_launch.py` starts `lidar_tg30/lidar_node`. The driver publishes
 `/lidar/raw_laserscan` as `sensor_msgs/msg/LaserScan` in `lidar_frame`. This is
 the only TG30 data path; downstream filtering produces the two scans needed by
-RF2O and fusion.
+RF2O/Nav2 and SLAM.
 
 ## LiDAR Scan Filtering
 
@@ -107,7 +107,7 @@ It consumes `/lidar/raw_laserscan` and publishes two scans:
 | Topic | Purpose | Default filtering |
 | --- | --- | --- |
 | `/lidar/filtered_laserscan` | RF2O odometry input | `range_min=0.05`, `range_max=10.0`, full circle, downsample factor `2`. |
-| `/lidar/filtered_laserscan_no_downsample` | Mapping/fused scan LiDAR input | Full resolution, `range_min=0.05`, `range_max=15.0`. |
+| `/lidar/filtered_laserscan_no_downsample` | SLAM Toolbox input | Full resolution, `range_min=0.05`, `range_max=15.0`. |
 
 The node preserves input timestamps by default. `scan_restamp_output:=false` is
 intentional; restamping should only be used when a driver is known to publish bad
@@ -261,13 +261,18 @@ node:
 - consumes `/muto/commanded_gait_state` from the custom Muto driver;
 - treats feet commanded in stance in two consecutive phases as stationary;
 - fits the planar body transform from those common-stance foot targets;
-- rejects dropped or stale phases, malformed support sets, excessive fit
-  residuals, and implausible per-phase motion;
+- rejects dropped or stale phases, wrong-frame input, malformed support sets,
+  excessive fit residuals, per-phase motion above `0.05 m` or `0.2 rad`, and
+  inferred rates above `1.0 m/s` or `2.0 rad/s`;
 - polls `get_motor_angles`, whose response pairs all 18 motor values with the
   gait target and stance mask that were current during that serial read;
 - converts the calibrated logical motor angles through the custom library's
   forward kinematics and checks each sampled stance foot against its target;
-- publishes and integrates `/foot_odom` only while motor validation is fresh.
+- publishes and integrates `/foot_odom` only while motor validation is fresh;
+- stamps each output with the source gait measurement time rather than callback
+  processing time;
+- removes millimetre-scale translation leakage from the generated pure-turn
+  trajectory while preserving its fitted yaw increment.
 
 Motor values are already in firmware-calibrated logical degrees. The node does
 not read or subtract raw servo calibration offsets a second time. The factory
@@ -280,6 +285,36 @@ retain full motor confidence; confidence decreases from 5 mm to 30 mm; an error
 above 30 mm suppresses output. Missing, stale, malformed, wrong-frame, or
 wrong-angle-space samples also suppress output. A future-sequence motor sample
 cannot validate replayed older gait phases.
+
+### RViz Covariance Display
+
+`/foot_odom` is a planar estimate. Its operational EKF configuration consumes
+only `vx` and `vy`; it does not consume the foot pose, Z, roll, pitch, or yaw
+rate. The message nevertheless requires complete 6x6 pose and twist covariance
+arrays.
+
+The node uses bounded variance `1.0` for unsupported Z, roll, and pitch entries.
+An earlier value of `999` produced a standard deviation of about `31.6` metres
+or radians. RViz's Odometry display retains one covariance visual per accepted
+pose according to its `Keep` setting, so those entries appeared as multiple
+world-scale disks even when the underlying planar pose was well behaved.
+
+For trajectory inspection in RViz, set the Odometry display to `Keep: 1` or
+turn its Covariance property off. With covariance enabled, repeated bounded
+ellipses are expected and do not by themselves indicate duplicate TF or an
+exploding pose. Check the numeric message separately:
+
+```bash
+ros2 topic echo /foot_odom --once
+ros2 topic hz /foot_odom
+ros2 run tf2_ros tf2_echo odom base_frame
+```
+
+The current node should report `header.frame_id: odom`,
+`child_frame_id: base_frame`, finite planar pose/twist values, and no covariance
+diagonal above the configured planar confidence-scaled values or bounded
+unsupported-axis variances. The node itself does not publish TF in the normal
+pipeline; the EKF remains the sole `odom -> base_frame` owner.
 
 The custom driver converts vendor-model `x=right, y=forward` foot coordinates
 to ROS `base_frame` axes (`x=forward, y=left`) before publishing. A stance label
@@ -319,31 +354,20 @@ SLAM Toolbox with:
 odom_frame: odom
 map_frame: map
 base_frame: base_frame
-scan_topic: /fused/laserscan
+scan_topic: /lidar/filtered_laserscan_no_downsample
 ```
 
-`online_async_mapping_launch.py` starts fused LaserScan generation by default.
-That fused scan combines:
-
-```text
-/camera/filtered_laserscan
-/lidar/filtered_laserscan_no_downsample
-```
-
-into:
-
-```text
-/fused/laserscan
-```
-
-The fused scan is used for mapping and Nav2 costmaps. It is not currently fused
-into the EKF.
+`online_async_mapping_launch.py` starts SLAM Toolbox on the full-resolution
+filtered LiDAR topic. It also starts camera depth-to-scan projection by default,
+but that camera topic is an independent Nav2 obstacle source and is not an input
+to SLAM or the EKF.
 
 Nav2 costmaps are configured around the same frame chain:
 
 - local costmap: `global_frame=odom`, `robot_base_frame=base_frame`;
 - global costmap: `global_frame=map`, `robot_base_frame=base_frame`;
-- both consume `/fused/laserscan`.
+- both consume `/lidar/filtered_laserscan` as the required LiDAR source and
+  `/camera/filtered_laserscan` as an optional camera source.
 
 The Nav2 controller and BT navigator read odometry from
 `/odometry/filtered`. Command routing is:
@@ -415,7 +439,7 @@ time/TF problem.
 - The IMU is not providing absolute orientation; it only helps as a yaw-rate
   source.
 - Foot odometry is only command/dead-reckoned and should remain low trust.
-- Depth camera information improves the fused scan for mapping/Nav2, but it is
+- Depth camera information adds forward obstacle observations to Nav2, but it is
   not currently an EKF odometry input.
 
 ## Useful Runtime Checks
@@ -457,4 +481,4 @@ EKF pipeline.
   repeatable bags; disable the input if commanded stance does not improve
   robustness on the physical robot.
 - Consider depth-camera odometry only as a separate future experiment; the
-  current depth-camera path is for scan fusion, mapping, and Nav2 costmaps.
+  current depth-camera path is an independent Nav2 costmap source.

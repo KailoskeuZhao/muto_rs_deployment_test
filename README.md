@@ -63,14 +63,14 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 It applies minimum startup delays, then waits for live topics and TF before each
 downstream layer. Localization waits for the raw scan and sensor TF; mapping waits
 for filtered odometry and `odom -> base_frame`; Nav2 waits for `/map`,
-`/fused/laserscan`, and `map -> base_frame`. A readiness timeout shuts down the
+`/lidar/filtered_laserscan`, and `map -> base_frame`. A readiness timeout shuts down the
 pipeline instead of launching the next layer early. Use the lower-level commands
 below when debugging one layer at a time.
 
 Use this sequence for the normal robot bringup. Do not launch
-`camera_depth_to_laserscan_launch.py` as a separate normal-startup step.
-That launch is a component/test launch; mapping launches it internally when a
-fused scan is needed.
+`camera_depth_to_laserscan_launch.py` as a second normal-startup process. The
+top-level pipeline owns that independent camera costmap source when
+`launch_camera_obstacle_scan:=true`.
 
 Start the TG30 LiDAR, Orbbec depth camera, and Muto base driver:
 
@@ -85,7 +85,7 @@ This launch starts:
 - `yahboomcar_bringup/muto_driver`
 
 The TG30 driver publishes only `/lidar/raw_laserscan`; downstream nodes own
-filtering, downsampling, and fusion.
+filtering, downsampling, and depth projection.
 
 The Astra Pro Plus defaults to the device-advertised exact profiles: color
 `1280x720 @ 30 FPS` and depth `320x240 @ 30 FPS`, with IR disabled. A
@@ -129,19 +129,19 @@ mapping:
 ros2 launch muto_slam_mapping online_async_mapping_launch.py
 ```
 
-This launch starts fused LaserScan generation for mapping. It assumes the normal
-LiDAR odom/filter path is already running and producing
+This launch starts only SLAM Toolbox on the full-resolution filtered LiDAR scan.
+It assumes the normal LiDAR odom/filter path is already running and producing
 `/lidar/filtered_laserscan_no_downsample`. It does not start hardware, sensor
-TF, LiDAR odometry, or the EKF.
-
-If `/fused/laserscan` is already running:
+TF, LiDAR odometry, the EKF, or camera preprocessing. For a manually assembled
+Nav2 stack, start the independent camera source separately when depth obstacles
+are wanted:
 
 ```bash
-ros2 launch muto_slam_mapping online_async_mapping_launch.py launch_fused_laserscan:=false
+ros2 launch lidar_pointcloud_filter camera_depth_to_laserscan_launch.py
 ```
 
 Run the Nav2 BT/planner/controller bringup after mapping, TF, EKF, and
-`/fused/laserscan` are available:
+`/lidar/filtered_laserscan` are available:
 
 ```bash
 ros2 launch muto_slam_mapping nav2_planner_controller_launch.py
@@ -156,7 +156,9 @@ only those servers, so it does not start AMCL, route, waypoint, docking, or full
 
 Mapping/TF/scan inputs should already be running. The global costmap expects
 `map -> base_frame`, and the local costmap expects `odom -> base_frame`. Both
-costmaps use `/fused/laserscan`, `base_frame`, `odom`, and `map`.
+costmaps use `/lidar/filtered_laserscan` as the required 360-degree source and
+`/camera/filtered_laserscan` as an optional forward source. They use
+`base_frame`, `odom`, and `map` for transforms.
 
 ## Experimental And Test Launches
 
@@ -169,7 +171,7 @@ ros2 launch lidar_pointcloud_filter filter_lidar_odometry_launch.py
 By default this uses the raw TG30 `LaserScan` path. It publishes:
 
 - `/lidar/filtered_laserscan`, a downsampled filtered scan for RF2O
-- `/lidar/filtered_laserscan_no_downsample`, a full-resolution filtered scan for fusion
+- `/lidar/filtered_laserscan_no_downsample`, a full-resolution filtered scan for SLAM Toolbox
 - `scan_odom_raw`, RF2O output before deadband/jump filtering
 - `scan_odom`, filtered odometry output
 
@@ -188,17 +190,16 @@ near zero, and yaw filters apply while commanded yaw is near zero.
 Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
 `rf2o_publish_tf:=false` when an EKF or another localization node owns odom TF.
 
-Directly test camera scan conversion plus scan fusion:
+Directly test camera depth-to-scan conversion:
 
 ```bash
 ros2 launch lidar_pointcloud_filter camera_depth_to_laserscan_launch.py
 ```
 
-This is not part of the normal startup sequence. It expects an existing
-`/lidar/filtered_laserscan_no_downsample` topic, normally produced by
-`filter_lidar_odometry_launch.py` or `ekf_imu_lidar_launch.py`. It converts
-`/camera/depth/image_raw` plus CameraInfo to `/camera/filtered_laserscan`, then fuses that with the
-LiDAR scan into `/fused/laserscan`.
+This is not a separate normal-startup step. It converts
+`/camera/depth/image_raw` plus CameraInfo into a narrow
+`/camera/filtered_laserscan` in `base_frame`. LiDAR is not an input to this
+component.
 
 If `/scan_odom` is already being produced by another launch and you only want
 the EKF:
@@ -229,50 +230,43 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | Topic | Purpose |
 | --- | --- |
 | `/lidar/raw_laserscan` | Raw TG30 `LaserScan`; default input to LiDAR scan filtering. |
-| `/lidar/filtered_laserscan` | Downsampled filtered LiDAR `LaserScan`; default input to RF2O. |
-| `/lidar/filtered_laserscan_no_downsample` | Full-resolution filtered LiDAR `LaserScan`; default LiDAR input for scan fusion. |
-| `/camera/depth/image_raw` | Depth camera `16UC1` image used directly by scan fusion and SAM2. |
+| `/lidar/filtered_laserscan` | Downsampled filtered LiDAR `LaserScan`; default input to RF2O and both Nav2 costmaps. |
+| `/lidar/filtered_laserscan_no_downsample` | Full-resolution filtered LiDAR `LaserScan`; default SLAM Toolbox input. |
+| `/camera/depth/image_raw` | Depth camera `16UC1` image used by camera scan projection and SAM2. |
 | `/camera/depth/camera_info` | Intrinsics used to back-project sampled depth pixels. |
-| `/camera/filtered_laserscan` | Intermediate camera `LaserScan` generated directly from the depth image. |
-| `/fused/laserscan` | Fused `LaserScan` generated from `/camera/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`. |
+| `/camera/filtered_laserscan` | Narrow, NaN-masked camera `LaserScan`; optional independent source for both Nav2 costmaps. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
-| `/foot_odom` | Motor-validated commanded-stance odometry. Consecutive stance targets estimate motion; synchronized calibrated servo FK must track each sampled stance foot. Missing, stale, malformed, or excessive tracking error suppresses publication. Enabled as a low-trust EKF planar-velocity input by default. |
+| `/foot_odom` | Motor-validated commanded-stance odometry. Consecutive stance targets estimate motion; synchronized calibrated servo FK must track each sampled stance foot. Missing, stale, malformed, wrong-frame, excessive-rate, or excessive tracking error suppresses publication. Only planar velocity enters the EKF; bounded unsupported-axis covariance prevents world-scale RViz artifacts. |
 
-## Fused LaserScan Notes
+## Costmap LaserScan Sources
 
-`camera_depth_to_laserscan_launch.py` is a component/test launch. It
-currently builds `/fused/laserscan` from:
+Nav2 uses its standard multi-source obstacle-layer configuration. The LiDAR and
+camera are not merged into a synthetic scan:
 
-- `/camera/depth/image_raw` plus `/camera/depth/camera_info`, converted to `/camera/filtered_laserscan`
-- `/lidar/filtered_laserscan_no_downsample`
+- `/lidar/filtered_laserscan` is the required 360-degree marking and clearing
+  source for both costmaps. Its positive-infinity returns are valid clearing rays.
+- `/camera/filtered_laserscan` is an optional forward marking and clearing
+  source. It covers 58.4 degrees horizontally and uses NaN for unobserved bins,
+  so the camera cannot clear outside its field of view.
+- `/lidar/filtered_laserscan_no_downsample` goes directly to SLAM Toolbox and
+  is independent of camera availability or rate.
 
-The no-downsample LiDAR scan is used so the final scan has enough angular
-samples. The downsampled `/lidar/filtered_laserscan` topic is reserved for RF2O.
-
-Current defaults:
+Camera scan defaults:
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `output_topic` | `/fused/laserscan` | Final synthetic scan. |
-| `camera_scan_topic` | `/camera/filtered_laserscan` | Intermediate camera scan. |
-| `lidar_scan_topic` | `/lidar/filtered_laserscan_no_downsample` | Existing LiDAR scan consumed by fusion. |
+| `output_topic` | `/camera/filtered_laserscan` | Nav2 camera observation source. |
 | `processing_frame` | `base_frame` | Sampled depth pixels are transformed here before scan projection. |
-| `fused_scan_frame` | `base_frame` | Final fused scan frame. |
-| `angle_min` / `angle_max` | `-pi` / `pi` | Full-circle scan output. |
-| `range_max` | `3.0` | Depth camera points are capped at 3 m. |
-| `lidar_range_max` | `15.0` | Fused output range cap for LiDAR scan points. |
-| `min_z` / `max_z` | `-0.10` / `0.18` | Z slice applied in `processing_frame`. |
-| `camera_min_x` | `0.30` | Minimum forward x for depth-camera points in `processing_frame`; LiDAR fusion is not gated by this. |
-| `pixel_stride_x` / `pixel_stride_y` | `4` / `4` | Keep the nearest valid depth pixel in each 4x4 block before intrinsic and TF projection. |
-| `require_lidar_scan` | `true` | Wait for a timestamp-matched LiDAR scan before publishing fused output. |
+| `horizontal_fov` | 58.4 degrees | Input rays outside the declared horizontal field of view are rejected. |
+| `vertical_fov` | 45.5 degrees | Input rays outside the declared vertical field of view are rejected. |
+| `angle_min` / `angle_max` | -29.2 / 29.2 degrees | The output message contains only the camera sector. |
+| `range_min` / `range_max` | `0.30` / `3.0` m | Camera observation range. |
+| `min_z` / `max_z` | `-0.07` / `0.18` m | Height slice in `base_frame`; the lower bound excludes the nominal floor. |
+| `pixel_stride_x` / `pixel_stride_y` | `4` / `4` | Project the nearest valid depth pixel in each 4x4 block. |
 
-When `require_lidar_scan:=true`, fusion waits until a valid LiDAR scan is
-available instead of publishing camera-only scans during startup.
-If a live depth image contains no valid pixels, it is still converted into an
-empty all-infinity `/camera/filtered_laserscan` with the image timestamp. Fusion
-then combines that camera scan with the latest timestamp-compatible LiDAR scan,
-so temporary depth-camera no-return frames do not block `/fused/laserscan`.
+No-return and filtered camera bins are NaN. Nav2 configures the camera source with
+`inf_is_valid: false`; the LiDAR source remains available if camera data stops.
 
 ## Frame Notes
 
@@ -287,14 +281,14 @@ The current TF setup expects robot sensor frames such as:
 | `imu_link` | IMU frame. |
 
 The raw depth image normally arrives in `camera_depth_optical_frame`. The
-fusion path uses CameraInfo to back-project the nearest pixel from each block,
+camera scan converter uses CameraInfo to back-project the nearest pixel from each block,
 then uses TF2 to transform those sampled points into the configured
 `processing_frame`, which is `base_frame` by default, before applying the
 deployment-specific z/range bounds and projecting to LaserScan.
 
 ## Development Notes
 
-- Keep TF publishers running before debugging depth-image fusion or odometry.
+- Keep TF publishers running before debugging depth-image projection or odometry.
 - If a transform appears missing on startup, wait a moment and re-check with `tf2_echo`; some nodes may start before the TF buffer has received all frames.
 - Prefer launching `.py` launch files. Parameter YAML files are loaded by launch files or nodes.
 - Calibration and filtering values are still experimental. Re-check them on the actual robot before relying on mapping or navigation results.

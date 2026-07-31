@@ -233,6 +233,10 @@ def generate_launch_description():
                 'gait_state_stale_timeout': 1.0,
                 'motor_tracking_good_residual_m': 0.005,
                 'motor_tracking_reject_residual_m': 0.03,
+                'max_linear_speed_mps': 1.0,
+                'max_angular_speed_radps': 2.0,
+                'unobserved_pose_variance': 1.0,
+                'unobserved_twist_variance': 1.0,
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration("use_sim_time"),
                     value_type=bool,

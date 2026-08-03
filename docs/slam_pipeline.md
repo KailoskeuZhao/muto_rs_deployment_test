@@ -102,8 +102,8 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 ```
 
 This entry point owns hardware, TF, localization, mapping, and Nav2 only. The
-GPU perception/object command pipeline and frontier-exploration client are
-independent launches; neither is started implicitly.
+GPU perception/object command pipeline remains an independent launch. By
+default that command launch owns a frontier explorer process in cold idle.
 
 The launch combines minimum delays with observable readiness checks. A delay
 does not declare a stage ready; it only determines when that stage begins
@@ -143,11 +143,18 @@ ros2 launch muto_command_layer object_pipeline_launch.py
 ```
 
 That independent launch starts SAM2/YOLO, the object registry, VLM socket,
-`/find_object`, and `/go_to_object`. The latter consumes the Nav2
-`/navigate_to_pose` action started by this pipeline. For autonomous map
-exploration, start `frontier_exploration_launch.py` separately only after Nav2
-is active; do not run it concurrently with another navigation command client
-unless preemption is intentional.
+`/find_object`, `/find_something`, `/go_to_object`, `/explore`,
+`/explore_and_record`, and a cold-idle frontier explorer. `/find_something`
+composes registry lookup with the existing autonomous mission and cancels that
+mission when a newly confirmed static object matches.
+After frontier exhaustion, `/explore_and_record` may continue through
+costmap-reachable viewpoints until its 2-D model reaches the configured
+predicted observable free-space and boundary ratio. This estimate is based on
+occupancy-grid line of sight after successful Nav2 scans; camera frames, depth,
+detections, and registry growth do not gate completion.
+After Nav2 is active, call `/explore` with `data: true` to start autonomous map
+exploration and `data: false` to stop it. Do not run exploration concurrently
+with another navigation command client unless preemption is intentional.
 
 ## Layer-By-Layer Debug Startup
 
@@ -317,6 +324,20 @@ SLAM Toolbox consumes the full-resolution filtered LiDAR scan and the existing
 
 This launch is online mapping, not saved-map localization. Starting it creates
 or extends a map from the current run.
+
+When `muto_command_layer` is running alongside this pipeline, export the
+current occupancy map through its sanitized SLAM Toolbox wrapper:
+
+```bash
+ros2 service call /save_map slam_toolbox/srv/SaveMap \
+  "{name: {data: warehouse}}"
+```
+
+The default output prefix is `$HOME/.ros/maps/warehouse`; an empty request name
+uses `muto_map`. This writes the occupancy-map YAML and image used by Nav2's
+map server. It does not serialize the SLAM pose graph or change this pipeline
+into a saved-map localization launch. The checked-in mapper profile explicitly
+keeps `use_map_saver: true`, which owns `/slam_toolbox/save_map`.
 
 ## Nav2 Relationship
 

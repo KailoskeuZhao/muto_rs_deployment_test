@@ -37,6 +37,7 @@ class VlmSocketNode(Node):
         self._validate_parameters()
 
         self._state_lock = threading.Lock()
+        self._request_cancel_event = threading.Event()
         self._busy = False
         self._active_connection = None
         callback_group = ReentrantCallbackGroup()
@@ -134,18 +135,30 @@ class VlmSocketNode(Node):
                 self.get_logger().warning(
                     'Rejected VLM goal because another request is active')
                 return GoalResponse.REJECT
+            self._request_cancel_event.clear()
             self._busy = True
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, _goal_handle):
         """Accept cancellation and interrupt the active HTTP connection."""
+        self._request_cancel_event.set()
         self._close_active_connection()
         return CancelResponse.ACCEPT
 
     def _set_active_connection(self, connection):
         """Publish the current connection to the cancellation callback."""
+        close_immediately = False
         with self._state_lock:
-            self._active_connection = connection
+            if connection is not None and self._request_cancel_event.is_set():
+                close_immediately = True
+                self._active_connection = None
+            else:
+                self._active_connection = connection
+        if close_immediately:
+            try:
+                connection.close()
+            except OSError:
+                pass
 
     def _close_active_connection(self):
         """Best-effort interruption for a blocked HTTP request."""

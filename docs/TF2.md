@@ -346,9 +346,13 @@ It also requests the latest:
 global_frame <- base_frame
 ```
 
-to choose the robot-facing side of the object and construct a planar standoff
-pose. It publishes no TF edge. Object search and the VLM socket use registry
-metadata/images and do not query TF.
+to seed reachability from the robot's current cell. The command requests
+Nav2's master global costmap, uses its static, obstacle, footprint, and
+inflation result directly, searches outward around the object for a reachable
+cell at or beyond the configured radius, and orients that cell toward the
+centroid. TF does not choose the approach side. The command publishes no TF
+edge. Object search and the VLM socket use registry metadata/images and do not
+query TF.
 
 ## Pipeline Startup
 

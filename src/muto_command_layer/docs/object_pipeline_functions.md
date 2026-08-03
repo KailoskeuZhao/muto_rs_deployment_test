@@ -7,7 +7,7 @@ runtime contracts.
 
 ## Scope and process graph
 
-The launch starts five ROS nodes from four packages:
+The launch starts eight ROS nodes from five packages:
 
 ```text
 RGB + depth + CameraInfo + TF
@@ -24,12 +24,25 @@ RGB + depth + CameraInfo + TF
                |                             |
                v                             v
        object_search                     command_layer
-   registry + VLM selection         registry + TF + Nav2
+   registry + VLM selection    registry + TF + Nav2 + SLAM Toolbox
                |                             |
-               v                             v
-         /find_object                  /go_to_object
+               v                             +--> /go_to_object
+         /find_object                        +--> /save_map
+
+  active_object_search
+    /find_object + /explore_and_record + /sam2/stored_objects
+               |
+               v
+       /find_something
 
   vlm_socket provides /vlm/generate to object_search
+               and natural_language_command_router
+
+  natural_language_command_router
+    strict intent enum -> existing typed command interfaces
+               |
+               v
+      /natural_language_command
 ```
 
 The launch does **not** start the camera driver, TF publishers, Nav2, or a VLM
@@ -68,8 +81,9 @@ ros2 launch muto_command_layer object_pipeline_launch.py
 ```
 
 The Nav2 pipeline does not start the annotator, registry, VLM socket, or command
-layer. The object pipeline owns both `/find_object` and `/go_to_object`; its
-go-to-object command consumes the independent Nav2 `/navigate_to_pose` action.
+layer. The object pipeline owns `/find_object`, `/find_something`, and
+`/go_to_object`; its active-search and go-to-object commands consume the
+independent Nav2 stack through existing command actions.
 
 ## Functions enabled by the pipeline
 
@@ -241,7 +255,48 @@ Zero candidates is a successful no-match result. When metadata produces exactly
 one candidate, visual refinement is skipped and the description is based on
 registry metadata rather than image evidence.
 
-### 8. Navigate to and face a registered object
+### 8. Actively find a static object
+
+`/find_something` wires together `/find_object`, `/explore_and_record`, and the
+transient-local `/sam2/stored_objects` snapshot. It first searches without
+moving. If no registered object matches, it starts the normal exploration,
+eight-step scans, recording, and predicted-visibility mission. Each changed set
+of confirmed registry IDs triggers another `/find_object` query. A match
+cancels the mission and is returned as the existing `ObjectMatch` type.
+
+```bash
+ros2 action send_goal /find_something \
+  muto_command_layer/action/FindSomething \
+  "{prompt: 'find a red mug'}" --feedback
+```
+
+If the predictive mission completes first, the action performs a final query
+and returns a successful result with an empty match list. Re-observing an
+existing ID does not trigger another VLM query. The command assumes registered
+objects are static, does not pursue moving targets, and does not automatically
+approach a match.
+
+### 9. Explore and record with predicted visibility
+
+`/explore_and_record` alternates frontier navigation with eight-step,
+360-degree observation scans and registry checkpoints. When frontier
+exploration reports completion, the command snapshots the SLAM occupancy map
+and Nav2 global costmap, generates robot-reachable viewpoints, and continues
+scanning until its predicted observable free-space and occupied-boundary
+ratios reach `visibility_completion_ratio`.
+
+This completion value is a 2-D geometric estimate. After Nav2 reaches a
+viewpoint and completes the requested spin steps, the planner credits cells
+predicted visible by occupancy-grid line of sight. It does not validate RGB or
+depth delivery, detector execution, detections, or registry growth. The
+default `0.98` therefore means 98 percent of the planner's predicted coverable
+free and boundary cells, not measured camera coverage or detector recall.
+
+The prediction is consistent with the pipeline's static-object mission but
+does not establish that every static object was observed. Navigation failures
+discard the selected viewpoint without predicted-visibility credit.
+
+### 10. Navigate to and face a registered object
 
 The `/go_to_object` action accepts an exact persistent object ID:
 
@@ -252,20 +307,81 @@ ros2 action send_goal /go_to_object \
 ```
 
 The command node queries the registry, transforms the centroid into the Nav2
-global frame, reads the current robot pose from TF2, and creates a planar goal
-`approach_distance` metres from the object on the robot-facing side. The goal
-orientation faces the object. It then delegates planning, smoothing, collision
-checking, and execution to Nav2's `/navigate_to_pose` action.
+global frame, reads the current robot pose from TF2, and requests Nav2's master
+global costmap through `/global_costmap/get_costmap`. That costmap already
+contains Nav2's static, obstacle, and inflation layers. The command treats
+costs through `approach_maximum_cost` as traversable; its default of `252`
+blocks inscribed, lethal, and unknown cells. Starting at
+`max(approach_distance, approach_robot_radius)`, it searches outward around the
+object. The first costmap-resolution ring containing robot-reachable candidates
+is preferred; within that ring, the shortest reachable path wins. The
+resulting orientation faces the centroid.
 
 The selected pose is returned in action feedback/result and published with
 transient-local durability on `/object_navigation/target_pose` for RViz.
 Canceling `/go_to_object` forwards cancellation to its active Nav2 goal.
 
 This command approaches the stored centroid; it does not visually re-identify
-the object after arrival. An occupied or unreachable approach pose can still be
-rejected by Nav2.
+the object after arrival. It aborts before dispatch when no reachable approach
+cell exists. Nav2 still performs final planning and execution and can reject a
+cell if the costmap changes after the service snapshot.
 
-### 9. Use the VLM bridge directly
+### 11. Save the live occupancy map
+
+The command layer wraps SLAM Toolbox's `/slam_toolbox/save_map` service as
+`/save_map`:
+
+```bash
+ros2 service call /save_map slam_toolbox/srv/SaveMap \
+  "{name: {data: warehouse}}"
+```
+
+The request field is a basename, not a path. The wrapper trims whitespace,
+rejects path separators, traversal, and unsupported characters, then prefixes
+the configured `map_save_directory`. An empty request selects
+`default_map_name`. With the default empty directory parameter, output goes
+under `$HOME/.ros/maps`; the directory is created on demand. Custom directory
+components are restricted to a shell-safe ASCII subset because Humble's map
+saver invokes `map_saver_cli` through a system command.
+
+This is an occupancy-map export for later Nav2/map-server use. It does not
+serialize the SLAM Toolbox pose graph. The wrapper returns SLAM Toolbox's
+standard result code and reports failure when no map has been received, the
+underlying service is unavailable, or the bounded save timeout expires.
+
+### 12. Trigger typed commands through natural language
+
+The `/natural_language_command` action accepts one request such as `search the
+map for a red chair`, `go to the red chair`, `start exploring`, `run the
+mapping and recording mission`, `save the map as warehouse`, or `cancel the
+active command`.
+
+```bash
+ros2 action send_goal /natural_language_command \
+  muto_command_layer/action/NaturalLanguageCommand \
+  "{query: 'run exploration and record static objects'}" --feedback
+```
+
+The VLM is a classifier, not a ROS executor. It must return one strict JSON
+object whose command is one of `find_object`, `find_something`, `go_to_object`,
+`start_exploration`, `stop_exploration`, `explore_and_record`,
+`save_map`, `cancel_active_command`, or `unsupported`. The command router
+independently checks the exact object shape, argument types, and configured
+numeric bounds.
+It then dispatches only the corresponding compiled action or service client;
+model-provided ROS names, arbitrary parameters, and code cannot reach the ROS
+graph.
+
+Object descriptions sent to `go_to_object` are resolved through
+`/find_object`. Exactly one persistent registry ID must match before the router
+calls `/go_to_object`. This pipeline assumes mapped objects remain static.
+
+Registry-only `find_object` waits for its result. Active search, navigation,
+and explore-and-record return from the natural-language action after the typed
+child accepts the goal, while the router retains the child handle. A subsequent
+natural-language cancel can therefore stop the long-running command.
+
+### 13. Use the VLM bridge directly
 
 The launch also exposes the general `/vlm/generate` action. Other ROS nodes may
 send one ordered message containing text and/or JPEG parts and may optionally
@@ -280,8 +396,14 @@ or ROS parameters.
 
 | Name | Kind and type | Purpose |
 | --- | --- | --- |
+| `/natural_language_command` | Action: `muto_command_layer/action/NaturalLanguageCommand` | Validate one VLM-classified request and dispatch a fixed typed command. |
 | `/find_object` | Action: `muto_command_layer/action/FindObject` | Select registered objects from a natural-language prompt. |
+| `/find_something` | Action: `muto_command_layer/action/FindSomething` | Search the registry, then compose exploration and recording until a static-object match appears or predictive coverage completes. |
 | `/go_to_object` | Action: `muto_command_layer/action/GoToObject` | Approach and face one exact object ID through Nav2. |
+| `/global_costmap/get_costmap` | Service: `nav2_msgs/srv/GetCostmap` | Current Nav2 master costmap used for object approach and visibility traversal. |
+| `/explore_and_record` | Action: `muto_command_layer/action/ExploreAndRecord` | Alternate frontier exploration with eight-step scans, then pursue predicted 2-D visibility coverage and checkpoint static objects. |
+| `/explore` | Service: `std_srvs/srv/SetBool` | Start (`true`) or stop (`false`) Muto frontier exploration. |
+| `/save_map` | Service: `slam_toolbox/srv/SaveMap` | Save the live occupancy map beneath the configured output directory. |
 | `/vlm/generate` | Action: `muto_vlm_socket/action/GenerateVlm` | Ordered text/JPEG VLM request with optional structured output. |
 | `/sam2/get_stored_objects` | Service: `sam2_object_registry/srv/GetStoredObjects` | Query confirmed objects by exact ID and/or label. |
 | `/sam2/save_stored_objects` | Service: `std_srvs/srv/Trigger` | Atomically checkpoint the registry YAML. |
@@ -303,13 +425,19 @@ Topic and action names shown above are defaults. The endpoints routed through
 | Depth image, valid intrinsics, or depth-to-color TF | 2D outputs continue, but no instance point cloud or new 3D registry entries. |
 | TF into `target_frame` | The registry retries the exact observation time for a bounded window, then skips observations it still cannot transform. |
 | VLM endpoint or credential | `/find_object` fails; perception, registry queries, visualization, and `/go_to_object` remain usable. |
+| Nav2 global-costmap service | `/go_to_object` cannot select an approach cell and post-frontier predicted-visibility coverage cannot start; object search and registry functions remain usable. |
 | Nav2 or global/base TF | `/go_to_object` fails; perception, registry, and `/find_object` remain usable. |
+| Nav2 Spin behavior | `/explore_and_record` aborts before rotating; ordinary exploration and object commands remain available. |
+| Frontier control service | `/explore` fails; object perception and commands remain usable. |
+| SLAM Toolbox save-map service | `/save_map` fails; navigation and other command-layer functions remain usable. |
 | Stored candidate JPEGs | Metadata search works; ambiguous visual refinement normally aborts. |
 
 Each high-level action accepts only one active goal at a time and uses bounded
 dependency waits. `/find_object` and `/go_to_object` are separate servers, so
 one of each can be active concurrently. The VLM socket itself remains
-single-request.
+single-request. The natural-language router serializes interpretation and
+short operations, but releases its action after a long motion goal is accepted
+so a later natural-language cancel can be interpreted.
 
 ## Main launch controls
 
@@ -324,8 +452,16 @@ The top-level launch exposes the controls most likely to vary by deployment:
   `registry_tf_retry_rate`, and `target_frame`;
 - VLM: `vlm_params_file`, `vlm_action`, `vlm_base_url`, `vlm_wire_api`, and
   `vlm_model`; and
-- commands: `go_to_object_action`, `find_object_action`, `object_match_topic`,
-  `navigate_to_pose_action`, `robot_base_frame`, and `approach_distance`.
+- commands: `natural_language_command_action`,
+  `launch_natural_language_command`, `go_to_object_action`,
+  `find_object_action`, `object_match_topic`, `navigate_to_pose_action`,
+  `global_costmap_service`, `robot_base_frame`, `approach_distance`,
+  `approach_robot_radius`, `approach_start_snap_distance`,
+  `approach_maximum_cost`, `global_costmap_timeout`, `explore_service`,
+  `save_map_service`, `slam_toolbox_save_map_service`, `map_save_directory`,
+  `default_map_name`, `save_map_timeout`, `explore_and_record_action`,
+  `spin_action`, cycle timing, and
+  `launch_frontier_explorer`.
 
 Use `ros2 launch muto_command_layer object_pipeline_launch.py --show-args` for
 the complete argument list. Lower-level tuning such as point-cloud stride,

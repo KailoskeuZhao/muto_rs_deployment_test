@@ -49,6 +49,11 @@ def generate_launch_description():
         'config',
         'command_layer.yaml',
     )
+    default_frontier_params = os.path.join(
+        get_package_share_directory('muto_slam_mapping'),
+        'config',
+        'frontier_exploration_params.yaml',
+    )
 
     arguments = [
         DeclareLaunchArgument(
@@ -108,6 +113,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'registry_service',
             default_value='/sam2/get_stored_objects',
+        ),
+        DeclareLaunchArgument(
+            'registry_objects_topic',
+            default_value='/sam2/stored_objects',
         ),
         DeclareLaunchArgument(
             'registry_output_yaml',
@@ -176,6 +185,19 @@ def generate_launch_description():
             default_value='/find_object',
         ),
         DeclareLaunchArgument(
+            'find_something_action',
+            default_value='/find_something',
+        ),
+        DeclareLaunchArgument(
+            'launch_natural_language_command',
+            default_value='true',
+            description='Start the validated VLM command router.',
+        ),
+        DeclareLaunchArgument(
+            'natural_language_command_action',
+            default_value='/natural_language_command',
+        ),
+        DeclareLaunchArgument(
             'object_match_topic',
             default_value='/object_search/matches',
         ),
@@ -184,12 +206,124 @@ def generate_launch_description():
             default_value='/navigate_to_pose',
         ),
         DeclareLaunchArgument(
+            'global_costmap_service',
+            default_value='/global_costmap/get_costmap',
+        ),
+        DeclareLaunchArgument(
+            'global_costmap_timeout',
+            default_value='5.0',
+        ),
+        DeclareLaunchArgument(
             'robot_base_frame',
             default_value='base_frame',
         ),
         DeclareLaunchArgument(
             'approach_distance',
             default_value='0.75',
+        ),
+        DeclareLaunchArgument(
+            'approach_robot_radius',
+            default_value='0.16',
+        ),
+        DeclareLaunchArgument(
+            'approach_start_snap_distance',
+            default_value='0.5',
+        ),
+        DeclareLaunchArgument(
+            'approach_maximum_cost',
+            default_value='252',
+        ),
+        DeclareLaunchArgument(
+            'explore_service',
+            default_value='/explore',
+        ),
+        DeclareLaunchArgument(
+            'save_map_service',
+            default_value='/save_map',
+        ),
+        DeclareLaunchArgument(
+            'slam_toolbox_save_map_service',
+            default_value='/slam_toolbox/save_map',
+        ),
+        DeclareLaunchArgument(
+            'map_save_directory',
+            default_value='',
+        ),
+        DeclareLaunchArgument(
+            'default_map_name',
+            default_value='muto_map',
+        ),
+        DeclareLaunchArgument(
+            'save_map_timeout',
+            default_value='10.0',
+        ),
+        DeclareLaunchArgument(
+            'save_map_result_timeout',
+            default_value='15.0',
+        ),
+        DeclareLaunchArgument(
+            'explore_and_record_action',
+            default_value='/explore_and_record',
+        ),
+        DeclareLaunchArgument(
+            'frontier_control_service',
+            default_value='/control_exploration',
+        ),
+        DeclareLaunchArgument(
+            'spin_action',
+            default_value='/spin',
+        ),
+        DeclareLaunchArgument(
+            'registry_save_service',
+            default_value='/sam2/save_stored_objects',
+        ),
+        DeclareLaunchArgument(
+            'exploration_completion_topic',
+            default_value='/explore/exploration_complete',
+        ),
+        DeclareLaunchArgument(
+            'exploration_service_timeout',
+            default_value='5.0',
+        ),
+        DeclareLaunchArgument(
+            'program_endpoint_timeout',
+            default_value='5.0',
+        ),
+        DeclareLaunchArgument(
+            'exploration_cycle_duration',
+            default_value='10.0',
+        ),
+        DeclareLaunchArgument(
+            'observation_duration',
+            default_value='3.0',
+        ),
+        DeclareLaunchArgument(
+            'scan_step_count',
+            default_value='8',
+        ),
+        DeclareLaunchArgument(
+            'spin_time_allowance',
+            default_value='15.0',
+        ),
+        DeclareLaunchArgument(
+            'navigation_settle_time',
+            default_value='1.0',
+        ),
+        DeclareLaunchArgument(
+            'launch_frontier_explorer',
+            default_value='true',
+            description=(
+                'Start the Muto frontier explorer in command-controlled '
+                'cold idle.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'frontier_params_file',
+            default_value=default_frontier_params,
+        ),
+        DeclareLaunchArgument(
+            'frontier_log_level',
+            default_value='info',
         ),
     ]
 
@@ -222,6 +356,8 @@ def generate_launch_description():
                 'instance_pointcloud_topic'),
             'detections_topic': LaunchConfiguration('detections_topic'),
             'query_service': LaunchConfiguration('registry_service'),
+            'objects_topic': LaunchConfiguration('registry_objects_topic'),
+            'save_service': LaunchConfiguration('registry_save_service'),
             'output_yaml': LaunchConfiguration('registry_output_yaml'),
             'image_directory': LaunchConfiguration(
                 'registry_image_directory'),
@@ -255,11 +391,66 @@ def generate_launch_description():
             'registry_service': LaunchConfiguration('registry_service'),
             'navigate_to_pose_action': LaunchConfiguration(
                 'navigate_to_pose_action'),
+            'global_costmap_service': LaunchConfiguration(
+                'global_costmap_service'),
+            'global_costmap_timeout': LaunchConfiguration(
+                'global_costmap_timeout'),
             'global_frame': LaunchConfiguration('target_frame'),
             'robot_base_frame': LaunchConfiguration('robot_base_frame'),
             'approach_distance': LaunchConfiguration('approach_distance'),
+            'approach_robot_radius': LaunchConfiguration(
+                'approach_robot_radius'),
+            'approach_start_snap_distance': LaunchConfiguration(
+                'approach_start_snap_distance'),
+            'approach_maximum_cost': LaunchConfiguration(
+                'approach_maximum_cost'),
+            'explore_service': LaunchConfiguration('explore_service'),
+            'save_map_service': LaunchConfiguration('save_map_service'),
+            'slam_toolbox_save_map_service': LaunchConfiguration(
+                'slam_toolbox_save_map_service'),
+            'map_save_directory': LaunchConfiguration('map_save_directory'),
+            'default_map_name': LaunchConfiguration('default_map_name'),
+            'save_map_timeout': LaunchConfiguration('save_map_timeout'),
+            'save_map_result_timeout': LaunchConfiguration(
+                'save_map_result_timeout'),
+            'explore_and_record_action': LaunchConfiguration(
+                'explore_and_record_action'),
+            'frontier_control_service': LaunchConfiguration(
+                'frontier_control_service'),
+            'spin_action': LaunchConfiguration('spin_action'),
+            'registry_save_service': LaunchConfiguration(
+                'registry_save_service'),
+            'exploration_completion_topic': LaunchConfiguration(
+                'exploration_completion_topic'),
+            'exploration_service_timeout': LaunchConfiguration(
+                'exploration_service_timeout'),
+            'program_endpoint_timeout': LaunchConfiguration(
+                'program_endpoint_timeout'),
+            'exploration_cycle_duration': LaunchConfiguration(
+                'exploration_cycle_duration'),
+            'observation_duration': LaunchConfiguration(
+                'observation_duration'),
+            'scan_step_count': LaunchConfiguration('scan_step_count'),
+            'spin_time_allowance': LaunchConfiguration(
+                'spin_time_allowance'),
+            'navigation_settle_time': LaunchConfiguration(
+                'navigation_settle_time'),
+            'launch_frontier_explorer': LaunchConfiguration(
+                'launch_frontier_explorer'),
+            'frontier_params_file': LaunchConfiguration(
+                'frontier_params_file'),
+            'frontier_log_level': LaunchConfiguration(
+                'frontier_log_level'),
             'launch_object_search': 'true',
             'find_object_action': LaunchConfiguration('find_object_action'),
+            'launch_active_object_search': 'true',
+            'find_something_action': LaunchConfiguration(
+                'find_something_action'),
+            'registry_topic': LaunchConfiguration('registry_objects_topic'),
+            'launch_natural_language_command': LaunchConfiguration(
+                'launch_natural_language_command'),
+            'natural_language_command_action': LaunchConfiguration(
+                'natural_language_command_action'),
             'vlm_action': LaunchConfiguration('vlm_action'),
             'object_match_topic': LaunchConfiguration('object_match_topic'),
             'vlm_model': LaunchConfiguration('vlm_model'),

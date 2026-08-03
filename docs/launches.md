@@ -32,7 +32,7 @@ files invoke its installed `ekf_node`; this workspace does not keep
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
 | `muto_slam_mapping/launch/frontier_exploration_launch.py` | Starts the submodule's `frontier_explorer` with the Muto-specific map, costmap, TF, Nav2 action, QoS, and bounded-DP configuration. | Optional autonomous exploration client. Start only after mapping and Nav2 are ready; it is not included by the one-shot Nav2 launch. |
-| `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, VLM socket, go-to-object server, and natural-language object-search server. | Independent object/perception pipeline. It consumes camera/TF and delegates `/go_to_object` to an already-running Nav2 `/navigate_to_pose`; it is not included by the Nav2 launch. |
+| `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, VLM socket, typed object commands, validated natural-language router, and the Muto frontier explorer in cold idle. | Independent perception/command pipeline. `/natural_language_command` dispatches only the fixed typed command set; motion still delegates to already-running Nav2 actions. |
 | `yahboomcar_ctrl/launch/yahboomcar_joy_launch.py` | Starts `joy_node` and `yahboom_joy`. | Joystick teleop. |
 
 ## Main Ownership Graph
@@ -68,14 +68,12 @@ nav2_planner_controller_launch.py
   -> controller /cmd_vel_nav -> velocity_smoother -> /cmd_vel
   -> recovery behaviors -------------------------------> /cmd_vel
 
-frontier_exploration_launch.py                 (optional, separate process)
-  -> /map + local/global costmaps + TF
-  -> /navigate_to_pose
-
 object_pipeline_launch.py                      (independent process group)
   -> YOLO/SAM2 -> instance cloud -> object registry
   -> /find_object through /vlm/generate
   -> /go_to_object through Nav2 /navigate_to_pose
+  -> /natural_language_command -> validated typed command dispatch
+  -> cold-idle frontier explorer -> /explore -> /navigate_to_pose
 ```
 
 Only one node should publish dynamic `odom -> base_frame` at a time. In the
@@ -296,34 +294,56 @@ Expected high-level interfaces include:
 - `/sam2/get_stored_objects`
 - `/vlm/generate`
 - `/find_object`
+- `/find_something`
 - `/go_to_object`
+- `/explore`
+- `/explore_and_record`
 
 Detection, registry query, visualization, and `/find_object` can be diagnosed
 independently of Nav2. `/go_to_object` requires the separate
 `/navigate_to_pose` server and the complete `map -> base_frame` TF chain.
+`/find_something` first performs the same no-motion registry query, then uses
+the existing `/explore_and_record` action until a newly confirmed static object
+matches or predicted coverage completes.
 
 ### Frontier Exploration
 
-After mapping and Nav2 are active:
+The normal object-command launch already owns a cold-idle explorer. After
+mapping and Nav2 are active, start and stop it through the public command:
+
+```bash
+ros2 service call /explore std_srvs/srv/SetBool "{data: true}"
+ros2 service call /explore std_srvs/srv/SetBool "{data: false}"
+```
+
+The stop command enters cold idle and keeps the process reusable. To run the
+explorer independently instead, set `launch_frontier_explorer:=false` on the
+command launch, then use:
 
 ```bash
 ros2 launch muto_slam_mapping frontier_exploration_launch.py
-```
-
-The launch enables the package CLI control service by default. The
-`src/frontier_exploration` source is a Git submodule; deployment-specific
-parameters remain in
-`muto_slam_mapping/config/frontier_exploration_params.yaml`.
-
-```bash
 frontier_exploration_ctl stop
 frontier_exploration_ctl start
 frontier_exploration_ctl stop -q
 ```
 
-The Muto profile autostarts exploration. `stop` enters cold idle, `start`
-resumes after fresh map/costmap data arrive, and `stop -q` also terminates the
-explorer process without stopping the parent Nav2 pipeline.
+The standalone Muto wrapper autostarts exploration. Its `stop -q` option also
+terminates the explorer process without stopping the parent Nav2 pipeline.
+
+For command-layer-controlled exploration and object recording, use the
+`/explore_and_record` action. It periodically pauses frontier navigation, uses
+Nav2 `/spin` for eight 45-degree turns, dwells after every step while the
+existing perception pipeline records static objects, checkpoints the registry
+after the complete 360-degree scan, and resumes exploration. The action owns
+command-layer navigation until it succeeds, aborts, or is canceled.
+
+When frontier exploration reports completion, the action snapshots `/map` and
+Nav2's global costmap and visits viewpoints selected by a 2-D line-of-sight
+model. Its default `0.98` completion ratio is predicted observable free-space
+and occupied-boundary coverage. Successful navigation and spin steps receive
+the model's predicted visibility credit; RGB, depth, detector, and registry
+results are not coverage inputs. Treat this as a geometric mission-progress
+estimate, not measured camera coverage or proof that every object was seen.
 
 ### Joystick Teleop
 

@@ -7,8 +7,8 @@ by `sam2_image_annotator` and `sam2_object_registry`. It covers YOLO
 detection, SAM2 segmentation, RGB/depth geometry, the instance-marked point
 cloud, TF2 centroid localization, temporal confirmation, indexed object storage,
 RViz visualization, services, and YAML persistence. It also documents the
-independent `muto_command_layer` launch that adds VLM-based object selection and
-Nav2 go-to-object commands above the registry.
+independent `muto_command_layer` launch that adds VLM-based object selection,
+active object search, and Nav2 go-to-object commands above the registry.
 
 ## Static-Object Assumption
 
@@ -77,6 +77,9 @@ TF: color <- depth ---------> extrinsic transform                        |
                                                 services: query / save / clear
                          |
                          +-> object_search <-> /vlm/generate -> /find_object
+                         +-> active_object_search
+                         |     /find_object + /explore_and_record
+                         |                    -> /find_something
                          +-> command_layer -> /navigate_to_pose -> /go_to_object
 ```
 
@@ -553,9 +556,9 @@ confirmation normally.
 
 ## VLM Search And Object Navigation
 
-`muto_command_layer/launch/object_pipeline_launch.py` adds two independent
-action servers above the confirmed registry. These servers never consume
-tentative candidates.
+`muto_command_layer/launch/object_pipeline_launch.py` adds registry lookup,
+active search, and object-navigation actions above the confirmed registry.
+These actions never consume tentative candidates.
 
 ### Find an object from a prompt
 
@@ -588,6 +591,26 @@ trusted network, VPN, or secure tunnel, or switch to HTTPS. Top-level launch
 arguments for provider URL, protocol, and model override the corresponding file
 values and currently default to the same tested profile.
 
+### Actively search for an object
+
+```bash
+ros2 action send_goal /find_something \
+  muto_command_layer/action/FindSomething \
+  "{prompt: 'find the red cup'}" --feedback
+```
+
+This action first calls `/find_object` without moving. If no confirmed object
+matches, it starts the existing `/explore_and_record` mission. A changed set of
+confirmed IDs on `/sam2/stored_objects` triggers another registry/VLM lookup.
+When a match appears, the action cancels exploration and returns the existing
+`ObjectMatch` records. If the predictive visibility mission completes first,
+it makes a final query and returns a successful no-match result.
+
+This is orchestration over the existing static-object pipeline. It does not add
+another detector, does not track moving targets, and does not automatically
+approach a match. Repeated observations of the same confirmed ID do not trigger
+additional VLM calls.
+
 ### Approach an exact stored object
 
 ```bash
@@ -598,9 +621,10 @@ ros2 action send_goal /go_to_object \
 
 The command node performs an exact registry-name lookup, transforms the stored
 centroid into the configured global frame when necessary, reads the current
-robot pose through TF2, and builds a planar pose `0.75 m` from the object that
-faces its centroid. It publishes the computed pose on the transient-local
-`/object_navigation/target_pose` topic and delegates execution to Nav2
+robot pose through TF2, and requests Nav2's current master global costmap. It
+selects a robot-reachable costmap cell on or beyond the `0.75 m` approach ring
+and sets its yaw toward the centroid. It publishes the computed pose on the
+transient-local `/object_navigation/target_pose` topic and delegates execution to Nav2
 `/navigate_to_pose`. Cancellation is forwarded to the active Nav2 goal.
 
 The persistent `StoredObject.name`, such as `chair_2`, is the command ID. A
@@ -614,14 +638,17 @@ occupied or unreachable approach pose.
 | --- | --- | --- |
 | `/vlm/generate` | `muto_vlm_socket/action/GenerateVlm` | General ordered text/JPEG VLM action with optional structured output. |
 | `/find_object` | `muto_command_layer/action/FindObject` | Natural-language selection of confirmed registry IDs. |
+| `/find_something` | `muto_command_layer/action/FindSomething` | Compose registry lookup with exploration and recording until a static-object match appears or predictive coverage completes. |
 | `/object_search/matches` | `muto_command_layer/msg/ObjectMatch` | One publication for each final match and description. |
 | `/go_to_object` | `muto_command_layer/action/GoToObject` | Approach and face one exact confirmed object. |
-| `/object_navigation/target_pose` | `geometry_msgs/msg/PoseStamped` | Latest generated Nav2 standoff pose. |
+| `/global_costmap/get_costmap` | `nav2_msgs/srv/GetCostmap` | Current Nav2 master costmap used for approach and visibility traversal. |
+| `/object_navigation/target_pose` | `geometry_msgs/msg/PoseStamped` | Latest global-costmap-selected Nav2 object approach pose. |
 
 The object launch is not owned by the Nav2 launch. `/find_object` needs the
-registry and VLM provider; `/go_to_object` needs the registry, Nav2 action, and
-map TF. A failure in one higher-level command does not stop image annotation or
-registry services.
+registry and VLM provider; `/find_something` additionally needs the existing
+explore-and-record dependencies; `/go_to_object` needs the registry, Nav2
+global costmap service and navigation action, and map TF. A failure in one
+higher-level command does not stop image annotation or registry services.
 
 ## YAML Persistence
 
@@ -884,6 +911,7 @@ ros2 param get /object_registry target_frame
 ros2 param get /object_registry confirmation_min_average_confidence
 ros2 action info /vlm/generate
 ros2 action info /find_object
+ros2 action info /find_something
 ros2 action info /go_to_object
 ros2 topic echo /object_search/matches --once
 ros2 topic echo /object_navigation/target_pose --once

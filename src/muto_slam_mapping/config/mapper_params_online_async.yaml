@@ -7,6 +7,9 @@ slam_toolbox:
     scan_topic: /lidar/filtered_laserscan_no_downsample
 
     mode: mapping
+    # Required by muto_command_layer's /save_map wrapper. This creates the
+    # canonical /slam_toolbox/save_map occupancy-map service.
+    use_map_saver: true
 
     resolution: 0.04
     # Async mode should retain only the newest scan while waiting for odom TF.

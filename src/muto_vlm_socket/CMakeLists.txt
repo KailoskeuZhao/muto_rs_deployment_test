@@ -35,6 +35,10 @@ if(BUILD_TESTING)
     test/test_vlm_socket_protocol.py
     TIMEOUT 30
   )
+  ament_add_pytest_test(test_vlm_socket_node_concurrency
+    test/test_vlm_socket_node_concurrency.py
+    TIMEOUT 30
+  )
 
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

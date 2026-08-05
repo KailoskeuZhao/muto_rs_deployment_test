@@ -41,13 +41,18 @@ def generate_launch_description():
     )
     imu_calibration_sample_count_arg = DeclareLaunchArgument(
         "imu_calibration_sample_count",
-        default_value="1200",
+        default_value="300",
         description="Number of valid startup IMU samples used for bias/scale calibration.",
     )
     imu_calibration_max_reads_arg = DeclareLaunchArgument(
         "imu_calibration_max_reads",
-        default_value="3600",
+        default_value="600",
         description="Maximum startup IMU read attempts while collecting calibration samples.",
+    )
+    imu_calibration_timeout_sec_arg = DeclareLaunchArgument(
+        "imu_calibration_timeout_sec",
+        default_value="30.0",
+        description="Maximum wall-clock seconds spent on startup IMU calibration.",
     )
     lidar_scan_topic_arg = DeclareLaunchArgument(
         "lidar_scan_topic",
@@ -189,6 +194,10 @@ def generate_launch_description():
                 LaunchConfiguration("imu_calibration_max_reads"),
                 value_type=int,
             ),
+            "imu_calibration_timeout_sec": ParameterValue(
+                LaunchConfiguration("imu_calibration_timeout_sec"),
+                value_type=float,
+            ),
         }],
     )
 
@@ -200,6 +209,7 @@ def generate_launch_description():
         cmd_vel_timeout_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,
+        imu_calibration_timeout_sec_arg,
         lidar_scan_topic_arg,
         camera_width_arg,
         camera_height_arg,

@@ -135,6 +135,9 @@ Useful top-level switches include:
 | `camera_scan_max_publish_rate` | `7.0` | Caps camera depth-to-scan processing. |
 | `locomotion_update_rate_hz` | `50.0` | Advances one custom-library gait phase per driver tick. |
 | `cmd_vel_timeout` | `0.5` | Returns the gait to standby when velocity commands stop. |
+| `imu_calibration_sample_count` | `300` | Valid stationary IMU samples targeted at startup. |
+| `imu_calibration_max_reads` | `600` | Maximum serial attempts allowed for that calibration. |
+| `imu_calibration_timeout_sec` | `30.0` | Hard wall-clock cap on startup calibration. |
 | `foot_motor_poll_rate` | `2.0` | Requests synchronized 18-joint feedback for foot validation; raise only during a controlled hardware benchmark. |
 
 If a prerequisite stage is disabled, any enabled downstream stage must already
@@ -457,11 +460,14 @@ ros2 lifecycle get /velocity_smoother
 
 Check, in order:
 
-1. `/lidar/raw_laserscan` is live and stamped near the ROS clock.
-2. Its `header.frame_id` is `lidar_frame` or has a valid transform to
+1. `/imu/data_raw` and `/imu/data_processed` are live after the bounded startup
+   calibration. A read warning distinguishes no controller bytes from bytes
+   that failed frame validation.
+2. `/lidar/raw_laserscan` is live and stamped near the ROS clock.
+3. Its `header.frame_id` is `lidar_frame` or has a valid transform to
    `base_frame`.
-3. `base_frame <- imu_link` exists.
-4. The LiDAR filter, RF2O, and EKF processes stay alive after launch.
+4. `base_frame <- imu_link` exists.
+5. The LiDAR filter, RF2O, and EKF processes stay alive after launch.
 
 ### Mapping readiness timeout
 

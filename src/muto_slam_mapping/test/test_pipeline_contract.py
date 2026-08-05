@@ -156,6 +156,9 @@ def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
     for defaults in (hardware_defaults, pipeline_defaults):
         assert float(defaults['locomotion_update_rate_hz']) == 50.0
         assert float(defaults['cmd_vel_timeout']) == 0.5
+        assert int(defaults['imu_calibration_sample_count']) == 300
+        assert int(defaults['imu_calibration_max_reads']) == 600
+        assert float(defaults['imu_calibration_timeout_sec']) == 30.0
         assert 'motor_validation_settle_time' not in defaults
         assert 'gait_state_publish_rate_hz' not in defaults
 

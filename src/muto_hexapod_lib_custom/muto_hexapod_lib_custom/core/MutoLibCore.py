@@ -43,6 +43,8 @@ class Muto:
         self._debug = bool(debug)
         self._serial_lock = threading.RLock()
         self._hexapod = Hexapod(self, gait_step_callback=gait_step_callback)
+        self.last_read_diagnostic = 'no serial read attempted'
+        self.last_response_type = None
 
     @property
     def commanded_gait_state(self):
@@ -146,6 +148,7 @@ class Muto:
 
     def _read(self, address, parameter, response_timeout):
         with self._serial_lock:
+            self.last_response_type = None
             self._reset_input_buffer()
             packet_length = 0x09
             checksum = 255 - (
@@ -168,11 +171,29 @@ class Muto:
             data = bytearray()
             while True:
                 data.extend(self._read_available())
-                payload = self._extract_payload(bytes(data), address)
+                payload = self._extract_payload(
+                    bytes(data), address, expected_payload_length=parameter)
                 if payload is not None:
+                    self.last_read_diagnostic = (
+                        f'ok: received {len(data)} bytes, response_type='
+                        f'0x{self.last_response_type:02x}'
+                    )
                     return payload
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
+                    if data:
+                        raw_preview = bytes(data[:64]).hex(' ')
+                        self.last_read_diagnostic = (
+                            f'received {len(data)} bytes within '
+                            f'{response_timeout:.3f}s but no valid frame for '
+                            f'address 0x{address:02x} with {parameter} payload '
+                            f'bytes; raw={raw_preview}'
+                        )
+                    else:
+                        self.last_read_diagnostic = (
+                            f'no bytes received for address 0x{address:02x} '
+                            f'within {response_timeout:.3f}s'
+                        )
                     return None
                 time.sleep(min(0.001, remaining))
 
@@ -190,7 +211,9 @@ class Muto:
             waiting = waiting()
         return bytes(self.ser.read(waiting)) if waiting else b''
 
-    def _extract_payload(self, data, expected_address):
+    def _extract_payload(
+        self, data, expected_address, expected_payload_length=None
+    ):
         # Eight bytes is the shortest valid frame. Include the last possible
         # start offset so a minimal frame or a frame after leading noise is not
         # skipped.
@@ -206,14 +229,22 @@ class Muto:
             packet = data[start:end]
             if packet[-2:] != bytes(TRAILER):
                 continue
-            if packet[3] != READ_COMMAND:
-                continue
             if packet[4] != expected_address:
                 continue
             expected_checksum = 255 - sum(packet[2:-3]) % 256
             if packet[-3] != expected_checksum:
                 continue
             payload = packet[5:-3]
+            if (
+                expected_payload_length is not None and
+                len(payload) != expected_payload_length
+            ):
+                continue
+            # The vendor parser records the controller response type but does
+            # not require it to echo READ_COMMAND. Validate the address,
+            # payload length, checksum, and trailer instead of imposing an
+            # unverified firmware response-type convention.
+            self.last_response_type = packet[3]
             if self._debug:
                 print('receive:', list(packet))
             return payload

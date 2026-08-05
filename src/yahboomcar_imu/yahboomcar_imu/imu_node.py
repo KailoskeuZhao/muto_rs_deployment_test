@@ -8,8 +8,9 @@ DEFAULT_GYRO_LSB_PER_DPS = 16.4
 LSB_PER_DPS = DEFAULT_GYRO_LSB_PER_DPS
 GRAVITY_MPS2 = 9.80665
 DEFAULT_ACCEL_COUNTS_PER_G = 8500.0
-DEFAULT_CALIBRATION_SAMPLE_COUNT = 1200
-DEFAULT_CALIBRATION_MAX_READS = 3600
+DEFAULT_CALIBRATION_SAMPLE_COUNT = 300
+DEFAULT_CALIBRATION_MAX_READS = 600
+DEFAULT_CALIBRATION_TIMEOUT_SEC = 30.0
 DEFAULT_YAW_RATE_DEADBAND_RAD_S = 0.03
 ANGULAR_VELOCITY_COVARIANCE = 6.9e-6
 LINEAR_ACCELERATION_COVARIANCE = 5.1e-4
@@ -33,7 +34,11 @@ def set_magnetic_field_covariance(mag):
 def read_imu_raw(node, muto):
     data = muto.read_IMU_Raw()
     if data is None:
-        node.get_logger().warn("IMU raw read returned no data", throttle_duration_sec=5.0)
+        diagnostic = getattr(muto, "last_read_diagnostic", "no diagnostic available")
+        node.get_logger().warn(
+            f"IMU raw read returned no data: {diagnostic}",
+            throttle_duration_sec=5.0,
+        )
         return None
     if len(data) < 9:
         node.get_logger().warn(
@@ -43,10 +48,20 @@ def read_imu_raw(node, muto):
         return None
 
     try:
-        return tuple(float(value) for value in data[:9])
+        result = tuple(float(value) for value in data[:9])
     except (TypeError, ValueError) as exc:
         node.get_logger().warn(f"Invalid IMU raw data: {exc}", throttle_duration_sec=5.0)
         return None
+
+    response_type = getattr(muto, "last_response_type", None)
+    if response_type is not None and response_type != 0x02:
+        node.get_logger().warn(
+            "Accepted controller IMU response type "
+            f"0x{response_type:02x}; vendor protocol does not require a "
+            "READ_COMMAND echo",
+            throttle_duration_sec=60.0,
+        )
+    return result
 
 
 def trimmed_mean(values, trim_fraction=0.1):
@@ -106,6 +121,11 @@ class ImuPublisher:
                 "imu_calibration_max_reads", DEFAULT_CALIBRATION_MAX_READS
             ).value
         )
+        self.calibration_timeout_sec = float(
+            node.declare_parameter(
+                "imu_calibration_timeout_sec", DEFAULT_CALIBRATION_TIMEOUT_SEC
+            ).value
+        )
         self.calibration_read_interval = float(
             node.declare_parameter("imu_calibration_read_interval", 0.005).value
         )
@@ -147,6 +167,12 @@ class ImuPublisher:
                 "using sample count"
             )
             self.calibration_max_reads = self.calibration_sample_count
+        if self.calibration_timeout_sec <= 0.0:
+            self.node.get_logger().warn(
+                "imu_calibration_timeout_sec must be positive; using "
+                f"{DEFAULT_CALIBRATION_TIMEOUT_SEC:.1f}"
+            )
+            self.calibration_timeout_sec = DEFAULT_CALIBRATION_TIMEOUT_SEC
         if self.calibration_read_interval < 0.0:
             self.node.get_logger().warn(
                 "imu_calibration_read_interval must be non-negative; using 0.0"
@@ -169,23 +195,47 @@ class ImuPublisher:
         )
 
         samples = []
+        attempts = 0
+        started = time.monotonic()
+        deadline = started + self.calibration_timeout_sec
+        stop_reason = "maximum read attempts reached"
         for _ in range(self.calibration_max_reads):
+            if time.monotonic() >= deadline:
+                stop_reason = "wall-clock timeout reached"
+                break
+            attempts += 1
             raw = read_imu_raw(self.node, self.muto)
             if raw is not None:
                 samples.append(raw)
                 if len(samples) >= self.calibration_sample_count:
+                    stop_reason = "target sample count reached"
                     break
             if self.calibration_read_interval > 0.0:
-                time.sleep(self.calibration_read_interval)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    stop_reason = "wall-clock timeout reached"
+                    break
+                time.sleep(min(self.calibration_read_interval, remaining))
+
+        elapsed = time.monotonic() - started
 
         min_required_samples = max(10, self.calibration_sample_count // 2)
         if len(samples) < min_required_samples:
             self.node.get_logger().warn(
                 "IMU startup calibration skipped: collected "
-                f"{len(samples)} valid samples, need at least {min_required_samples}. "
+                f"{len(samples)} valid samples from {attempts} attempts in "
+                f"{elapsed:.2f} s, need at least {min_required_samples}; "
+                f"{stop_reason}. "
                 "Using configured IMU scale/bias parameters."
             )
             return
+
+        if len(samples) < self.calibration_sample_count:
+            self.node.get_logger().warn(
+                "IMU startup calibration proceeding with "
+                f"{len(samples)}/{self.calibration_sample_count} valid samples "
+                f"after {attempts} attempts in {elapsed:.2f} s; {stop_reason}"
+            )
 
         ax_values = [sample[0] for sample in samples]
         ay_values = [sample[1] for sample in samples]
@@ -237,7 +287,8 @@ class ImuPublisher:
 
         self.node.get_logger().info(
             "IMU startup calibration accepted: "
-            f"samples={len(samples)}, accel_counts_per_g={self.accel_counts_per_g:.2f}, "
+            f"samples={len(samples)}, attempts={attempts}, elapsed={elapsed:.2f}s, "
+            f"accel_counts_per_g={self.accel_counts_per_g:.2f}, "
             f"gyro_bias=({self.gyro_bias_x:.2f}, {self.gyro_bias_y:.2f}, "
             f"{self.gyro_bias_z:.2f}), gyro_stddev={gyro_stddev:.2f}, "
             f"accel_norm_stddev={accel_norm_stddev:.2f}"

@@ -44,12 +44,12 @@ class RecordingRLock:
         self.depth -= 1
 
 
-def response_packet(address, payload):
+def response_packet(address, payload, response_type=MutoLibCore.READ_COMMAND):
     payload = bytes(payload)
     packet_length = len(payload) + 8
     checksum = 255 - (
         packet_length
-        + MutoLibCore.READ_COMMAND
+        + response_type
         + address
         + sum(payload)
     ) % 256
@@ -57,7 +57,7 @@ def response_packet(address, payload):
         MutoLibCore.HEADER,
         MutoLibCore.DEVICE_ID,
         packet_length,
-        MutoLibCore.READ_COMMAND,
+        response_type,
         address,
         *payload,
         checksum,
@@ -250,7 +250,7 @@ def test_serial_read_returns_without_fixed_sleep_when_packet_is_ready(
     assert sleeps == []
 
 
-def test_response_parser_rejects_write_echoes():
+def test_response_parser_accepts_vendor_response_type_when_frame_is_valid():
     robot = Muto(serial_port=FakeSerial())
     payload = [0] * 18
     packet_length = len(payload) + 8
@@ -261,7 +261,7 @@ def test_response_parser_rejects_write_echoes():
         + address
         + sum(payload)
     ) % 256
-    write_echo = bytes([
+    vendor_type_packet = bytes([
         MutoLibCore.HEADER,
         MutoLibCore.DEVICE_ID,
         packet_length,
@@ -272,7 +272,37 @@ def test_response_parser_rejects_write_echoes():
         *MutoLibCore.TRAILER,
     ])
 
-    assert robot._extract_payload(write_echo, address) is None
+    assert robot._extract_payload(
+        vendor_type_packet,
+        address,
+        expected_payload_length=18,
+    ) == bytes(payload)
+    assert robot.last_response_type == MutoLibCore.WRITE_COMMAND
+
+
+def test_response_parser_rejects_wrong_payload_length():
+    robot = Muto(serial_port=FakeSerial())
+    packet = response_packet(
+        MutoLibCore.COMMANDS['IMU_RAW'], [0],
+        response_type=MutoLibCore.WRITE_COMMAND,
+    )
+
+    assert robot._extract_payload(
+        packet,
+        MutoLibCore.COMMANDS['IMU_RAW'],
+        expected_payload_length=18,
+    ) is None
+
+
+def test_failed_read_reports_whether_controller_returned_bytes(monkeypatch):
+    serial = FakeSerial()
+    robot = Muto(serial_port=serial)
+    timestamps = iter((0.0, 0.1))
+    monkeypatch.setattr(MutoLibCore.time, 'monotonic', lambda: next(timestamps))
+
+    assert robot.read_IMU_Raw() is None
+    assert robot.last_read_diagnostic == (
+        'no bytes received for address 0x61 within 0.050s')
 
 
 def test_read_imu_raw_decodes_big_endian_words(monkeypatch):

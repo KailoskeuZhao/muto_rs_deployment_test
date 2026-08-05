@@ -220,6 +220,21 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'imu_calibration_sample_count',
+            default_value='300',
+            description='Valid stationary IMU samples used for startup calibration.',
+        ),
+        DeclareLaunchArgument(
+            'imu_calibration_max_reads',
+            default_value='600',
+            description='Maximum serial read attempts during startup IMU calibration.',
+        ),
+        DeclareLaunchArgument(
+            'imu_calibration_timeout_sec',
+            default_value='30.0',
+            description='Maximum wall-clock duration of startup IMU calibration.',
+        ),
+        DeclareLaunchArgument(
             'launch_sensor_tf',
             default_value='true',
             description='Start static sensor TF publishers.',
@@ -375,6 +390,15 @@ def generate_launch_description():
                 ),
                 'cmd_vel_timeout': LaunchConfiguration(
                     'cmd_vel_timeout'
+                ),
+                'imu_calibration_sample_count': LaunchConfiguration(
+                    'imu_calibration_sample_count'
+                ),
+                'imu_calibration_max_reads': LaunchConfiguration(
+                    'imu_calibration_max_reads'
+                ),
+                'imu_calibration_timeout_sec': LaunchConfiguration(
+                    'imu_calibration_timeout_sec'
                 ),
             },
             condition=IfCondition(LaunchConfiguration('launch_hardware')),

@@ -128,6 +128,9 @@ phase loop and a 0.5 s command timeout. These are exposed as
 `locomotion_update_rate_hz` and `cmd_vel_timeout` by both the hardware and
 one-shot launches. Motor feedback never sleeps to settle inside the driver,
 because that process also owns the gait and IMU timers.
+Startup IMU calibration targets 300 valid samples, permits at most 600 serial
+attempts, and has a 30 s wall-clock limit; the same defaults are exposed by the
+hardware and one-shot launches.
 The top-level pipeline and localization launch also expose
 `foot_motor_poll_rate`, which remains at 2 Hz until higher feedback rates are
 validated on the controller.

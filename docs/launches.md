@@ -32,7 +32,8 @@ files invoke its installed `ekf_node`; this workspace does not keep
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
 | `muto_slam_mapping/launch/frontier_exploration_launch.py` | Starts the submodule's `frontier_explorer` with the Muto-specific map, costmap, TF, Nav2 action, QoS, and bounded-DP configuration. | Optional autonomous exploration client. Start only after mapping and Nav2 are ready; it is not included by the one-shot Nav2 launch. |
-| `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, VLM socket, typed object commands, validated natural-language router, and the Muto frontier explorer in cold idle. | Independent perception/command pipeline. `/natural_language_command` dispatches only the fixed typed command set; motion still delegates to already-running Nav2 actions. |
+| `muto_command_layer/launch/command_layer_launch.py` | Starts the lower object pipeline, typed object commands, validated natural-language router, and the Muto frontier explorer in cold idle. | Independent command stack. Motion delegates to already-running Nav2 actions. |
+| `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, and VLM socket. | Lower object-identification layer; it does not start command actions or exploration. |
 | `yahboomcar_ctrl/launch/yahboomcar_joy_launch.py` | Starts `joy_node` and `yahboom_joy`. | Joystick teleop. |
 
 ## Main Ownership Graph
@@ -68,9 +69,11 @@ nav2_planner_controller_launch.py
   -> controller /cmd_vel_nav -> velocity_smoother -> /cmd_vel
   -> recovery behaviors -------------------------------> /cmd_vel
 
-object_pipeline_launch.py                      (independent process group)
-  -> YOLO/SAM2 -> instance cloud -> object registry
-  -> /find_object through /vlm/generate
+command_layer_launch.py                       (independent process group)
+  -> object_pipeline_launch.py
+     -> YOLO/SAM2 -> instance cloud -> object registry
+     -> VLM socket -> /vlm/generate
+  -> /find_object and /find_something
   -> /go_to_object through Nav2 /navigate_to_pose
   -> /natural_language_command -> validated typed command dispatch
   -> cold-idle frontier explorer -> /explore -> /navigate_to_pose
@@ -155,11 +158,11 @@ Optionally start frontier exploration only after Nav2 is active:
 ros2 launch muto_slam_mapping frontier_exploration_launch.py
 ```
 
-Start the independent object pipeline in another terminal:
+Start the independent command stack in another terminal:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 The checked-in object-pipeline VLM profile uses a plain-HTTP provider. Keep it
@@ -283,7 +286,7 @@ Run this beside, not inside, the Nav2 pipeline:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 Expected high-level interfaces include:

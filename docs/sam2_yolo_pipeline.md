@@ -134,7 +134,7 @@ source /opt/ros/humble/setup.bash
 cd /opt/muto_rs_ws
 source install/setup.bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 This does not start the camera driver, TF publishers, SLAM, or Nav2. Run
@@ -556,7 +556,7 @@ confirmation normally.
 
 ## VLM Search And Object Navigation
 
-`muto_command_layer/launch/object_pipeline_launch.py` adds registry lookup,
+`muto_command_layer/launch/command_layer_launch.py` adds registry lookup,
 active search, and object-navigation actions above the confirmed registry.
 These actions never consume tentative candidates.
 

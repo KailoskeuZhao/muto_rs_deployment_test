@@ -1,6 +1,6 @@
 # Object pipeline functions
 
-`object_pipeline_launch.py` connects camera perception, 3D instance geometry,
+`command_layer_launch.py` connects camera perception, 3D instance geometry,
 the persistent object registry, a multimodal VLM bridge, and the command layer.
 This document describes the functions made available by that launch and their
 runtime contracts.
@@ -53,7 +53,7 @@ Start the complete object pipeline with:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 This command uses `config/object_pipeline_vlm.yaml`, whose checked-in profile
@@ -77,7 +77,7 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 
 # Terminal 2
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 The Nav2 pipeline does not start the annotator, registry, VLM socket, or command
@@ -216,7 +216,7 @@ Two complementary 3D views are available:
 
 For the registry view, add a `MarkerArray` display in RViz, select
 `/sam2/stored_object_markers`, and use `map` as the fixed frame when
-`target_frame:=map`. Marker snapshots are periodically republished, so RViz can
+`global_frame:=map`. Marker snapshots are periodically republished, so RViz can
 join after the object was registered.
 
 ### 7. Find stored objects using natural language and images
@@ -415,7 +415,7 @@ or ROS parameters.
 | `/sam2/instance_pointcloud` | Topic: `sensor_msgs/msg/PointCloud2` | Current per-instance masked 3D surfaces. |
 
 Topic and action names shown above are defaults. The endpoints routed through
-`object_pipeline_launch.py` can be renamed with launch arguments.
+`command_layer_launch.py` can be renamed with launch arguments.
 
 ## External requirements and degraded operation
 
@@ -449,11 +449,11 @@ The top-level launch exposes the controls most likely to vary by deployment:
   `detection_crop_jpeg_quality`, and `max_publish_rate`;
 - registry: `registry_output_yaml`, `registry_image_directory`,
   `registry_store_images`, `registry_tf_retry_window`,
-  `registry_tf_retry_rate`, and `target_frame`;
+  `registry_tf_retry_rate`, and `global_frame`;
 - VLM: `vlm_params_file`, `vlm_action`, `vlm_base_url`, `vlm_wire_api`, and
   `vlm_model`; and
 - commands: `natural_language_command_action`,
-  `launch_natural_language_command`, `go_to_object_action`,
+  `launch_natural_language_command`, `action_name`,
   `find_object_action`, `object_match_topic`, `navigate_to_pose_action`,
   `global_costmap_service`, `robot_base_frame`, `approach_distance`,
   `approach_robot_radius`, `approach_start_snap_distance`,
@@ -463,7 +463,7 @@ The top-level launch exposes the controls most likely to vary by deployment:
   `spin_action`, cycle timing, and
   `launch_frontier_explorer`.
 
-Use `ros2 launch muto_command_layer object_pipeline_launch.py --show-args` for
+Use `ros2 launch muto_command_layer command_layer_launch.py --show-args` for
 the complete argument list. Lower-level tuning such as point-cloud stride,
 mask trimming, registry confirmation thresholds, and spatial merge distance
 currently remains in the child package launch/configuration surfaces; it is not

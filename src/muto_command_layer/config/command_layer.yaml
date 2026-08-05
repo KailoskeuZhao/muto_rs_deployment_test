@@ -61,7 +61,7 @@ command_layer:
     visibility_maximum_cost: 252
     # Fallback clearance when the standalone planner has no Nav2 cost layer.
     visibility_robot_clearance: 0.22
-    visibility_candidate_spacing: 0.75
+    visibility_candidate_spacing: 0.5
     visibility_range: 2.5
     visibility_boundary_weight: 2.0
     visibility_nominal_linear_speed: 0.25

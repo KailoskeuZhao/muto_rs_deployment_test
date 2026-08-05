@@ -35,7 +35,7 @@ struct VisibilityPlannerConfig
   int occupied_threshold{65};
   int maximum_traversable_cost{252};
   double robot_clearance{0.22};
-  double candidate_spacing{0.75};
+  double candidate_spacing{0.5};
   double visibility_range{2.5};
   double boundary_weight{2.0};
   double nominal_linear_speed{0.25};

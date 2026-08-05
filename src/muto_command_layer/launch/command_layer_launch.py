@@ -2,11 +2,41 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+)
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def include_launch(package, filename, arguments):
+    """Include one launch file with isolated arguments and simulation time."""
+    source = PythonLaunchDescriptionSource(os.path.join(
+        get_package_share_directory(package),
+        'launch',
+        filename,
+    ))
+    return GroupAction(
+        scoped=True,
+        actions=[
+            SetParameter(
+                name='use_sim_time',
+                value=ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+            ),
+            IncludeLaunchDescription(
+                source,
+                launch_arguments=arguments.items(),
+            ),
+        ],
+    )
 
 
 def generate_launch_description():
@@ -20,6 +50,54 @@ def generate_launch_description():
         'config',
         'frontier_exploration_params.yaml',
     )
+    default_vlm_params = os.path.join(
+        get_package_share_directory('muto_command_layer'),
+        'config',
+        'object_pipeline_vlm.yaml',
+    )
+
+    object_pipeline = include_launch(
+        'muto_command_layer',
+        'object_pipeline_launch.py',
+        {
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'image_topic': LaunchConfiguration('image_topic'),
+            'depth_topic': LaunchConfiguration('depth_topic'),
+            'depth_camera_info_topic': LaunchConfiguration(
+                'depth_camera_info_topic'),
+            'color_camera_info_topic': LaunchConfiguration(
+                'color_camera_info_topic'),
+            'detections_topic': LaunchConfiguration('detections_topic'),
+            'instance_pointcloud_topic': LaunchConfiguration(
+                'instance_pointcloud_topic'),
+            'yolo_model': LaunchConfiguration('yolo_model'),
+            'yolo_device': LaunchConfiguration('yolo_device'),
+            'yolo_confidence': LaunchConfiguration('yolo_confidence'),
+            'detection_crop_jpeg_quality': LaunchConfiguration(
+                'detection_crop_jpeg_quality'),
+            'max_publish_rate': LaunchConfiguration('max_publish_rate'),
+            'registry_service': LaunchConfiguration('registry_service'),
+            'registry_objects_topic': LaunchConfiguration('registry_topic'),
+            'registry_save_service': LaunchConfiguration(
+                'registry_save_service'),
+            'registry_output_yaml': LaunchConfiguration(
+                'registry_output_yaml'),
+            'registry_image_directory': LaunchConfiguration(
+                'registry_image_directory'),
+            'registry_store_images': LaunchConfiguration(
+                'registry_store_images'),
+            'target_frame': LaunchConfiguration('global_frame'),
+            'registry_tf_retry_window': LaunchConfiguration(
+                'registry_tf_retry_window'),
+            'registry_tf_retry_rate': LaunchConfiguration(
+                'registry_tf_retry_rate'),
+            'vlm_params_file': LaunchConfiguration('vlm_params_file'),
+            'vlm_action': LaunchConfiguration('vlm_action'),
+            'vlm_base_url': LaunchConfiguration('vlm_base_url'),
+            'vlm_wire_api': LaunchConfiguration('vlm_wire_api'),
+            'vlm_model': LaunchConfiguration('vlm_model'),
+        },
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -31,6 +109,71 @@ def generate_launch_description():
             'use_sim_time',
             default_value='false',
             description='Use simulation clock if true.',
+        ),
+        DeclareLaunchArgument(
+            'image_topic',
+            default_value='/camera/color/image_raw',
+            description='RGB image consumed by YOLO and SAM 2.',
+        ),
+        DeclareLaunchArgument(
+            'depth_topic',
+            default_value='/camera/depth/image_raw',
+            description='Raw depth image used for instance point clouds.',
+        ),
+        DeclareLaunchArgument(
+            'depth_camera_info_topic',
+            default_value='/camera/depth/camera_info',
+        ),
+        DeclareLaunchArgument(
+            'color_camera_info_topic',
+            default_value='/camera/color/camera_info',
+        ),
+        DeclareLaunchArgument(
+            'detections_topic',
+            default_value='/sam2/detections',
+        ),
+        DeclareLaunchArgument(
+            'instance_pointcloud_topic',
+            default_value='/sam2/instance_pointcloud',
+        ),
+        DeclareLaunchArgument('yolo_model', default_value='yolo26m.pt'),
+        DeclareLaunchArgument('yolo_device', default_value='0'),
+        DeclareLaunchArgument('yolo_confidence', default_value='0.4'),
+        DeclareLaunchArgument(
+            'detection_crop_jpeg_quality',
+            default_value='90',
+        ),
+        DeclareLaunchArgument(
+            'max_publish_rate',
+            default_value='7.0',
+            description='Maximum YOLO/SAM processing start rate in Hz.',
+        ),
+        DeclareLaunchArgument('registry_output_yaml', default_value=''),
+        DeclareLaunchArgument('registry_image_directory', default_value=''),
+        DeclareLaunchArgument(
+            'registry_store_images',
+            default_value='true',
+        ),
+        DeclareLaunchArgument(
+            'registry_tf_retry_window',
+            default_value='1.0',
+        ),
+        DeclareLaunchArgument(
+            'registry_tf_retry_rate',
+            default_value='20.0',
+        ),
+        DeclareLaunchArgument(
+            'vlm_params_file',
+            default_value=default_vlm_params,
+        ),
+        DeclareLaunchArgument(
+            'vlm_base_url',
+            default_value='http://43.165.176.234:8080/',
+        ),
+        DeclareLaunchArgument(
+            'vlm_wire_api',
+            default_value='responses',
+            description='VLM protocol: responses or chat_completions.',
         ),
         DeclareLaunchArgument(
             'action_name',
@@ -269,8 +412,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'vlm_model',
-            default_value='',
-            description='Object-search VLM model; empty uses socket default.',
+            default_value='gpt-5.6-sol',
+            description='Model used by the VLM socket and object search.',
         ),
         DeclareLaunchArgument(
             'launch_natural_language_command',
@@ -282,6 +425,7 @@ def generate_launch_description():
             default_value='/natural_language_command',
             description='Public natural-language command action name.',
         ),
+        object_pipeline,
         Node(
             package='frontier_exploration_ros2',
             executable='frontier_explorer',

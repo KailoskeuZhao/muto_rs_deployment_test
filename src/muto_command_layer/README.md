@@ -9,16 +9,16 @@ interfaces.
 
 See [Object pipeline functions](docs/object_pipeline_functions.md) for the
 complete functional interface, runtime dependencies, operator commands, and
-degraded-operation behavior of `object_pipeline_launch.py`.
+degraded-operation behavior of `command_layer_launch.py`.
 
-## Complete object pipeline launch
+## Complete command-layer launch
 
-Start the SAM 2 image annotator, object registry, VLM socket, and command layer
-from one launch file:
+Start the command layer together with its SAM 2 image annotator, object
+registry, and VLM socket:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 Credentials remain environment-only. The launch shares the annotator detection
@@ -61,7 +61,7 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 
 # Terminal 2: perception, registry, VLM, and both object commands.
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 ## Explore command
@@ -225,10 +225,11 @@ cell if its costmap changes after the service snapshot.
 
 ## Launch and call
 
-When the registry and Nav2 are already running, the command layer can also be
-started by itself:
+The command-layer launch now owns its object-identification lower layer. Nav2
+must still be running separately before navigation commands can succeed:
 
 ```bash
+export HKU_API_KEY='your-key'
 ros2 launch muto_command_layer command_layer_launch.py
 ```
 
@@ -344,23 +345,13 @@ individually as `muto_command_layer/msg/ObjectMatch` on
 `/object_search/matches`. Each message contains a generated `query_id`, rank,
 batch total, exact registry ID, registry label, and VLM-produced description.
 
-Start the VLM socket alongside the command layer:
+The command-layer launch starts the VLM socket automatically. To run only the
+lower YOLO/SAM 2, registry, and VLM layer without command actions, launch:
 
 ```bash
 export HKU_API_KEY='your-key'
-vlm_share="$(ros2 pkg prefix muto_command_layer)/share/muto_command_layer"
-vlm_params="${vlm_share}/config/object_pipeline_vlm.yaml"
-ros2 launch muto_vlm_socket vlm_socket_launch.py \
-  params_file:="$vlm_params" \
-  base_url:=http://43.165.176.234:8080/ \
-  wire_api:=responses \
-  default_model:=gpt-5.6-sol
-ros2 launch muto_command_layer command_layer_launch.py
+ros2 launch muto_command_layer object_pipeline_launch.py
 ```
-
-The explicit provider arguments are required here because the lower-level
-`muto_vlm_socket` launch has independent generic defaults. Prefer
-`object_pipeline_launch.py` for the normal integrated deployment.
 
 Search using natural language and inspect the per-object publications:
 
@@ -435,7 +426,7 @@ returned ID when movement to the object is wanted.
 - `visibility_maximum_cost`: largest resampled Nav2 cost considered
   traversable; default `252`.
 - `visibility_candidate_spacing` and `visibility_range`: geometry used to
-  sample candidates and predict 2-D line-of-sight coverage; defaults `0.75`
+  sample candidates and predict 2-D line-of-sight coverage; defaults `0.5`
   and `2.5` metres. `visibility_robot_clearance` is the standalone fallback
   when no navigation-cost layer is supplied to the planner library.
 - `visibility_completion_ratio`: required predicted observable free-space and

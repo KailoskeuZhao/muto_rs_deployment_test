@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 #include "frontier_exploration_ros2/srv/control_exploration.hpp"
@@ -48,6 +49,35 @@ namespace muto_command_layer
 {
 
 using namespace std::chrono_literals;
+
+template<typename ResultT, typename = void>
+struct HasSpinErrorDetails : std::false_type {};
+
+template<typename ResultT>
+struct HasSpinErrorDetails<ResultT, std::void_t<
+    decltype(std::declval<const ResultT &>().error_code),
+    decltype(std::declval<const ResultT &>().error_msg),
+    decltype(ResultT::NONE)>>: std::true_type {};
+
+template<typename ResultT>
+bool spin_result_reports_failure(const ResultT & result)
+{
+  if constexpr (HasSpinErrorDetails<ResultT>::value) {
+    return result.error_code != ResultT::NONE;
+  }
+  return false;
+}
+
+template<typename ResultT>
+std::string spin_result_failure_message(const ResultT & result)
+{
+  if constexpr (HasSpinErrorDetails<ResultT>::value) {
+    if (!result.error_msg.empty()) {
+      return "Nav2 spin failed: " + result.error_msg;
+    }
+  }
+  return "Nav2 spin failed";
+}
 
 class CommandLayerNode : public rclcpp::Node
 {
@@ -344,7 +374,7 @@ private:
     declare_parameter<int64_t>("visibility_occupied_threshold", 65);
     declare_parameter<int64_t>("visibility_maximum_cost", 252);
     declare_parameter<double>("visibility_robot_clearance", 0.22);
-    declare_parameter<double>("visibility_candidate_spacing", 0.75);
+    declare_parameter<double>("visibility_candidate_spacing", 0.5);
     declare_parameter<double>("visibility_range", 2.5);
     declare_parameter<double>("visibility_boundary_weight", 2.0);
     declare_parameter<double>("visibility_nominal_linear_speed", 0.25);
@@ -1348,11 +1378,11 @@ private:
 
     const auto result = result_future.get();
     if (result.code != rclcpp_action::ResultCode::SUCCEEDED ||
-      !result.result || result.result->error_code != SpinAction::Result::NONE)
+      !result.result ||
+      (result.result && spin_result_reports_failure(*result.result)))
     {
-      error = result.result && !result.result->error_msg.empty() ?
-        "Nav2 spin failed: " + result.result->error_msg :
-        "Nav2 spin failed";
+      error = result.result ?
+        spin_result_failure_message(*result.result) : "Nav2 spin failed";
       return WaitStatus::timeout;
     }
     return WaitStatus::ready;

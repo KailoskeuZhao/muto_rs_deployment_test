@@ -135,15 +135,17 @@ Useful top-level switches include:
 If a prerequisite stage is disabled, any enabled downstream stage must already
 have equivalent topics and TF supplied externally.
 
-For a complete deployment with object commands, run a second terminal:
+For a complete deployment with object commands, run the command stack in a
+second terminal:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer object_pipeline_launch.py
+ros2 launch muto_command_layer command_layer_launch.py
 ```
 
-That independent launch starts SAM2/YOLO, the object registry, VLM socket,
-`/find_object`, `/find_something`, `/go_to_object`, `/explore`,
+The command-layer launch starts SAM2/YOLO, the object registry, and the VLM
+socket as its lower layer, together with `/find_object`,
+`/find_something`, `/go_to_object`, `/explore`,
 `/explore_and_record`, and a cold-idle frontier explorer. `/find_something`
 composes registry lookup with the existing autonomous mission and cancels that
 mission when a newly confirmed static object matches.
@@ -577,5 +579,6 @@ and `camera_depth_to_laserscan_node`.
 | `src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Normal localization layer. |
 | `src/yahboomcar_bringup/config/ekf_lidar_imu.yaml` | EKF frame and source configuration. |
 | `src/tf2_publisher/launch/all_tf2_publishers_launch.py` | Static sensor mounts. |
-| `src/muto_command_layer/launch/object_pipeline_launch.py` | Independent SAM2/registry/VLM/object-command startup. |
+| `src/muto_command_layer/launch/command_layer_launch.py` | Full command stack; includes the lower object pipeline. |
+| `src/muto_command_layer/launch/object_pipeline_launch.py` | Lower SAM2/registry/VLM startup only. |
 | `src/yahboomcar_description/README.md` | Reference-only Yahboom tutorial URDF boundary and footprint measurements. |

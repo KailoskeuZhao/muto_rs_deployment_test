@@ -114,6 +114,7 @@ class FootOdometryNode(Node):
         self.last_motor_stamp_sec = None
         self.last_motor_tracking_residual_m = None
         self.last_motor_gait_sequence = None
+        self.last_motor_gait_mode = None
         self.motor_tracking_accepted = False
         self.motor_future = None
         self.warned_motor_service = False
@@ -204,7 +205,7 @@ class FootOdometryNode(Node):
 
         self.last_mode = msg.mode
         motor_confidence = self.motor_tracking_confidence(
-            now, msg.sequence)
+            now, msg.sequence, msg.mode)
         if msg.mode == 'standby':
             self._set_zero_twist()
             self.geometry_confidence = 1.0
@@ -269,7 +270,7 @@ class FootOdometryNode(Node):
 
         try:
             data = json.loads(response.message)
-            residual_m, sequence = self.motor_tracking_residual(
+            residual_m, sequence, mode = self.motor_tracking_residual(
                 data, self.child_frame_id)
             sample_stamp_sec = self.motor_sample_stamp_sec(data)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -291,6 +292,7 @@ class FootOdometryNode(Node):
         self.last_motor_stamp_sec = sample_stamp_sec
         self.last_motor_tracking_residual_m = residual_m
         self.last_motor_gait_sequence = sequence
+        self.last_motor_gait_mode = mode
         self.motor_tracking_accepted = (
             residual_m <= self.motor_tracking_reject_residual_m)
         if not self.motor_tracking_accepted:
@@ -302,7 +304,7 @@ class FootOdometryNode(Node):
 
     @staticmethod
     def motor_tracking_residual(data, expected_frame_id=None):
-        """Return the worst synchronized stance-foot FK error and sequence."""
+        """Return worst synchronized stance-foot FK error, sequence and mode."""
         if data.get('angle_space') != (
                 'firmware_calibrated_logical_degrees'):
             raise ValueError('unexpected or missing motor angle space')
@@ -360,7 +362,10 @@ class FootOdometryNode(Node):
         sequence = int(gait_state.get('sequence'))
         if sequence < 0:
             raise ValueError('gait sequence must be non-negative')
-        return max(stance_errors_mm) * 0.001, sequence
+        mode = gait_state.get('mode')
+        if not isinstance(mode, str) or not mode:
+            raise ValueError('gait mode must be a non-empty string')
+        return max(stance_errors_mm) * 0.001, sequence, mode
 
     @staticmethod
     def motor_sample_stamp_sec(data):
@@ -377,11 +382,13 @@ class FootOdometryNode(Node):
             raise ValueError('invalid motor sample timestamp')
         return result
 
-    def motor_tracking_confidence(self, now, gait_sequence):
+    def motor_tracking_confidence(self, now, gait_sequence, gait_mode):
         if (not self.motor_tracking_accepted
                 or self.last_motor_stamp_sec is None):
             return None
         if int(gait_sequence) < self.last_motor_gait_sequence:
+            return None
+        if gait_mode != self.last_motor_gait_mode:
             return None
         motor_age = now.nanoseconds * 1e-9 - self.last_motor_stamp_sec
         if motor_age < -0.05 or motor_age > self.motor_stale_timeout:

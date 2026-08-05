@@ -175,15 +175,15 @@ def generate_launch_description():
         'rf2o_use_cmd_vel_gate',
         default_value='true',
         description=(
-            'Apply RF2O deadbands and jump caps per axis only when recent cmd_vel for '
-            'that axis is near zero. '
-            'Set false to always apply the filters.'
+            'Apply RF2O deadbands per axis only when recent cmd_vel for that axis is '
+            'near zero. Jump rejection remains active in every motion state. '
+            'Set false to always apply the deadbands.'
         ),
     )
     rf2o_cmd_vel_topic_arg = DeclareLaunchArgument(
         'rf2o_cmd_vel_topic',
         default_value='cmd_vel',
-        description='cmd_vel topic used to gate stationary RF2O filtering.',
+        description='cmd_vel topic used to gate stationary RF2O deadbands.',
     )
     rf2o_cmd_vel_timeout_arg = DeclareLaunchArgument(
         'rf2o_cmd_vel_timeout',

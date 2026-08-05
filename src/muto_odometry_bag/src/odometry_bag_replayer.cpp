@@ -42,6 +42,7 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "tf2_msgs/msg/tf_message.hpp"
 
 namespace
 {
@@ -50,6 +51,8 @@ constexpr char kScanTopic[] = "/lidar/raw_laserscan";
 constexpr char kScanType[] = "sensor_msgs/msg/LaserScan";
 constexpr char kImuTopic[] = "/imu/data_processed";
 constexpr char kImuType[] = "sensor_msgs/msg/Imu";
+constexpr char kRawImuTopic[] = "/imu/data_raw";
+constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
@@ -57,6 +60,12 @@ constexpr char kCmdVelTopic[] = "/cmd_vel";
 constexpr char kCmdVelType[] = "geometry_msgs/msg/Twist";
 constexpr char kMotorTopic[] = "/muto/measured_motor_state";
 constexpr char kMotorType[] = "std_msgs/msg/String";
+constexpr char kEventTopic[] = "/muto/odometry_test_event";
+constexpr char kEventType[] = "std_msgs/msg/String";
+constexpr char kMetadataTopic[] = "/muto/odometry_recording_metadata";
+constexpr char kMetadataType[] = "std_msgs/msg/String";
+constexpr char kTfStaticTopic[] = "/tf_static";
+constexpr char kTfStaticType[] = "tf2_msgs/msg/TFMessage";
 
 template<typename MessageT, typename = void>
 struct HasReceiveTimestamp : std::false_type {};
@@ -93,6 +102,10 @@ public:
       declare_parameter<double>("readiness_timeout_sec", 30.0);
     require_foot_inputs_ =
       declare_parameter<bool>("require_foot_inputs", true);
+    replay_processed_imu_ =
+      declare_parameter<bool>("replay_processed_imu", true);
+    replay_recorded_tf_static_ =
+      declare_parameter<bool>("replay_recorded_tf_static", false);
     motor_service_name_ =
       declare_parameter<std::string>("motor_service_name", "get_motor_angles");
 
@@ -123,11 +136,15 @@ public:
       rclcpp::QoS(rclcpp::KeepLast(20)).reliable().durability_volatile();
     const auto clock_qos =
       rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
+    const auto retained_qos =
+      rclcpp::QoS(rclcpp::KeepLast(100)).reliable().transient_local();
 
     scan_publisher_ =
       create_publisher<sensor_msgs::msg::LaserScan>(kScanTopic, scan_qos);
     imu_publisher_ =
       create_publisher<sensor_msgs::msg::Imu>(kImuTopic, reliable_qos);
+    raw_imu_publisher_ =
+      create_publisher<sensor_msgs::msg::Imu>(kRawImuTopic, reliable_qos);
     gait_publisher_ =
       create_publisher<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
       kGaitTopic, gait_qos);
@@ -135,6 +152,14 @@ public:
       create_publisher<geometry_msgs::msg::Twist>(kCmdVelTopic, reliable_qos);
     motor_publisher_ =
       create_publisher<std_msgs::msg::String>(kMotorTopic, motor_qos);
+    event_publisher_ =
+      create_publisher<std_msgs::msg::String>(kEventTopic, retained_qos);
+    metadata_publisher_ =
+      create_publisher<std_msgs::msg::String>(kMetadataTopic, retained_qos);
+    if (replay_recorded_tf_static_) {
+      tf_static_publisher_ =
+        create_publisher<tf2_msgs::msg::TFMessage>(kTfStaticTopic, retained_qos);
+    }
     clock_publisher_ =
       create_publisher<rosgraph_msgs::msg::Clock>("/clock", clock_qos);
 
@@ -211,6 +236,39 @@ private:
         "%s has no samples; RF2O deadband replay will assume stationary",
         kCmdVelTopic);
     }
+
+    const bool have_raw_imu = validate_optional_topic(
+      topics, message_counts, kRawImuTopic, kRawImuType);
+    if (!replay_processed_imu_ && !have_raw_imu) {
+      throw std::runtime_error(
+              "replay_processed_imu is false but /imu/data_raw is absent or empty");
+    }
+    validate_optional_topic(topics, message_counts, kEventTopic, kEventType);
+    validate_optional_topic(topics, message_counts, kMetadataTopic, kMetadataType);
+    const bool have_recorded_tf = validate_optional_topic(
+      topics, message_counts, kTfStaticTopic, kTfStaticType);
+    if (replay_recorded_tf_static_ && !have_recorded_tf) {
+      throw std::runtime_error(
+              "replay_recorded_tf_static is true but /tf_static is absent or empty");
+    }
+  }
+
+  static bool validate_optional_topic(
+    const std::map<std::string, std::string> & topics,
+    const std::map<std::string, std::uint64_t> & message_counts,
+    const std::string & name,
+    const std::string & type)
+  {
+    const auto found = topics.find(name);
+    if (found == topics.end()) {
+      return false;
+    }
+    if (found->second != type) {
+      throw std::runtime_error(
+              name + " has type " + found->second + ", expected " + type);
+    }
+    const auto count = message_counts.find(name);
+    return count != message_counts.end() && count->second > 0;
   }
 
   static void require_topic(
@@ -235,9 +293,12 @@ private:
 
   bool subscribers_ready() const
   {
+    const bool imu_ready = replay_processed_imu_ ?
+      imu_publisher_->get_subscription_count() > 0 :
+      raw_imu_publisher_->get_subscription_count() > 0;
     const bool base_ready =
       scan_publisher_->get_subscription_count() > 0 &&
-      imu_publisher_->get_subscription_count() > 0 &&
+      imu_ready &&
       cmd_vel_publisher_->get_subscription_count() > 0;
     return base_ready &&
            (!require_foot_inputs_ ||
@@ -315,7 +376,12 @@ private:
       scan_publisher_->publish(
         deserialize<sensor_msgs::msg::LaserScan>(bag_message));
     } else if (bag_message->topic_name == kImuTopic) {
-      imu_publisher_->publish(
+      if (replay_processed_imu_) {
+        imu_publisher_->publish(
+          deserialize<sensor_msgs::msg::Imu>(bag_message));
+      }
+    } else if (bag_message->topic_name == kRawImuTopic) {
+      raw_imu_publisher_->publish(
         deserialize<sensor_msgs::msg::Imu>(bag_message));
     } else if (bag_message->topic_name == kGaitTopic) {
       gait_publisher_->publish(
@@ -326,6 +392,17 @@ private:
         deserialize<geometry_msgs::msg::Twist>(bag_message));
     } else if (bag_message->topic_name == kMotorTopic) {
       update_motor_snapshot(bag_message);
+    } else if (bag_message->topic_name == kEventTopic) {
+      event_publisher_->publish(
+        deserialize<std_msgs::msg::String>(bag_message));
+    } else if (bag_message->topic_name == kMetadataTopic) {
+      metadata_publisher_->publish(
+        deserialize<std_msgs::msg::String>(bag_message));
+    } else if (bag_message->topic_name == kTfStaticTopic) {
+      if (replay_recorded_tf_static_) {
+        tf_static_publisher_->publish(
+          deserialize<tf2_msgs::msg::TFMessage>(bag_message));
+      }
     }
   }
 
@@ -346,6 +423,7 @@ private:
     rcutils_time_point_value_t first_timestamp = 0;
     auto wall_start = std::chrono::steady_clock::now();
     std::uint64_t published_count = 0;
+    bool recorded_tf_delivery_wait_done = false;
 
     try {
       while (!stop_requested_ && reader_->has_next()) {
@@ -383,6 +461,15 @@ private:
         if (bag_message->topic_name != kMotorTopic) {
           publish_source_message(bag_message);
         }
+        if (
+          bag_message->topic_name == kTfStaticTopic &&
+          replay_recorded_tf_static_ && !recorded_tf_delivery_wait_done)
+        {
+          const auto delivery_delay = std::chrono::milliseconds(50);
+          std::this_thread::sleep_for(delivery_delay);
+          wall_start += delivery_delay;
+          recorded_tf_delivery_wait_done = true;
+        }
         ++published_count;
       }
     } catch (const std::exception & error) {
@@ -399,6 +486,8 @@ private:
   double minimum_start_delay_sec_{0.5};
   double readiness_timeout_sec_{30.0};
   bool require_foot_inputs_{true};
+  bool replay_processed_imu_{true};
+  bool replay_recorded_tf_static_{false};
   std::string motor_service_name_;
   rcutils_time_point_value_t bootstrap_timestamp_{0};
 
@@ -412,11 +501,15 @@ private:
 
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr raw_imu_publisher_;
   rclcpp::Publisher<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr motor_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr event_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr metadata_publisher_;
+  rclcpp::Publisher<tf2_msgs::msg::TFMessage>::SharedPtr tf_static_publisher_;
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_publisher_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr motor_service_;
 };

@@ -20,18 +20,28 @@ During replay, the existing packages still perform every calculation:
 | --- | --- | --- |
 | `/lidar/raw_laserscan` | `sensor_msgs/msg/LaserScan` | Input to the existing LiDAR filter and RF2O |
 | `/imu/data_processed` | `sensor_msgs/msg/Imu` | Existing EKF IMU input |
+| `/imu/data_raw` | `sensor_msgs/msg/Imu` | Original IMU sample for later calibration and processing changes |
 | `/muto/commanded_gait_state` | `muto_hexapod_interfaces_custom/msg/CommandedGaitState` | Commanded stance/swing and foot targets |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Existing RF2O deadband gate input |
 | `/muto/measured_motor_state` | `std_msgs/msg/String` | Baggable representation of each successful `get_motor_angles` response |
+| `/muto/odometry_test_event` | `std_msgs/msg/String` | Timestamped JSON start/end and measured field-pose markers |
+| `/muto/odometry_recording_metadata` | `std_msgs/msg/String` | Recorder build git revision, dirty state, and bag schema |
+| `/tf_static` | `tf2_msgs/msg/TFMessage` | Exact static sensor geometry offered during recording |
 
 The recorder polls `get_motor_angles` at the same default 2 Hz rate used by
 foot odometry. This is an additional service read while recording.
 
 The source bag intentionally excludes `scan_odom_raw`, `scan_odom`,
 `foot_odom`, `odometry/filtered`, and dynamic `/tf`. Those are results under
-test and must be recomputed. Static sensor transforms come from the current
-`tf2_publisher` package during replay, so geometry fixes can be evaluated
-against the same recorded sensor data.
+test and must be recomputed. Static sensor transforms are captured for
+provenance. Replay uses the current `tf2_publisher` geometry by default so TF
+fixes can be evaluated against the same recorded sensor data; an explicit
+launch switch can instead replay the recorded `/tf_static` messages.
+
+The metadata message is written automatically when the recorder starts. Its
+git revision and dirty flag describe the source tree from which the recorder
+binary was most recently built. Rebuild the package before a field session so
+this identifies the code actually under test.
 
 The commanded gait state is not measured contact. Foot odometry still assumes
 that commanded stance feet are static in the world, with motor readback used
@@ -58,6 +68,24 @@ Inspect the source bag:
 ros2 bag info /data/bags/muto_odom_001
 ```
 
+## Mark measured field endpoints
+
+Publish an event after the robot is settled at each measured start or end
+pose. The bag receive timestamp is the event time, so the JSON does not need a
+ROS header. Keep angles in radians and identify the physical reference used to
+measure position:
+
+```bash
+ros2 topic pub --once /muto/odometry_test_event std_msgs/msg/String \
+  '{data: "{\"trial\":\"straight_forward_1m\",\"event\":\"end\",\"x_m\":0.987,\"y_m\":-0.014,\"yaw_rad\":0.021,\"accumulated_yaw_rad\":0.021,\"reference\":\"base_frame_floor_projection\"}"}'
+```
+
+Recommended keys are `trial`, `event`, `x_m`, `y_m`, `yaw_rad`,
+`accumulated_yaw_rad`, `reference`, `position_uncertainty_m`,
+`yaw_uncertainty_rad`, and an optional `note`. For a full turn, use a final
+`yaw_rad` near the starting heading but set `accumulated_yaw_rad` to
+`+6.283185` or `-6.283185`.
+
 ## Replay through the original stack
 
 Do not run the hardware pipeline in the same ROS domain during replay. The
@@ -70,6 +98,35 @@ ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
   playback_rate:=1.0 \
   launch_foot_odometry:=true
 ```
+
+The replayed test-event and recording-metadata topics are available to
+analysis tools. Raw IMU is also republished when present. To test a revised IMU
+processor, launch that processor separately and suppress the previously
+processed samples so it is the only publisher of `/imu/data_processed`:
+
+```bash
+ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
+  bag_path:=/data/bags/muto_odom_001 \
+  replay_processed_imu:=false
+```
+
+Start the revised processor before this replay command. In this mode the
+replayer requires both a non-empty `/imu/data_raw` recording and a live raw-IMU
+subscriber before playback begins.
+
+To reproduce the exact recorded static transforms instead of testing with the
+current transform publishers:
+
+```bash
+ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
+  bag_path:=/data/bags/muto_odom_001 \
+  replay_recorded_tf_static:=true
+```
+
+This disables the current static TF launch for that replay, preventing two
+publishers from claiming the same sensor transforms. Older source bags remain
+replayable with the default current-TF mode; recorded-TF mode requires a
+non-empty `/tf_static` topic.
 
 The replay node waits for the original LiDAR, IMU, command, and optional foot
 consumers before releasing the first message. It publishes `/clock`, and all
@@ -115,7 +172,8 @@ output-only recorder in another terminal:
 ```bash
 ros2 bag record -o /data/bags/muto_odom_001_results \
   /scan_odom_raw /scan_odom /foot_odom /odometry/lidar_imu \
-  /odometry/filtered /tf
+  /odometry/filtered /tf /muto/odometry_test_event \
+  /muto/odometry_recording_metadata
 ```
 
 This package follows the ROS 2 Humble

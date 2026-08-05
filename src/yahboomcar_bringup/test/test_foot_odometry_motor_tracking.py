@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from builtin_interfaces.msg import Time
 from muto_hexapod_interfaces_custom.msg import CommandedGaitState
 from muto_hexapod_lib_custom.core.base import point3d
@@ -57,12 +59,13 @@ def test_calibrated_fk_tracks_generated_stance_targets():
     state = moving_state()
     payload = motor_payload(state, command_angles_for_state(state))
 
-    residual_m, sequence = FootOdometryNode.motor_tracking_residual(
+    residual_m, sequence, mode = FootOdometryNode.motor_tracking_residual(
         payload, 'base_frame')
 
     assert sum(state.commanded_stance) == 3
     assert residual_m < 0.005
     assert sequence == state.sequence
+    assert mode == state.mode
 
 
 def test_one_bad_stance_leg_exceeds_rejection_threshold():
@@ -71,7 +74,7 @@ def test_one_bad_stance_leg_exceeds_rejection_threshold():
     stance_index = state.commanded_stance.index(True)
     payload['angles'][stance_index * 3] = 80
 
-    residual_m, _ = FootOdometryNode.motor_tracking_residual(
+    residual_m, _, _ = FootOdometryNode.motor_tracking_residual(
         payload, 'base_frame')
 
     assert residual_m > 0.03
@@ -80,12 +83,12 @@ def test_one_bad_stance_leg_exceeds_rejection_threshold():
 def test_swing_leg_error_does_not_corrupt_stance_validation():
     state = moving_state()
     payload = motor_payload(state, command_angles_for_state(state))
-    baseline_m, _ = FootOdometryNode.motor_tracking_residual(
+    baseline_m, _, _ = FootOdometryNode.motor_tracking_residual(
         payload, 'base_frame')
     swing_index = state.commanded_stance.index(False)
     payload['angles'][swing_index * 3] = 80
 
-    residual_m, _ = FootOdometryNode.motor_tracking_residual(
+    residual_m, _, _ = FootOdometryNode.motor_tracking_residual(
         payload, 'base_frame')
 
     assert residual_m == pytest.approx(baseline_m)
@@ -114,7 +117,7 @@ def test_standby_calibration_pose_matches_nominal_geometry():
     state = GaitPlan().current_state
     payload = motor_payload(state, [0, -30, -15] * 6)
 
-    residual_m, _ = FootOdometryNode.motor_tracking_residual(
+    residual_m, _, _ = FootOdometryNode.motor_tracking_residual(
         payload, 'base_frame')
 
     assert tuple(state.foot_positions_mm) == tuple(k_standby)
@@ -130,6 +133,26 @@ def test_motor_source_timestamp_is_validated():
         FootOdometryNode.motor_sample_stamp_sec({
             'sample_stamp': {'sec': 12, 'nanosec': 1_000_000_000},
         })
+
+
+def test_motor_validation_cannot_cross_a_gait_mode_transition():
+    node = SimpleNamespace(
+        motor_tracking_accepted=True,
+        last_motor_stamp_sec=12.0,
+        last_motor_gait_sequence=5,
+        last_motor_gait_mode='move_x',
+        motor_stale_timeout=1.0,
+        last_motor_tracking_residual_m=0.004,
+        motor_tracking_good_residual_m=0.005,
+        motor_tracking_reject_residual_m=0.03,
+        clamp=FootOdometryNode.clamp,
+    )
+    now = SimpleNamespace(nanoseconds=12_500_000_000)
+
+    assert FootOdometryNode.motor_tracking_confidence(
+        node, now, 6, 'move_x') == 1.0
+    assert FootOdometryNode.motor_tracking_confidence(
+        node, now, 6, 'turn_z') is None
 
 
 class FakePublisher:

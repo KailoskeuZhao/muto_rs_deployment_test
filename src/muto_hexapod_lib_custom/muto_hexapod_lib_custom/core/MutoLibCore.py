@@ -9,7 +9,7 @@ import serial
 from .hexapod import Hexapod
 
 
-__version__ = '1.2.3-ros1'
+__version__ = '0.2.0'
 
 
 WRITE_COMMAND = 0x01
@@ -46,7 +46,8 @@ class Muto:
 
     @property
     def commanded_gait_state(self):
-        return self._hexapod.commanded_gait_state
+        with self._serial_lock:
+            return self._hexapod.commanded_gait_state
 
     def set_gait_step_callback(self, callback):
         self._hexapod.set_gait_step_callback(callback)
@@ -72,18 +73,45 @@ class Muto:
         self._set_servo_torque(COMMANDS['TORQUE_OFF'], servo_id)
 
     def move(self, x, y, z):
+        """Compatibility call that sends one complete gait cycle."""
+        x_level, y_level, z_level = self._normalize_motion_command(x, y, z)
+        with self._serial_lock:
+            return self._hexapod.move(x_level, y_level, z_level)
+
+    def set_motion_command(self, x, y, z):
+        """Latch motion levels for subsequent :meth:`tick_motion` calls."""
+        x_level, y_level, z_level = self._normalize_motion_command(x, y, z)
+        with self._serial_lock:
+            return self._hexapod.set_command(x_level, y_level, z_level)
+
+    def tick_motion(self):
+        """Advance the latched gait by one atomic six-leg trajectory phase."""
+        # The current ROS driver uses a single-threaded executor, but keep the
+        # six packets belonging to one phase together even if that changes.
+        # ``write()`` takes the same RLock for each nested packet write.
+        with self._serial_lock:
+            return self._hexapod.tick()
+
+    @staticmethod
+    def _normalize_motion_command(x, y, z):
         x_level = max(-30, min(30, int(x)))
         y_level = max(-30, min(30, int(y)))
         z_level = max(-20, min(20, int(z)))
         if z_level != 0 and abs(z_level) < 10:
             z_level = 10 if z_level > 0 else -10
-        self._hexapod.move(x_level, y_level, z_level)
+        return x_level, y_level, z_level
 
     def read_motor(self):
         payload = self._read(COMMANDS['MOTOR_ANGLE'], 18, 0.1)
         if payload is None or len(payload) < 18:
             return None
         return [struct.unpack('b', payload[index:index + 1])[0] for index in range(18)]
+
+    def read_motor_with_gait_state(self):
+        """Read joints and return the immutable gait state held for that read."""
+        with self._serial_lock:
+            state = self._hexapod.commanded_gait_state
+            return state, self.read_motor()
 
     def read_IMU_Raw(self):
         payload = self._read(COMMANDS['IMU_RAW'], 18, 0.05)
@@ -116,7 +144,7 @@ class Muto:
             print('send:', list(packet))
         time.sleep(0.001)
 
-    def _read(self, address, parameter, response_delay):
+    def _read(self, address, parameter, response_timeout):
         with self._serial_lock:
             self._reset_input_buffer()
             packet_length = 0x09
@@ -136,9 +164,17 @@ class Muto:
             self.ser.write(packet)
             if self._debug:
                 print('read:', list(packet))
-            time.sleep(response_delay)
-            data = self._read_available()
-        return self._extract_payload(data, address)
+            deadline = time.monotonic() + max(0.0, response_timeout)
+            data = bytearray()
+            while True:
+                data.extend(self._read_available())
+                payload = self._extract_payload(bytes(data), address)
+                if payload is not None:
+                    return payload
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                time.sleep(min(0.001, remaining))
 
     def _reset_input_buffer(self):
         if hasattr(self.ser, 'reset_input_buffer'):
@@ -155,7 +191,10 @@ class Muto:
         return bytes(self.ser.read(waiting)) if waiting else b''
 
     def _extract_payload(self, data, expected_address):
-        for start in range(max(0, len(data) - 8)):
+        # Eight bytes is the shortest valid frame. Include the last possible
+        # start offset so a minimal frame or a frame after leading noise is not
+        # skipped.
+        for start in range(max(0, len(data) - 7)):
             if data[start:start + 2] != bytes([HEADER, DEVICE_ID]):
                 continue
             if start + 3 > len(data):
@@ -166,6 +205,8 @@ class Muto:
                 continue
             packet = data[start:end]
             if packet[-2:] != bytes(TRAILER):
+                continue
+            if packet[3] != READ_COMMAND:
                 continue
             if packet[4] != expected_address:
                 continue

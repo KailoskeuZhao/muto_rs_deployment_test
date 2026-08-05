@@ -146,7 +146,11 @@ class GaitPlan:
     def current_state(self):
         return self._state_for(self._phase_index, self._current, True)
 
-    def configure(self, mode, x_level=0, y_level=0, z_level=0):
+    def configure(
+            self, mode, x_level=0, y_level=0, z_level=0,
+            preserve_phase=False):
+        previous_phase_index = self._phase_index
+        previous_cycle_length = self.cycle_length
         if mode == 'standby':
             targets = [list(k_standby)]
         elif mode == 'move_x':
@@ -164,7 +168,11 @@ class GaitPlan:
 
         self.mode = mode
         self._targets = targets
-        self._phase_index = 0
+        if (preserve_phase and previous_cycle_length > 1
+                and len(targets) > 1):
+            self._phase_index = previous_phase_index % len(targets)
+        else:
+            self._phase_index = 0
 
     def next_step(self):
         self._phase_index = (self._phase_index + 1) % self.cycle_length

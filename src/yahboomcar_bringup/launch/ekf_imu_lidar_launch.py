@@ -110,15 +110,15 @@ def generate_launch_description():
         "rf2o_use_cmd_vel_gate",
         default_value="true",
         description=(
-            "Apply RF2O deadbands and jump caps per axis only when recent cmd_vel for "
-            "that axis is near zero. "
-            "Set false to always apply the filters."
+            "Apply RF2O deadbands per axis only when recent cmd_vel for that axis is "
+            "near zero. Jump rejection remains active in every motion state. "
+            "Set false to always apply the deadbands."
         ),
     )
     rf2o_cmd_vel_topic_arg = DeclareLaunchArgument(
         "rf2o_cmd_vel_topic",
         default_value="cmd_vel",
-        description="cmd_vel topic used to gate stationary RF2O filtering.",
+        description="cmd_vel topic used to gate stationary RF2O deadbands.",
     )
     rf2o_cmd_vel_timeout_arg = DeclareLaunchArgument(
         "rf2o_cmd_vel_timeout",
@@ -142,6 +142,15 @@ def generate_launch_description():
             "Whether to launch motor-validated commanded-stance Muto foot "
             "odometry and fuse "
             "/foot_odom planar velocity into the EKF."
+        ),
+    )
+    foot_motor_poll_rate_arg = DeclareLaunchArgument(
+        "foot_motor_poll_rate",
+        default_value="2.0",
+        description=(
+            "Rate in Hz at which foot odometry requests all 18 measured "
+            "motor angles. Keep 2.0 until higher rates are validated on "
+            "hardware."
         ),
     )
     imu_only_arg = DeclareLaunchArgument(
@@ -185,6 +194,7 @@ def generate_launch_description():
         rf2o_cmd_vel_stationary_linear_threshold_arg,
         rf2o_cmd_vel_stationary_angular_threshold_arg,
         launch_foot_odometry_arg,
+        foot_motor_poll_rate_arg,
         imu_only_arg,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(lidar_odometry_launch),
@@ -228,7 +238,10 @@ def generate_launch_description():
                 'frame_id': 'odom',
                 'child_frame_id': 'base_frame',
                 'publish_tf': False,
-                'motor_poll_rate': 2.0,
+                'motor_poll_rate': ParameterValue(
+                    LaunchConfiguration("foot_motor_poll_rate"),
+                    value_type=float,
+                ),
                 'motor_stale_timeout': 1.0,
                 'gait_state_stale_timeout': 1.0,
                 'motor_tracking_good_residual_m': 0.005,

@@ -1,6 +1,6 @@
 # SLAM and Nav2 Pipeline
 
-Date: 2026-07-30
+Date: 2026-08-05
 
 This runbook describes the active ROS 2 Humble mapping and navigation pipeline
 for the Muto RS deployment on aarch64. It is derived from the current launch
@@ -37,6 +37,8 @@ depth image + depth CameraInfo
 
 Nav2 planner/path smoother/controller
   -> /cmd_vel_nav -> velocity smoother -> /cmd_vel
+  -> Muto desired command latch -> 50 Hz one-phase gait loop
+  -> /muto/commanded_gait_state -> /foot_odom -> EKF planar velocity overlay
 ```
 
 The LiDAR and camera enter Nav2 as separate standard obstacle-layer observation
@@ -131,6 +133,9 @@ Useful top-level switches include:
 | `launch_nav2` | `true` | Starts the current Nav2 server set. |
 | `launch_camera_obstacle_scan` | `true` | Starts the independent camera costmap source in the top-level pipeline. |
 | `camera_scan_max_publish_rate` | `7.0` | Caps camera depth-to-scan processing. |
+| `locomotion_update_rate_hz` | `50.0` | Advances one custom-library gait phase per driver tick. |
+| `cmd_vel_timeout` | `0.5` | Returns the gait to standby when velocity commands stop. |
+| `foot_motor_poll_rate` | `2.0` | Requests synchronized 18-joint feedback for foot validation; raise only during a controlled hardware benchmark. |
 
 If a prerequisite stage is disabled, any enabled downstream stage must already
 have equivalent topics and TF supplied externally.
@@ -252,6 +257,14 @@ The active LiDAR path is entirely `LaserScan` based:
 
 The EKF fuses RF2O planar position and yaw. The IMU contributes yaw rate only;
 it does not provide absolute orientation or translational odometry.
+
+The optional foot input is generated from a fixed-rate locomotion state stream.
+`/cmd_vel` only changes the desired command; the driver advances one trajectory
+phase per 50 Hz tick and publishes the phase after sending its motor targets.
+Nonzero command changes preserve the current phase, while a stale or zero
+command selects standby. Motor service reads use the gait target current during
+that serial read and add no artificial settling delay. The read still holds the
+shared serial bus, so slow responses can delay the gait and IMU timers.
 
 The deadband wrapper applies its translation and yaw guards per axis when
 recent `cmd_vel` indicates that axis is stationary. Standalone
@@ -389,6 +402,8 @@ rotation limits and the BT's bounded backup speed.
 | `/map` and `map -> odom` | SLAM Toolbox | Nav2 global planning and TF. |
 | `/cmd_vel_nav` | Nav2 controller | Nav2 velocity smoother. |
 | `/cmd_vel` | Nav2 velocity smoother or recovery behavior server | Muto driver and RF2O command-aware guard. |
+| `/muto/commanded_gait_state` | Fixed-rate Muto locomotion loop | Foot odometry estimator and motor-validation snapshot. |
+| `/foot_odom` | Commanded-stance estimator with motor FK validation | EKF planar velocity overlay. |
 
 ## Runtime Checks
 

@@ -17,6 +17,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -37,6 +38,9 @@ def generate_launch_description():
             launch_file('tf2_publisher', 'all_tf2_publishers_launch.py')
         ),
         launch_arguments={'publish_odom_tf': 'false'}.items(),
+        condition=UnlessCondition(
+            LaunchConfiguration('replay_recorded_tf_static')
+        ),
     )
     original_odometry = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -91,6 +95,23 @@ def generate_launch_description():
             default_value='error',
             description='ROS log level for the original RF2O process.',
         ),
+        DeclareLaunchArgument(
+            'replay_processed_imu',
+            default_value='true',
+            description=(
+                'Replay recorded /imu/data_processed. Set false when a new '
+                'processor will consume replayed /imu/data_raw and publish '
+                '/imu/data_processed.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'replay_recorded_tf_static',
+            default_value='false',
+            description=(
+                'Publish /tf_static captured in the source bag instead of '
+                'launching the current static sensor TF publishers.'
+            ),
+        ),
         sensor_tf,
         original_odometry,
         Node(
@@ -114,6 +135,14 @@ def generate_launch_description():
                 ),
                 'require_foot_inputs': ParameterValue(
                     LaunchConfiguration('launch_foot_odometry'),
+                    value_type=bool,
+                ),
+                'replay_processed_imu': ParameterValue(
+                    LaunchConfiguration('replay_processed_imu'),
+                    value_type=bool,
+                ),
+                'replay_recorded_tf_static': ParameterValue(
+                    LaunchConfiguration('replay_recorded_tf_static'),
                     value_type=bool,
                 ),
             }],

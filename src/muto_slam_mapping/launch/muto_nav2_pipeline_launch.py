@@ -143,6 +143,9 @@ def generate_launch_description():
             'launch_foot_odometry': LaunchConfiguration(
                 'launch_foot_odometry'
             ),
+            'foot_motor_poll_rate': LaunchConfiguration(
+                'foot_motor_poll_rate'
+            ),
             'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
         },
     )
@@ -201,10 +204,19 @@ def generate_launch_description():
             description='Start TG30 LiDAR, Orbbec camera, and Muto base driver.',
         ),
         DeclareLaunchArgument(
-            'gait_state_publish_rate_hz',
-            default_value='5.0',
+            'locomotion_update_rate_hz',
+            default_value='50.0',
             description=(
-                'Standby commanded-gait heartbeat rate for foot odometry.'
+                'Fixed locomotion trajectory phase rate used by the Muto '
+                'driver and foot odometry.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'cmd_vel_timeout',
+            default_value='0.5',
+            description=(
+                'Seconds without cmd_vel before locomotion returns to '
+                'standby.'
             ),
         ),
         DeclareLaunchArgument(
@@ -224,6 +236,15 @@ def generate_launch_description():
                 'Fuse motor-validated commanded-stance foot velocity into '
                 'the localization '
                 'EKF.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'foot_motor_poll_rate',
+            default_value='2.0',
+            description=(
+                'Rate in Hz for synchronized 18-joint motor feedback used '
+                'by foot odometry. Keep 2.0 until higher rates are '
+                'validated on hardware.'
             ),
         ),
         DeclareLaunchArgument(
@@ -349,8 +370,11 @@ def generate_launch_description():
             'yahboomcar_bringup',
             'muto_hardware_launch.py',
             {
-                'gait_state_publish_rate_hz': LaunchConfiguration(
-                    'gait_state_publish_rate_hz'
+                'locomotion_update_rate_hz': LaunchConfiguration(
+                    'locomotion_update_rate_hz'
+                ),
+                'cmd_vel_timeout': LaunchConfiguration(
+                    'cmd_vel_timeout'
                 ),
             },
             condition=IfCondition(LaunchConfiguration('launch_hardware')),

@@ -4,7 +4,6 @@ import math
 
 from .base import point3d
 from .config import (
-    k_standby,
     leg_joint1_2joint2,
     leg_joint2_2joint3,
     leg_joint3_2tip,
@@ -99,7 +98,10 @@ class RealLeg:
         self._mount_position = MOUNT_POSITIONS[leg_index]
         self._local_rotation = LOCAL_ROTATIONS[leg_index]
         self._world_rotation = WORLD_ROTATIONS[leg_index]
-        self._tip_position = point3d.from_tuple(k_standby[leg_index])
+        # Motor position is unknown until this process sends its first target.
+        # Assuming standby here caused the initial standby command to be
+        # optimized away even when the physical leg was left in another pose.
+        self._tip_position = None
 
     def translate_to_local(self, world_point):
         return self._local_rotation(world_point - self._mount_position)
@@ -130,13 +132,14 @@ class RealLeg:
         return (angle0, angle1, angle2)
 
     def move_tip(self, target_world):
-        if target_world == self._tip_position:
+        if (
+                self._tip_position is not None
+                and target_world == self._tip_position):
             return
         target_local = self.translate_to_local(target_world)
         angles = self.inverse_kinematics(target_local)
         servo_angles = (int(angles[0]), -int(angles[1]), int(angles[2]))
-        for part_index, angle in enumerate(servo_angles):
-            self._servo.set_angle(self._leg_index, part_index, angle)
+        self._servo.set_leg_angles(self._leg_index, servo_angles)
         self._tip_position = target_world
 
     @staticmethod

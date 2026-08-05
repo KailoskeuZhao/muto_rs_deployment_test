@@ -151,14 +151,14 @@ Current default filters:
 | --- | --- | --- |
 | `translation_deadband` | `0.0025` m | Suppress tiny per-update XY drift; at 16 Hz RF2O, this accepts roughly `>=4 cm/s`. |
 | `yaw_deadband` | `0.001` rad | Suppress tiny per-update yaw drift. |
-| `translation_jump_rejection_threshold` | `0.03` m | Reject RF2O XY updates above 3 cm per update while commanded translation is near zero. |
+| `translation_jump_rejection_threshold` | `0.03` m | Reject RF2O XY updates above 3 cm per update in every motion state. |
 | `max_translation_rate` | `0.0` m/s | Disabled so translation jump rejection uses only the per-update 3 cm cap. |
-| `yaw_jump_rejection_threshold` | `0.087266` rad | Reject RF2O yaw updates above 5 deg per update while commanded yaw is near zero. |
+| `yaw_jump_rejection_threshold` | `0.087266` rad | Reject RF2O yaw updates above 5 deg per update in every motion state. |
 | `max_yaw_rate` | `0.0` rad/s | Disabled so yaw jump rejection uses only the per-update 5 deg cap. |
-| `use_cmd_vel_gate` | `true` | Apply RF2O deadbands and jump caps per axis only when recent `cmd_vel` for that axis is near zero. |
+| `use_cmd_vel_gate` | `true` | Apply RF2O deadbands per axis only when recent `cmd_vel` for that axis is near zero; jump rejection is always active. |
 | `cmd_vel_timeout` | `0.5` s | If no fresh `cmd_vel` is seen, assume stationary and apply the filters. |
-| `cmd_vel_stationary_linear_threshold` | `0.03` m/s | Translation filters apply at or below this commanded planar speed. |
-| `cmd_vel_stationary_angular_threshold` | `0.03` rad/s | Yaw filters apply at or below this commanded yaw rate. |
+| `cmd_vel_stationary_linear_threshold` | `0.03` m/s | Translation deadbanding applies at or below this commanded planar speed. |
+| `cmd_vel_stationary_angular_threshold` | `0.03` rad/s | Yaw deadbanding applies at or below this commanded yaw rate. |
 
 In normal Nav2 operation, the controller publishes `/cmd_vel_nav` and the
 lifecycle-managed velocity smoother publishes the follow-path `/cmd_vel`
@@ -256,7 +256,11 @@ ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=fal
 `foot_odometry_node` is not contact-sensed foot odometry. Its motion
 estimate remains based on the host gait trajectory because the 2 Hz motor read
 service is too sparse to establish consecutive planted-foot transforms. The
-node:
+custom driver now latches `/cmd_vel` and advances exactly one trajectory phase
+per 50 Hz locomotion tick. It publishes gait state only after sending that
+phase's motor targets; changing a nonzero command preserves phase instead of
+restarting the 20-step cycle. A command older than 0.5 seconds actively returns
+the gait to standby. The node:
 
 - consumes `/muto/commanded_gait_state` from the custom Muto driver;
 - treats feet commanded in stance in two consecutive phases as stationary;
@@ -266,8 +270,12 @@ node:
   inferred rates above `1.0 m/s` or `2.0 rad/s`;
 - polls `get_motor_angles`, whose response pairs all 18 motor values with the
   gait target and stance mask that were current during that serial read;
+- samples without an artificial settle sleep; the serial read itself still
+  holds the shared bus and can delay the 50 Hz timers if its response is slow;
 - converts the calibrated logical motor angles through the custom library's
   forward kinematics and checks each sampled stance foot against its target;
+- invalidates feedback confidence when the gait mode changes, so a sample from
+  standby, translation, or turning cannot authorize a different mode;
 - publishes and integrates `/foot_odom` only while motor validation is fresh;
 - stamps each output with the source gait measurement time rather than callback
   processing time;
@@ -323,6 +331,70 @@ estimator therefore assumes those stance feet are static relative to the
 ground. Servo tracking can expose gross command, calibration, or actuator
 errors, but it still cannot measure ground contact, load, foot slip, or body
 motion caused by external forces.
+
+The first locomotion tick after driver startup commands the factory standby
+pose instead of assuming that the physical servos are already there. Support
+the robot and keep its legs clear when starting the hardware driver. Sensor
+reads share the same serial bus as gait writes; the custom protocol now polls
+until a complete response arrives and returns early rather than sleeping for a
+fixed 50 or 100 ms on every read. Each moving phase uses six vendor `LEG`
+packets instead of eighteen individual joint packets, reducing its serial
+traffic from 216 to 84 bytes. The motor read rate remains at the conservative
+2 Hz default until the controller's response latency and complete gait, IMU,
+and motor-read rates are measured on hardware. The localization and top-level
+pipeline launches expose this as `foot_motor_poll_rate`; each successful
+`get_motor_angles` response includes `read_duration_sec` so serial response
+latency can be measured directly.
+
+For the first supported-robot benchmark, keep the robot's legs clear and run
+the normal pipeline at 2 Hz before testing 10 Hz and then 20 Hz:
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py \
+  launch_mapping:=false launch_nav2:=false foot_motor_poll_rate:=2.0
+
+ros2 topic hz /muto/commanded_gait_state
+ros2 topic hz /imu/data_processed
+ros2 topic hz /foot_odom
+ros2 service call /get_motor_angles std_srvs/srv/Trigger "{}"
+```
+
+Repeat with `foot_motor_poll_rate:=10.0` and then `20.0`. Stop the test if the
+gait-state or IMU rate falls materially, motor reads time out, checksums fail,
+or FK residuals increase. Do not test a new serial baud rate in the same run.
+
+The offline byte budget at 115200 baud, including 8-N-1 framing, is:
+
+| Joint poll rate | Gait + IMU + joint traffic | UART utilization |
+| --- | ---: | ---: |
+| 2 Hz | 6,020 bytes/s | 52.3% |
+| 20 Hz | 6,650 bytes/s | 57.7% |
+| 50 Hz | 7,700 bytes/s | 66.8% |
+
+This shows that 20 Hz is possible by bandwidth, but it does not prove the
+controller can answer with sufficient latency. A synthetic delayed-reply test
+on the host measured a moving gait phase at about `6.7 ms`. With both sensor
+reads due, the combined callback time was about `17.6 ms` for a `5 ms` reply
+and `22.0 ms` for a `7 ms` reply. Therefore a slow or timed-out response can
+still delay the single-threaded 50 Hz gait loop even though average UART
+capacity is available. The real `read_duration_sec` distribution and topic
+rates are the acceptance criteria. The driver also logs `Locomotion tick
+delayed` or `Locomotion phase dispatch missed its budget` when the 20 ms target
+is violated.
+
+No source in the supplied vendor library defines a controller baud-change
+command or a supported rate other than 115200. Changing only the Jetson serial
+port to 1 Mbaud would therefore break communication. Keep 115200 unless
+Yahboom supplies a controller-side procedure or the controller firmware is
+available and explicitly confirms another rate.
+
+Higher-rate motor feedback alone does not make the current estimate measured
+foot odometry. A future measured-joint estimator must associate samples with
+all intervening gait phases, retain stance continuity when 20 Hz feedback skips
+50 Hz targets, and smooth the one-degree joint quantization over multiple
+samples or a gait cycle. Contact and slip would remain unobserved. Until that
+estimator is implemented and validated, foot-derived yaw rate is not fused;
+RF2O supplies yaw and the IMU supplies `wz`.
 
 `ekf_lidar_imu_with_foot.yaml` is loaded as an overlay on the primary
 `ekf_lidar_imu.yaml` configuration. `/foot_odom` contributes only planar body

@@ -35,6 +35,9 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "tf2_msgs/msg/tf_message.hpp"
+
+#include "recording_build_info.hpp"
 
 namespace
 {
@@ -43,6 +46,8 @@ constexpr char kScanTopic[] = "/lidar/raw_laserscan";
 constexpr char kScanType[] = "sensor_msgs/msg/LaserScan";
 constexpr char kImuTopic[] = "/imu/data_processed";
 constexpr char kImuType[] = "sensor_msgs/msg/Imu";
+constexpr char kRawImuTopic[] = "/imu/data_raw";
+constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
@@ -50,6 +55,12 @@ constexpr char kCmdVelTopic[] = "/cmd_vel";
 constexpr char kCmdVelType[] = "geometry_msgs/msg/Twist";
 constexpr char kMotorTopic[] = "/muto/measured_motor_state";
 constexpr char kMotorType[] = "std_msgs/msg/String";
+constexpr char kEventTopic[] = "/muto/odometry_test_event";
+constexpr char kEventType[] = "std_msgs/msg/String";
+constexpr char kMetadataTopic[] = "/muto/odometry_recording_metadata";
+constexpr char kMetadataType[] = "std_msgs/msg/String";
+constexpr char kTfStaticTopic[] = "/tf_static";
+constexpr char kTfStaticType[] = "tf2_msgs/msg/TFMessage";
 
 std::string timestamped_bag_name()
 {
@@ -99,9 +110,13 @@ public:
     writer_->open(absolute_path.string());
     register_topic(kScanTopic, kScanType);
     register_topic(kImuTopic, kImuType);
+    register_topic(kRawImuTopic, kRawImuType);
     register_topic(kGaitTopic, kGaitType);
     register_topic(kCmdVelTopic, kCmdVelType);
     register_topic(kMotorTopic, kMotorType);
+    register_topic(kEventTopic, kEventType);
+    register_topic(kMetadataTopic, kMetadataType);
+    register_topic(kTfStaticTopic, kTfStaticType);
 
     const auto scan_qos =
       rclcpp::QoS(rclcpp::KeepLast(20)).best_effort().durability_volatile();
@@ -111,6 +126,18 @@ public:
       rclcpp::QoS(rclcpp::KeepLast(100)).reliable().durability_volatile();
     const auto motor_qos =
       rclcpp::QoS(rclcpp::KeepLast(20)).reliable().durability_volatile();
+    const auto static_tf_qos =
+      rclcpp::QoS(rclcpp::KeepLast(100)).reliable().transient_local();
+
+    // Subscribe to latched static transforms before live sensor streams so
+    // the source bag normally contains its frame geometry before its first
+    // scan.
+    tf_static_subscription_ = create_subscription<tf2_msgs::msg::TFMessage>(
+      kTfStaticTopic,
+      static_tf_qos,
+      [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        write_serialized(std::move(message), kTfStaticTopic, kTfStaticType);
+      });
 
     scan_subscription_ = create_subscription<sensor_msgs::msg::LaserScan>(
       kScanTopic,
@@ -123,6 +150,12 @@ public:
       reliable_qos,
       [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
         write_serialized(std::move(message), kImuTopic, kImuType);
+      });
+    raw_imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
+      kRawImuTopic,
+      reliable_qos,
+      [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        write_serialized(std::move(message), kRawImuTopic, kRawImuType);
       });
     gait_subscription_ =
       create_subscription<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
@@ -137,14 +170,24 @@ public:
       [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
         write_serialized(std::move(message), kCmdVelTopic, kCmdVelType);
       });
+    event_subscription_ = create_subscription<std_msgs::msg::String>(
+      kEventTopic,
+      reliable_qos,
+      [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        write_serialized(std::move(message), kEventTopic, kEventType);
+      });
 
     motor_publisher_ =
       create_publisher<std_msgs::msg::String>(kMotorTopic, motor_qos);
+    metadata_publisher_ =
+      create_publisher<std_msgs::msg::String>(kMetadataTopic, static_tf_qos);
     motor_client_ =
       create_client<std_srvs::srv::Trigger>(motor_service_name_);
     motor_timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / motor_poll_rate_),
       std::bind(&OdometryBagRecorder::poll_motor_service, this));
+
+    record_build_metadata();
 
     RCLCPP_INFO(
       get_logger(),
@@ -189,6 +232,26 @@ private:
       RCLCPP_ERROR(
         get_logger(), "Failed writing %s: %s", topic.c_str(), error.what());
     }
+  }
+
+  void record_build_metadata()
+  {
+    std_msgs::msg::String metadata;
+    std::ostringstream json;
+    json << "{\"schema_version\":1,\"git_revision\":\""
+         << muto_odometry_bag_build::kGitRevision
+         << "\",\"git_dirty\":"
+         << (muto_odometry_bag_build::kGitDirty ? "true" : "false")
+         << ",\"tf_static_capture_enabled\":true}";
+    metadata.data = json.str();
+    const auto stamp = now();
+    writer_->write(metadata, kMetadataTopic, stamp);
+    ++message_count_;
+    metadata_publisher_->publish(metadata);
+    RCLCPP_INFO(
+      get_logger(), "Recording build metadata: git=%s dirty=%s",
+      muto_odometry_bag_build::kGitRevision,
+      muto_odometry_bag_build::kGitDirty ? "true" : "false");
   }
 
   void poll_motor_service()
@@ -247,12 +310,17 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr raw_imu_subscription_;
   rclcpp::Subscription<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
     cmd_vel_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr event_subscription_;
+  rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr
+    tf_static_subscription_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr motor_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr metadata_publisher_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr motor_client_;
   rclcpp::TimerBase::SharedPtr motor_timer_;
 };

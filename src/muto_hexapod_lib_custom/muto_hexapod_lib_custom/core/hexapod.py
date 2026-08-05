@@ -22,26 +22,46 @@ class Hexapod:
     def set_gait_step_callback(self, callback):
         self._gait_step_callback = callback
 
-    def move(self, x_level, y_level, z_level):
+    def set_command(self, x_level, y_level, z_level):
+        """Latch a desired motion command without advancing the gait."""
         mode, command_key = self._classify_command(x_level, y_level, z_level)
-        if command_key != self._command_key:
-            self._gait.configure(
-                mode,
-                x_level=x_level,
-                y_level=y_level,
-                z_level=z_level,
-            )
-            self._command_key = command_key
-        self._process_cycle()
+        if command_key == self._command_key:
+            return False
+        preserve_phase = (
+            self._command_key is not None
+            and self._gait.mode != 'standby'
+            and mode != 'standby'
+        )
+        self._gait.configure(
+            mode,
+            x_level=x_level,
+            y_level=y_level,
+            z_level=z_level,
+            preserve_phase=preserve_phase,
+        )
+        self._command_key = command_key
+        return True
+
+    def tick(self):
+        """Advance and command exactly one trajectory phase."""
+        complete, target_locations, state = self._gait.next_step()
+        for index, leg in enumerate(self._legs):
+            target = target_locations.get(index)
+            leg.move_tip(point3d(target.x, target.y, target.z))
+        self._notify_gait_step(state)
+        return complete, state
+
+    def move(self, x_level, y_level, z_level):
+        """Compatibility wrapper that emits one complete gait cycle."""
+        self.set_command(x_level, y_level, z_level)
+        return self._process_cycle()
 
     def _process_cycle(self):
         complete = False
+        state = None
         while not complete:
-            complete, target_locations, state = self._gait.next_step()
-            for index, leg in enumerate(self._legs):
-                target = target_locations.get(index)
-                leg.move_tip(point3d(target.x, target.y, target.z))
-            self._notify_gait_step(state)
+            complete, state = self.tick()
+        return state
 
     def _notify_gait_step(self, state):
         if self._gait_step_callback is None:

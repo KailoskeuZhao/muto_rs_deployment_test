@@ -23,11 +23,20 @@ def generate_launch_description():
         default_value="50.0",
         description="Processed/raw IMU publish rate in Hz.",
     )
-    gait_state_publish_rate_hz_arg = DeclareLaunchArgument(
-        "gait_state_publish_rate_hz",
-        default_value="5.0",
+    locomotion_update_rate_hz_arg = DeclareLaunchArgument(
+        "locomotion_update_rate_hz",
+        default_value="50.0",
         description=(
-            "Standby commanded-gait heartbeat rate used by foot odometry."
+            "Fixed rate that advances one locomotion trajectory phase and "
+            "publishes its commanded gait state."
+        ),
+    )
+    cmd_vel_timeout_arg = DeclareLaunchArgument(
+        "cmd_vel_timeout",
+        default_value="0.5",
+        description=(
+            "Seconds without cmd_vel before the locomotion loop actively "
+            "returns to standby. Set 0.0 to disable timeout handling."
         ),
     )
     imu_calibration_sample_count_arg = DeclareLaunchArgument(
@@ -152,8 +161,12 @@ def generate_launch_description():
         parameters=[{
             "gait_state_topic": "/muto/commanded_gait_state",
             "gait_state_frame_id": "base_frame",
-            "gait_state_publish_rate_hz": ParameterValue(
-                LaunchConfiguration("gait_state_publish_rate_hz"),
+            "locomotion_update_rate_hz": ParameterValue(
+                LaunchConfiguration("locomotion_update_rate_hz"),
+                value_type=float,
+            ),
+            "cmd_vel_timeout": ParameterValue(
+                LaunchConfiguration("cmd_vel_timeout"),
                 value_type=float,
             ),
             "imu_gyro_lsb_per_dps": ParameterValue(
@@ -183,7 +196,8 @@ def generate_launch_description():
         imu_gyro_lsb_per_dps_arg,
         imu_yaw_rate_deadband_rad_s_arg,
         imu_publish_rate_hz_arg,
-        gait_state_publish_rate_hz_arg,
+        locomotion_update_rate_hz_arg,
+        cmd_vel_timeout_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,
         lidar_scan_topic_arg,

@@ -99,7 +99,8 @@ public:
       get_logger(),
       "Filtering odometry %s -> %s with %.6f m translation and %.6f rad yaw deadbands; "
       "rejecting translation jumps above %.6f m and %.6f m/s, "
-      "yaw jumps above %.6f rad and %.6f rad/s; publish_tf=%s; cmd_vel_gate=%s",
+      "yaw jumps above %.6f rad and %.6f rad/s; publish_tf=%s; "
+      "deadband_cmd_vel_gate=%s",
       input_topic_.c_str(), output_topic_.c_str(), translation_deadband_, yaw_deadband_,
       translation_jump_rejection_threshold_, max_translation_rate_,
       yaw_jump_rejection_threshold_, max_yaw_rate_, publish_tf_ ? "true" : "false",
@@ -177,7 +178,7 @@ private:
     return (get_clock()->now() - last_cmd_vel_stamp_).seconds() <= cmd_vel_timeout_;
   }
 
-  bool shouldApplyTranslationFilters()
+  bool shouldApplyTranslationDeadband()
   {
     if (!use_cmd_vel_gate_) {
       return true;
@@ -190,7 +191,7 @@ private:
     return last_cmd_linear_ <= cmd_vel_stationary_linear_threshold_;
   }
 
-  bool shouldApplyYawFilters()
+  bool shouldApplyYawDeadband()
   {
     if (!use_cmd_vel_gate_) {
       return true;
@@ -231,10 +232,13 @@ private:
       const double dy = raw_y - last_raw_y_;
       const double translation = std::hypot(dx, dy);
       const double dyaw = normalizeAngle(raw_yaw - last_raw_yaw_);
-      const bool apply_translation_filters = shouldApplyTranslationFilters();
-      const bool apply_yaw_filters = shouldApplyYawFilters();
+      const bool apply_translation_deadband = shouldApplyTranslationDeadband();
+      const bool apply_yaw_deadband = shouldApplyYawDeadband();
 
-      if (apply_translation_filters && shouldRejectTranslationJump(translation, dt)) {
+      // Jump rejection is a safety guard and must remain active while the
+      // robot is commanded to move. cmd_vel gates only the small stationary
+      // deadband below.
+      if (shouldRejectTranslationJump(translation, dt)) {
         filtered.twist.twist.linear.x = 0.0;
         filtered.twist.twist.linear.y = 0.0;
         const double translation_rate = dt > 0.0 ? translation / dt : 0.0;
@@ -242,7 +246,7 @@ private:
           get_logger(), *get_clock(), 2000,
           "Rejected RF2O translation jump %.6f m over %.6f s (%.6f m/s); holding position",
           translation, dt, translation_rate);
-      } else if (!apply_translation_filters ||
+      } else if (!apply_translation_deadband ||
         translation_deadband_ <= 0.0 || translation >= translation_deadband_)
       {
         filtered_x_ += dx;
@@ -256,14 +260,14 @@ private:
           translation, translation_deadband_);
       }
 
-      if (apply_yaw_filters && shouldRejectYawJump(dyaw, dt)) {
+      if (shouldRejectYawJump(dyaw, dt)) {
         filtered.twist.twist.angular.z = 0.0;
         const double yaw_rate = dt > 0.0 ? std::fabs(dyaw) / dt : 0.0;
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
           "Rejected RF2O yaw jump %.6f rad over %.6f s (%.6f rad/s); holding yaw",
           dyaw, dt, yaw_rate);
-      } else if (!apply_yaw_filters || yaw_deadband_ <= 0.0 || std::fabs(dyaw) > yaw_deadband_) {
+      } else if (!apply_yaw_deadband || yaw_deadband_ <= 0.0 || std::fabs(dyaw) > yaw_deadband_) {
         filtered_yaw_ = normalizeAngle(filtered_yaw_ + dyaw);
       } else {
         filtered.twist.twist.angular.z = 0.0;

@@ -90,6 +90,19 @@ def test_standby_reports_all_six_legs_on_nominal_ground_plane():
     assert state.commanded_stance == (True,) * 6
 
 
+def test_command_amplitude_update_can_preserve_gait_phase():
+    plan = GaitPlan()
+    plan.configure('move_x', x_level=10)
+    first = plan.next_step()[2]
+
+    plan.configure('move_x', x_level=20, preserve_phase=True)
+    second = plan.next_step()[2]
+
+    assert first.phase_index == 1
+    assert second.phase_index == 2
+    assert second.sequence == first.sequence + 1
+
+
 def servo_angles_for_targets(targets):
     result = []
     for leg_index, target in enumerate(targets):
@@ -122,6 +135,26 @@ def test_forward_kinematics_inverts_generated_gait_targets():
             for actual_axis, expected_axis in zip(actual, expected):
                 assert math.isclose(
                     actual_axis, expected_axis, abs_tol=0.005)
+
+
+def test_supported_gait_limits_remain_inside_servo_command_range():
+    commands = (
+        ('move_x', {'x_level': -30}),
+        ('move_x', {'x_level': 30}),
+        ('move_y', {'y_level': -30}),
+        ('move_y', {'y_level': 30}),
+        ('turn_z', {'z_level': -20}),
+        ('turn_z', {'z_level': 20}),
+        ('move_xz', {'x_level': -30, 'z_level': -20}),
+        ('move_xz', {'x_level': 30, 'z_level': 20}),
+    )
+
+    for mode, levels in commands:
+        plan = GaitPlan()
+        plan.configure(mode, **levels)
+        for state in cycle_states(plan):
+            angles = servo_angles_for_targets(state.foot_positions_mm)
+            assert all(-90.0 <= angle <= 90.0 for angle in angles)
 
 
 def test_forward_kinematics_rejects_invalid_motor_samples():

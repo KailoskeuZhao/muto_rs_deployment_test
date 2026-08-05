@@ -21,8 +21,25 @@ find_package(rosgraph_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2_msgs REQUIRED)
+
+find_package(Git QUIET)
+set(RECORDING_BUILD_INFO_HEADER
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/recording_build_info.hpp"
+)
+add_custom_target(generate_recording_build_info ALL
+  COMMAND "${CMAKE_COMMAND}"
+    "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+    "-DREPOSITORY_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DTEMPLATE_PATH=${CMAKE_CURRENT_SOURCE_DIR}/src/recording_build_info.hpp.in"
+    "-DOUTPUT_PATH=${RECORDING_BUILD_INFO_HEADER}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_recording_build_info.cmake"
+  BYPRODUCTS "${RECORDING_BUILD_INFO_HEADER}"
+  VERBATIM
+)
 
 add_executable(odometry_bag_recorder src/odometry_bag_recorder.cpp)
+add_dependencies(odometry_bag_recorder generate_recording_build_info)
 ament_target_dependencies(odometry_bag_recorder
   geometry_msgs
   muto_hexapod_interfaces_custom
@@ -33,6 +50,10 @@ ament_target_dependencies(odometry_bag_recorder
   sensor_msgs
   std_msgs
   std_srvs
+  tf2_msgs
+)
+target_include_directories(odometry_bag_recorder PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 
 add_executable(odometry_bag_replayer src/odometry_bag_replayer.cpp)
@@ -47,6 +68,7 @@ ament_target_dependencies(odometry_bag_replayer
   sensor_msgs
   std_msgs
   std_srvs
+  tf2_msgs
 )
 
 install(TARGETS

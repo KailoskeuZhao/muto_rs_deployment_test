@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PACKAGE_ROOT.parent
 SENSOR_ROOT = SOURCE_ROOT / 'lidar_pointcloud_filter'
+HARDWARE_ROOT = SOURCE_ROOT / 'yahboomcar_bringup'
 
 RETIRED_RUNTIME_IDENTIFIERS = (
     '/fused/laserscan',
@@ -95,6 +96,14 @@ def test_both_nav2_costmaps_use_independent_sensor_sources():
         assert camera.get('expected_update_rate', 0.0) == 0.0
 
 
+def test_nav2_does_not_request_unsupported_lateral_turning():
+    config = _load_yaml(PACKAGE_ROOT / 'config' / 'nav2_params.yaml')
+    smoother = config['velocity_smoother']['ros__parameters']
+
+    assert smoother['max_velocity'][1] == 0.0
+    assert smoother['min_velocity'][1] == 0.0
+
+
 def test_camera_launch_is_camera_only_and_matches_declared_fov():
     launch_path = (
         SENSOR_ROOT / 'launch' / 'camera_depth_to_laserscan_launch.py'
@@ -133,6 +142,58 @@ def test_camera_preprocessing_is_owned_by_the_top_level_pipeline():
     assert 'launch_camera_obstacle_scan' not in mapping_defaults
     assert pipeline_defaults['launch_camera_obstacle_scan'] == 'true'
     assert float(pipeline_defaults['camera_scan_max_publish_rate']) == 7.0
+
+
+def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
+    hardware_launch = HARDWARE_ROOT / 'launch' / 'muto_hardware_launch.py'
+    pipeline_launch = (
+        PACKAGE_ROOT / 'launch' / 'muto_nav2_pipeline_launch.py'
+    )
+
+    hardware_defaults, _ = _launch_defaults(hardware_launch)
+    pipeline_defaults, _ = _launch_defaults(pipeline_launch)
+
+    for defaults in (hardware_defaults, pipeline_defaults):
+        assert float(defaults['locomotion_update_rate_hz']) == 50.0
+        assert float(defaults['cmd_vel_timeout']) == 0.5
+        assert 'motor_validation_settle_time' not in defaults
+        assert 'gait_state_publish_rate_hz' not in defaults
+
+    assert float(pipeline_defaults['foot_motor_poll_rate']) == 2.0
+
+
+def test_ekf_sensor_ownership_keeps_foot_yaw_out_of_the_filter():
+    base = _load_yaml(
+        HARDWARE_ROOT / 'config' / 'ekf_lidar_imu.yaml'
+    )['ekf_filter_node']['ros__parameters']
+    foot = _load_yaml(
+        HARDWARE_ROOT / 'config' / 'ekf_lidar_imu_with_foot.yaml'
+    )['ekf_filter_node']['ros__parameters']
+
+    assert base['odom0'] == '/scan_odom'
+    assert base['odom0_config'] == [
+        True, True, False,
+        False, False, True,
+        False, False, False,
+        False, False, False,
+        False, False, False,
+    ]
+    assert base['imu0'] == '/imu/data_processed'
+    assert base['imu0_config'] == [
+        False, False, False,
+        False, False, False,
+        False, False, False,
+        False, False, True,
+        False, False, False,
+    ]
+    assert foot['odom1'] == '/foot_odom'
+    assert foot['odom1_config'] == [
+        False, False, False,
+        False, False, False,
+        True, True, False,
+        False, False, False,
+        False, False, False,
+    ]
 
 
 def test_retired_combined_scan_path_cannot_reenter_active_packages():

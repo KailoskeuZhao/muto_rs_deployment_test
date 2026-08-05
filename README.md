@@ -27,6 +27,7 @@ Some packages in this workspace are original deployment glue, while others were 
 | `src/yahboomcar_ctrl` | Came from the Muto RS tutorial material and has been modified for this deployment. |
 | `src/sam2_image_annotator` | Local SAM 2 image segmentation/annotation node. Runtime requires SAM 2, PyTorch, and model weights. |
 | `src/lidar_pointcloud_filter` | Local filtering and scan-conversion utilities for this deployment. |
+| `src/muto_hexapod_lib_custom` | Local time-driven Muto locomotion, kinematics, and serial protocol library. |
 | `src/muto_slam_mapping` | Local SLAM launch/config package for this deployment. |
 | `src/tf2_publisher` | Local TF publisher package for robot sensor frames. |
 | `src/muto_odometry_bag` | Local C++ source-data recorder and original-stack replay layer for repeatable odometry tests. |
@@ -85,6 +86,13 @@ This launch starts:
 - `lidar_tg30/lidar_node`
 - `orbbec_camera/astra_pro_plus.launch.py`
 - `yahboomcar_bringup/muto_driver`
+
+The Muto driver latches `/cmd_vel` and advances one of the custom library's 20
+gait phases on each 50 Hz locomotion tick. It no longer sends an entire cycle
+inside the subscription callback. A command older than 0.5 seconds is replaced
+with standby, and the first tick after driver startup actively commands the
+factory standby joint pose before publishing that gait state. Support the robot
+and keep the legs clear during hardware-driver startup.
 
 The TG30 driver publishes only `/lidar/raw_laserscan`; downstream nodes own
 filtering, downsampling, and depth projection.
@@ -185,9 +193,10 @@ translation deadband by default (`rf2o_translation_deadband:=0.0025`) so
 stationary scan-match drift does not feed `/scan_odom`. At the default 16 Hz
 RF2O rate, this accepts roughly `>=4 cm/s` planar motion. Set
 `rf2o_translation_deadband:=0.0` to disable it, or tune the value in meters for
-the robot. By default, these RF2O deadbands and jump caps are gated per axis by
-recent `cmd_vel`: translation filters apply while commanded planar motion is
-near zero, and yaw filters apply while commanded yaw is near zero.
+the robot. By default, only the RF2O deadbands are gated per axis by recent
+`cmd_vel`: translation deadbanding applies while commanded planar motion is
+near zero, and yaw deadbanding applies while commanded yaw is near zero. Jump
+rejection remains active whether the robot is stationary or moving.
 
 Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
 `rf2o_publish_tf:=false` when an EKF or another localization node owns odom TF.
@@ -213,7 +222,8 @@ ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_lidar_odometry:=fa
 Motor-validated commanded-stance foot odometry is enabled by default and
 contributes low-trust planar body velocity from `/foot_odom`. It publishes only
 while fresh calibrated servo readback agrees with the synchronized commanded
-stance geometry. To disable it:
+stance geometry. The gait observations now come from the fixed locomotion tick,
+not directly from `/cmd_vel` callback timing. To disable it:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
@@ -239,7 +249,7 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | `/camera/filtered_laserscan` | Narrow, NaN-masked camera `LaserScan`; optional independent source for both Nav2 costmaps. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
-| `/foot_odom` | Motor-validated commanded-stance odometry. Consecutive stance targets estimate motion; synchronized calibrated servo FK must track each sampled stance foot. Missing, stale, malformed, wrong-frame, excessive-rate, or excessive tracking error suppresses publication. Only planar velocity enters the EKF; bounded unsupported-axis covariance prevents world-scale RViz artifacts. |
+| `/foot_odom` | Motor-validated commanded-stance odometry. Consecutive fixed-rate gait targets estimate motion; sampled calibrated servo FK must track each sampled stance foot. Missing, stale, malformed, wrong-frame, excessive-rate, or excessive tracking error suppresses publication. Only planar velocity enters the EKF; bounded unsupported-axis covariance prevents world-scale RViz artifacts. |
 
 ## Costmap LaserScan Sources
 

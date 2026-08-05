@@ -43,10 +43,18 @@ git revision and dirty flag describe the source tree from which the recorder
 binary was most recently built. Rebuild the package before a field session so
 this identifies the code actually under test.
 
-The commanded gait state is not measured contact. Foot odometry still assumes
-that commanded stance feet are static in the world, with motor readback used
-only to validate that the leg geometry tracks the command. It cannot detect
-foot slip or a stance foot that has lost contact.
+The default foot estimator derives motion from measured motor-angle FK, not
+from commanded foot displacement. The commanded gait state supplies the full
+50 Hz stance history needed to reject a motor-sample interval if any selected
+support foot swung between its endpoints. Commanded stance is still not
+measured contact, so the estimator cannot detect foot slip or a foot that has
+lost contact.
+
+The conservative 2 Hz recorder rate is suitable for residual and timing
+diagnostics, but it is generally too sparse for moving foot odometry. The
+estimator suppresses such intervals rather than treating a complete gait cycle
+as one planted-foot transform. Record at 10 Hz or 20 Hz only after that rate is
+validated against the 50 Hz gait and IMU loops on hardware.
 
 ## Record
 
@@ -132,7 +140,10 @@ The replay node waits for the original LiDAR, IMU, command, and optional foot
 consumers before releasing the first message. It publishes `/clock`, and all
 original odometry nodes run with `use_sim_time:=true`. Message headers and ROS
 time therefore retain the recorded timing even when `playback_rate` changes
-the wall-clock duration.
+the wall-clock duration. The RF2O submodule stays unmodified. Replay runs its
+stock polling loop at `64 * playback_rate` Hz, four times the expected wall-clock
+scan arrival rate, to prevent accelerated playback from replacing an
+unprocessed scan. Normal robot startup remains at 16 Hz.
 
 Set `launch_foot_odometry:=false` to test only RF2O plus IMU EKF:
 
@@ -142,10 +153,32 @@ ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
   launch_foot_odometry:=false
 ```
 
+## Compare RF2O covariance profiles
+
+Replay the same source bag with foot odometry disabled to isolate covariance
+changes in the LiDAR plus IMU path:
+
+```bash
+ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
+  bag_path:=/data/bags/muto_odom_001 \
+  playback_rate:=4.0 \
+  launch_foot_odometry:=false \
+  rf2o_covariance_profile:=measured
+```
+
+Repeat with `relaxed`, `conservative`, and, for regression only,
+`legacy_zero`. The parent-owned output wrapper applies these profiles; they
+change the uncertainty supplied to the EKF, not RF2O's scan-matching pose.
+Record `/scan_odom_raw`, `/scan_odom`, and
+`/odometry/filtered` when comparing EKF covariance, rejection, and prediction
+behavior.
+
 ## Replay all odometry variants together
 
-The comparison launch runs the LiDAR and foot estimators once and two EKF
-instances over the same replay clock:
+The comparison launch runs the LiDAR and foot estimators once and four EKF
+instances over the same replay clock. The parent wrapper uses the selected
+covariance profile for every variant, so the default `measured` run changes
+only the fused sensor inputs:
 
 ```bash
 ros2 launch muto_odometry_bag replay_odometry_comparison_launch.py \
@@ -153,26 +186,30 @@ ros2 launch muto_odometry_bag replay_odometry_comparison_launch.py \
   playback_rate:=1.0
 ```
 
-It publishes four independently inspectable results:
+It publishes six independently inspectable results:
 
 | Topic | Inputs |
 | --- | --- |
+| `/scan_odom_raw` | Raw LiDAR RF2O pose before deadband/jump filtering |
 | `/scan_odom` | LiDAR only, after the existing RF2O deadband filter |
-| `/foot_odom` | Commanded stance plus recorded motor-angle readback |
+| `/foot_odom` | Measured motor-angle FK with commanded-stance continuity gating |
+| `/odometry/lidar_only` | Filtered LiDAR pose through the EKF, without IMU or feet |
 | `/odometry/lidar_imu` | LiDAR plus IMU EKF |
+| `/odometry/raw_lidar_imu` | Raw RF2O plus IMU EKF through a covariance-only wrapper branch, bypassing deadband and jump rejection |
 | `/odometry/filtered` | LiDAR plus leg plus IMU EKF |
 
 Only the fused `/odometry/filtered` EKF publishes `odom -> base_frame`. The
-comparison LiDAR plus IMU EKF has TF publication disabled, preventing two
-estimators from claiming the same transform.
+comparison EKFs have TF publication disabled, preventing multiple estimators
+from claiming the same transform.
 
 To save a particular replay's derived results for comparison, run a normal
 output-only recorder in another terminal:
 
 ```bash
 ros2 bag record -o /data/bags/muto_odom_001_results \
-  /scan_odom_raw /scan_odom /foot_odom /odometry/lidar_imu \
-  /odometry/filtered /tf /muto/odometry_test_event \
+  /scan_odom_raw /scan_odom /foot_odom /odometry/lidar_only \
+  /odometry/lidar_imu /odometry/raw_lidar_imu /odometry/filtered \
+  /tf /muto/odometry_test_event \
   /muto/odometry_recording_metadata
 ```
 

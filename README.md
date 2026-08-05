@@ -185,10 +185,11 @@ By default this uses the raw TG30 `LaserScan` path. It publishes:
 - `scan_odom_raw`, RF2O output before deadband/jump filtering
 - `scan_odom`, filtered odometry output
 
-`filter_lidar_odometry_launch.py` keeps RF2O itself unmodified: RF2O publishes
-raw odometry on `scan_odom_raw`, then
-`lidar_pointcloud_filter/odometry_translation_deadband_node` republishes the
-EKF-facing `scan_odom`. The wrapper applies a small per-update planar
+`filter_lidar_odometry_launch.py` keeps the RF2O submodule unmodified. RF2O
+publishes its original `scan_odom_raw`, then the parent-owned
+`lidar_pointcloud_filter/odometry_translation_deadband_node` applies covariance
+and republishes the EKF-facing `scan_odom`. The wrapper applies a small
+per-update planar
 translation deadband by default (`rf2o_translation_deadband:=0.0025`) so
 stationary scan-match drift does not feed `/scan_odom`. At the default 16 Hz
 RF2O rate, this accepts roughly `>=4 cm/s` planar motion. Set
@@ -197,6 +198,12 @@ the robot. By default, only the RF2O deadbands are gated per axis by recent
 `cmd_vel`: translation deadbanding applies while commanded planar motion is
 near zero, and yaw deadbanding applies while commanded yaw is near zero. Jump
 rejection remains active whether the robot is stationary or moving.
+
+The default `rf2o_covariance_profile:=measured` uses the first bag-derived
+estimate: `2.5e-4 m^2` for X/Y pose and `1.0e-4 rad^2` for yaw. Select
+`relaxed` or `conservative` for comparison, `custom` with direct wrapper
+parameters for later tuning, or `legacy_zero` only to reproduce the old
+invalid all-zero covariance behavior.
 
 Standalone filtered odometry publishes `odom -> base_frame` TF by default. Use
 `rf2o_publish_tf:=false` when an EKF or another localization node owns odom TF.
@@ -219,11 +226,14 @@ the EKF:
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_lidar_odometry:=false
 ```
 
-Motor-validated commanded-stance foot odometry is enabled by default and
-contributes low-trust planar body velocity from `/foot_odom`. It publishes only
-while fresh calibrated servo readback agrees with the synchronized commanded
-stance geometry. The gait observations now come from the fixed locomotion tick,
-not directly from `/cmd_vel` callback timing. To disable it:
+Continuity-gated measured-joint foot odometry is enabled by default and
+contributes only low-trust planar body velocity from `/foot_odom`. Motion is
+fitted from calibrated servo forward kinematics at two motor snapshots. The
+commanded gait stream identifies support continuity, but does not supply the
+motion: at least three of the same feet must remain in commanded stance through
+every intervening 50 Hz gait phase. At the conservative 2 Hz joint-read default,
+moving samples are normally too far apart and are suppressed; valid standby
+samples can still provide a weak zero-velocity update. To disable it:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
@@ -249,7 +259,7 @@ YAML files such as `ekf_lidar_imu.yaml` and `mapper_params_online_async.yaml` ar
 | `/camera/filtered_laserscan` | Narrow, NaN-masked camera `LaserScan`; optional independent source for both Nav2 costmaps. |
 | `/imu/data_processed` | Processed IMU message used by localization experiments. |
 | `scan_odom` | LiDAR odometry output topic used by downstream localization. |
-| `/foot_odom` | Motor-validated commanded-stance odometry. Consecutive fixed-rate gait targets estimate motion; sampled calibrated servo FK must track each sampled stance foot. Missing, stale, malformed, wrong-frame, excessive-rate, or excessive tracking error suppresses publication. Only planar velocity enters the EKF; bounded unsupported-axis covariance prevents world-scale RViz artifacts. |
+| `/foot_odom` | Continuity-gated measured-joint odometry. Actual calibrated servo FK supplies foot positions; the 50 Hz commanded gait history is used only to prove that at least three feet remained in stance between samples. Sparse, incomplete, stale, malformed, wrong-frame, excessive-motion, or excessive tracking-error intervals are suppressed. Only planar velocity enters the EKF. |
 
 ## Costmap LaserScan Sources
 

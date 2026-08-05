@@ -20,7 +20,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 import yaml
@@ -40,6 +40,16 @@ def load_node_parameters(path, node_name):
     return copy.deepcopy(document[node_name]['ros__parameters'])
 
 
+def without_sensor(parameters, sensor_name):
+    """Return an EKF parameter copy without one numbered sensor input."""
+    prefix = f'{sensor_name}_'
+    return {
+        name: copy.deepcopy(value)
+        for name, value in parameters.items()
+        if name != sensor_name and not name.startswith(prefix)
+    }
+
+
 def generate_launch_description():
     bringup_share = get_package_share_directory('yahboomcar_bringup')
     lidar_imu_parameters = load_node_parameters(
@@ -50,6 +60,9 @@ def generate_launch_description():
         'publish_tf': False,
         'use_sim_time': True,
     })
+    lidar_only_parameters = without_sensor(lidar_imu_parameters, 'imu0')
+    raw_lidar_imu_parameters = copy.deepcopy(lidar_imu_parameters)
+    raw_lidar_imu_parameters['odom0'] = '/scan_odom_raw_profiled'
 
     sensor_tf = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -68,7 +81,20 @@ def generate_launch_description():
             'use_sim_time': 'true',
             'launch_lidar_odometry': 'true',
             'launch_foot_odometry': 'true',
+            'foot_odometry_source': LaunchConfiguration(
+                'foot_odometry_source'
+            ),
+            'foot_max_motor_sequence_gap': LaunchConfiguration(
+                'foot_max_motor_sequence_gap'
+            ),
             'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
+            'rf2o_freq': PythonExpression([
+                LaunchConfiguration('playback_rate'), ' * 64.0'
+            ]),
+            'rf2o_profiled_raw_odom_topic': '/scan_odom_raw_profiled',
+            'rf2o_covariance_profile': LaunchConfiguration(
+                'rf2o_covariance_profile'
+            ),
         }.items(),
     )
 
@@ -87,9 +113,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'minimum_start_delay_sec',
-            default_value='0.5',
+            default_value='2.0',
             description=(
-                'Minimum wall time before replay after consumers are ready.'
+                'Minimum wall time before replay after consumers are ready; '
+                'the comparison margin also lets output recorders discover '
+                'all EKF topics.'
             ),
         ),
         DeclareLaunchArgument(
@@ -103,6 +131,29 @@ def generate_launch_description():
             'rf2o_log_level',
             default_value='error',
             description='ROS log level for the original RF2O process.',
+        ),
+        DeclareLaunchArgument(
+            'foot_odometry_source',
+            default_value='measured_joints',
+            description=(
+                'Foot odometry source: measured_joints or the '
+                'regression-only commanded_targets mode.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'foot_max_motor_sequence_gap',
+            default_value='10',
+            description=(
+                'Maximum gait-phase gap between measured joint snapshots.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'rf2o_covariance_profile',
+            default_value='measured',
+            description=(
+                'RF2O odometry covariance profile: measured, relaxed, '
+                'conservative, custom, or legacy_zero.'
+            ),
         ),
         DeclareLaunchArgument(
             'replay_processed_imu',
@@ -126,8 +177,29 @@ def generate_launch_description():
             default_value='/odometry/lidar_imu',
             description='Output from the comparison LiDAR plus IMU EKF.',
         ),
+        DeclareLaunchArgument(
+            'lidar_only_output_topic',
+            default_value='/odometry/lidar_only',
+            description='Output from the comparison filtered-LiDAR-only EKF.',
+        ),
+        DeclareLaunchArgument(
+            'raw_lidar_imu_output_topic',
+            default_value='/odometry/raw_lidar_imu',
+            description='Output from the raw RF2O plus IMU comparison EKF.',
+        ),
         sensor_tf,
         original_fused_odometry,
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_lidar_only_comparison',
+            output='screen',
+            parameters=[lidar_only_parameters],
+            remappings=[
+                ('odometry/filtered',
+                 LaunchConfiguration('lidar_only_output_topic')),
+            ],
+        ),
         Node(
             package='robot_localization',
             executable='ekf_node',
@@ -137,6 +209,17 @@ def generate_launch_description():
             remappings=[
                 ('odometry/filtered',
                  LaunchConfiguration('lidar_imu_output_topic')),
+            ],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_raw_lidar_imu_comparison',
+            output='screen',
+            parameters=[raw_lidar_imu_parameters],
+            remappings=[
+                ('odometry/filtered',
+                 LaunchConfiguration('raw_lidar_imu_output_topic')),
             ],
         ),
         Node(

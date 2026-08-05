@@ -19,7 +19,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -52,7 +52,19 @@ def generate_launch_description():
             'launch_foot_odometry': LaunchConfiguration(
                 'launch_foot_odometry'
             ),
+            'foot_odometry_source': LaunchConfiguration(
+                'foot_odometry_source'
+            ),
+            'foot_max_motor_sequence_gap': LaunchConfiguration(
+                'foot_max_motor_sequence_gap'
+            ),
             'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
+            'rf2o_freq': PythonExpression([
+                LaunchConfiguration('playback_rate'), ' * 64.0'
+            ]),
+            'rf2o_covariance_profile': LaunchConfiguration(
+                'rf2o_covariance_profile'
+            ),
         }.items(),
     )
 
@@ -77,6 +89,21 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'foot_odometry_source',
+            default_value='measured_joints',
+            description=(
+                'Foot odometry source: measured_joints or the '
+                'regression-only commanded_targets mode.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'foot_max_motor_sequence_gap',
+            default_value='10',
+            description=(
+                'Maximum gait-phase gap between measured joint snapshots.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'minimum_start_delay_sec',
             default_value='0.5',
             description=(
@@ -94,6 +121,14 @@ def generate_launch_description():
             'rf2o_log_level',
             default_value='error',
             description='ROS log level for the original RF2O process.',
+        ),
+        DeclareLaunchArgument(
+            'rf2o_covariance_profile',
+            default_value='measured',
+            description=(
+                'RF2O odometry covariance profile: measured, relaxed, '
+                'conservative, custom, or legacy_zero.'
+            ),
         ),
         DeclareLaunchArgument(
             'replay_processed_imu',

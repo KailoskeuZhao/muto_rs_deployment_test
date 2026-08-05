@@ -93,6 +93,14 @@ def generate_launch_description():
         default_value='scan_odom_raw',
         description='Internal raw rf2o odometry topic before translation deadband filtering.',
     )
+    profiled_raw_odom_topic_arg = DeclareLaunchArgument(
+        'profiled_raw_odom_topic',
+        default_value='',
+        description=(
+            'Optional copy of raw RF2O odometry with parent-owned covariance. '
+            'Empty disables this additional output.'
+        ),
+    )
     odom_frame_arg = DeclareLaunchArgument(
         'odom_frame',
         default_value='odom',
@@ -120,6 +128,14 @@ def generate_launch_description():
         'rf2o_log_level',
         default_value='error',
         description='ROS log level for the RF2O process.',
+    )
+    rf2o_covariance_profile_arg = DeclareLaunchArgument(
+        'rf2o_covariance_profile',
+        default_value='measured',
+        description=(
+            'RF2O odometry covariance profile: measured, relaxed, '
+            'conservative, custom, or legacy_zero.'
+        ),
     )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         'rf2o_translation_deadband',
@@ -227,11 +243,13 @@ def generate_launch_description():
         scan_max_input_age_arg,
         odom_topic_arg,
         raw_odom_topic_arg,
+        profiled_raw_odom_topic_arg,
         odom_frame_arg,
         odom_child_frame_arg,
         rf2o_publish_tf_arg,
         rf2o_freq_arg,
         rf2o_log_level_arg,
+        rf2o_covariance_profile_arg,
         rf2o_translation_deadband_arg,
         rf2o_translation_jump_rejection_threshold_arg,
         rf2o_max_translation_rate_arg,
@@ -328,6 +346,12 @@ def generate_launch_description():
             parameters=[{
                 'input_topic': LaunchConfiguration('raw_odom_topic'),
                 'output_topic': LaunchConfiguration('odom_topic'),
+                'profiled_raw_output_topic': LaunchConfiguration(
+                    'profiled_raw_odom_topic'
+                ),
+                'covariance_profile': LaunchConfiguration(
+                    'rf2o_covariance_profile'
+                ),
                 'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'),
                     value_type=bool,

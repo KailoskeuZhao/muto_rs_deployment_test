@@ -1,9 +1,9 @@
 ekf_filter_node:
   ros__parameters:
-    # Overlay loaded after ekf_lidar_imu.yaml. Servo FK validates gross
-    # tracking, but commanded stance still assumes static ground contact. Fuse
-    # only low-trust planar body velocity; LiDAR retains planar pose/yaw
-    # ownership and the IMU retains yaw-rate ownership.
+    # Overlay loaded after ekf_lidar_imu.yaml. Motion comes from measured servo
+    # FK only when the gait history proves continuous commanded stance. Contact
+    # and slip remain unmeasured, so fuse only low-trust planar body velocity;
+    # LiDAR retains planar pose/yaw ownership and IMU retains yaw-rate ownership.
     odom1: /foot_odom
     odom1_config: [false, false, false,
                    false, false, false,

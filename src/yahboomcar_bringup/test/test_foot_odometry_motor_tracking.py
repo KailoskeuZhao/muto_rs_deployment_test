@@ -68,6 +68,28 @@ def test_calibrated_fk_tracks_generated_stance_targets():
     assert mode == state.mode
 
 
+def test_motor_payload_produces_measured_fk_observation():
+    state = moving_state()
+    payload = motor_payload(state, command_angles_for_state(state))
+
+    residual_m, observation, stamp = (
+        FootOdometryNode.measured_motor_observation(
+            payload, 'base_frame')
+    )
+
+    assert residual_m < 0.005
+    assert observation.sequence == state.sequence
+    assert observation.mode == state.mode
+    assert observation.stamp_sec == pytest.approx(12.000000034)
+    assert stamp == Time(sec=12, nanosec=34)
+    assert len(observation.foot_x_m) == 6
+    assert len(observation.foot_y_m) == 6
+    assert observation.foot_x_m != pytest.approx(
+        tuple(target[1] * 0.001 for target in state.foot_positions_mm),
+        abs=1e-9,
+    )
+
+
 def test_one_bad_stance_leg_exceeds_rejection_threshold():
     state = moving_state()
     payload = motor_payload(state, command_angles_for_state(state))

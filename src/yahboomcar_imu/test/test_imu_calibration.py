@@ -61,6 +61,7 @@ def test_calibration_defaults_are_bounded():
     assert imu_node.DEFAULT_CALIBRATION_SAMPLE_COUNT == 300
     assert imu_node.DEFAULT_CALIBRATION_MAX_READS == 600
     assert imu_node.DEFAULT_CALIBRATION_TIMEOUT_SEC == 30.0
+    assert imu_node.ANGULAR_VELOCITY_COVARIANCE == 8.5e-6
 
 
 def test_calibration_stops_at_wall_clock_limit(monkeypatch):

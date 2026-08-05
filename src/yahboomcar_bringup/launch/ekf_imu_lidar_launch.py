@@ -56,6 +56,27 @@ def generate_launch_description():
         default_value="error",
         description="ROS log level for the RF2O process.",
     )
+    rf2o_freq_arg = DeclareLaunchArgument(
+        "rf2o_freq",
+        default_value="16.0",
+        description="RF2O wall-clock processing frequency in Hz.",
+    )
+    rf2o_profiled_raw_odom_topic_arg = DeclareLaunchArgument(
+        "rf2o_profiled_raw_odom_topic",
+        default_value="",
+        description=(
+            "Optional raw RF2O copy with covariance applied by the parent "
+            "wrapper. Empty disables the topic."
+        ),
+    )
+    rf2o_covariance_profile_arg = DeclareLaunchArgument(
+        "rf2o_covariance_profile",
+        default_value="measured",
+        description=(
+            "RF2O odometry covariance profile: measured, relaxed, "
+            "conservative, custom, or legacy_zero."
+        ),
+    )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         "rf2o_translation_deadband",
         default_value="0.0025",
@@ -139,9 +160,8 @@ def generate_launch_description():
         "launch_foot_odometry",
         default_value="true",
         description=(
-            "Whether to launch motor-validated commanded-stance Muto foot "
-            "odometry and fuse "
-            "/foot_odom planar velocity into the EKF."
+            "Whether to launch continuity-gated measured-joint Muto foot "
+            "odometry and fuse /foot_odom planar velocity into the EKF."
         ),
     )
     foot_motor_poll_rate_arg = DeclareLaunchArgument(
@@ -151,6 +171,22 @@ def generate_launch_description():
             "Rate in Hz at which foot odometry requests all 18 measured "
             "motor angles. Keep 2.0 until higher rates are validated on "
             "hardware."
+        ),
+    )
+    foot_odometry_source_arg = DeclareLaunchArgument(
+        "foot_odometry_source",
+        default_value="measured_joints",
+        description=(
+            "Foot odometry source: measured_joints requires continuous "
+            "measured stance samples; commanded_targets is regression-only."
+        ),
+    )
+    foot_max_motor_sequence_gap_arg = DeclareLaunchArgument(
+        "foot_max_motor_sequence_gap",
+        default_value="10",
+        description=(
+            "Maximum gait-phase gap between measured joint snapshots used "
+            "for one foot odometry increment."
         ),
     )
     imu_only_arg = DeclareLaunchArgument(
@@ -182,6 +218,9 @@ def generate_launch_description():
         scan_downsample_factor_arg,
         use_sim_time_arg,
         rf2o_log_level_arg,
+        rf2o_freq_arg,
+        rf2o_profiled_raw_odom_topic_arg,
+        rf2o_covariance_profile_arg,
         rf2o_translation_deadband_arg,
         rf2o_translation_jump_rejection_threshold_arg,
         rf2o_max_translation_rate_arg,
@@ -195,6 +234,8 @@ def generate_launch_description():
         rf2o_cmd_vel_stationary_angular_threshold_arg,
         launch_foot_odometry_arg,
         foot_motor_poll_rate_arg,
+        foot_odometry_source_arg,
+        foot_max_motor_sequence_gap_arg,
         imu_only_arg,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(lidar_odometry_launch),
@@ -205,6 +246,13 @@ def generate_launch_description():
                 "scan_downsample_factor": LaunchConfiguration("scan_downsample_factor"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "rf2o_log_level": LaunchConfiguration("rf2o_log_level"),
+                "rf2o_freq": LaunchConfiguration("rf2o_freq"),
+                "profiled_raw_odom_topic": LaunchConfiguration(
+                    "rf2o_profiled_raw_odom_topic"
+                ),
+                "rf2o_covariance_profile": LaunchConfiguration(
+                    "rf2o_covariance_profile"
+                ),
                 "rf2o_translation_deadband": LaunchConfiguration("rf2o_translation_deadband"),
                 "rf2o_translation_jump_rejection_threshold": LaunchConfiguration(
                     "rf2o_translation_jump_rejection_threshold"
@@ -241,6 +289,13 @@ def generate_launch_description():
                 'motor_poll_rate': ParameterValue(
                     LaunchConfiguration("foot_motor_poll_rate"),
                     value_type=float,
+                ),
+                'odometry_source': LaunchConfiguration(
+                    "foot_odometry_source"
+                ),
+                'max_motor_sequence_gap': ParameterValue(
+                    LaunchConfiguration("foot_max_motor_sequence_gap"),
+                    value_type=int,
                 ),
                 'motor_stale_timeout': 1.0,
                 'gait_state_stale_timeout': 1.0,

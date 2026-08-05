@@ -6,6 +6,7 @@
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "lidar_pointcloud_filter/odometry_covariance_profiles.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/transform_broadcaster.h"
@@ -35,6 +36,43 @@ public:
     cmd_vel_stationary_angular_threshold_ =
       declare_parameter<double>("cmd_vel_stationary_angular_threshold", 0.03);
     queue_size_ = declare_parameter<int>("queue_size", 5);
+    profiled_raw_output_topic_ =
+      declare_parameter<std::string>("profiled_raw_output_topic", "");
+
+    const auto measured_profile =
+      lidar_pointcloud_filter::measuredCovarianceProfile();
+    const auto covariance_profile_name =
+      declare_parameter<std::string>("covariance_profile", "measured");
+    lidar_pointcloud_filter::OdometryCovarianceProfile custom_profile{
+      "custom",
+      declare_parameter<double>(
+        "custom_pose_x_variance", measured_profile.pose_x_variance),
+      declare_parameter<double>(
+        "custom_pose_y_variance", measured_profile.pose_y_variance),
+      declare_parameter<double>(
+        "custom_pose_yaw_variance", measured_profile.pose_yaw_variance),
+      declare_parameter<double>(
+        "custom_twist_x_variance", measured_profile.twist_x_variance),
+      declare_parameter<double>(
+        "custom_twist_y_variance", measured_profile.twist_y_variance),
+      declare_parameter<double>(
+        "custom_twist_yaw_variance", measured_profile.twist_yaw_variance),
+      declare_parameter<double>(
+        "custom_unobserved_pose_variance",
+        measured_profile.unobserved_pose_variance),
+      declare_parameter<double>(
+        "custom_unobserved_twist_variance",
+        measured_profile.unobserved_twist_variance),
+    };
+    if (!lidar_pointcloud_filter::resolveCovarianceProfile(
+        covariance_profile_name, custom_profile, covariance_profile_))
+    {
+      covariance_profile_ = measured_profile;
+      RCLCPP_WARN(
+        get_logger(),
+        "Unknown or invalid odometry covariance profile '%s'; using measured",
+        covariance_profile_name.c_str());
+    }
 
     if (translation_deadband_ < 0.0) {
       RCLCPP_WARN(get_logger(), "translation_deadband must be non-negative; using 0.0");
@@ -83,6 +121,10 @@ public:
 
     const auto qos = rclcpp::QoS(rclcpp::KeepLast(queue_size_));
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(output_topic_, qos);
+    if (!profiled_raw_output_topic_.empty()) {
+      profiled_raw_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
+        profiled_raw_output_topic_, qos);
+    }
     if (publish_tf_) {
       tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
     }
@@ -105,6 +147,17 @@ public:
       translation_jump_rejection_threshold_, max_translation_rate_,
       yaw_jump_rejection_threshold_, max_yaw_rate_, publish_tf_ ? "true" : "false",
       use_cmd_vel_gate_ ? "true" : "false");
+    RCLCPP_INFO(
+      get_logger(),
+      "Applying %s odometry covariance: pose var x=%.9g y=%.9g yaw=%.9g; "
+      "twist var x=%.9g y=%.9g yaw=%.9g",
+      covariance_profile_.name.c_str(),
+      covariance_profile_.pose_x_variance,
+      covariance_profile_.pose_y_variance,
+      covariance_profile_.pose_yaw_variance,
+      covariance_profile_.twist_x_variance,
+      covariance_profile_.twist_y_variance,
+      covariance_profile_.twist_yaw_variance);
   }
 
 private:
@@ -214,6 +267,12 @@ private:
 
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
+    if (profiled_raw_odom_pub_) {
+      nav_msgs::msg::Odometry profiled_raw = *msg;
+      applyCovariance(profiled_raw);
+      profiled_raw_odom_pub_->publish(profiled_raw);
+    }
+
     nav_msgs::msg::Odometry filtered = *msg;
 
     const double raw_x = msg->pose.pose.position.x;
@@ -286,6 +345,7 @@ private:
     filtered.pose.pose.position.x = filtered_x_;
     filtered.pose.pose.position.y = filtered_y_;
     filtered.pose.pose.orientation = quaternionFromYaw(filtered_yaw_);
+    applyCovariance(filtered);
     odom_pub_->publish(filtered);
 
     if (tf_broadcaster_) {
@@ -300,6 +360,14 @@ private:
     }
   }
 
+  void applyCovariance(nav_msgs::msg::Odometry & odometry) const
+  {
+    lidar_pointcloud_filter::setPoseCovariance(
+      odometry.pose.covariance, covariance_profile_);
+    lidar_pointcloud_filter::setTwistCovariance(
+      odometry.twist.covariance, covariance_profile_);
+  }
+
   std::string input_topic_;
   std::string output_topic_;
   double translation_deadband_;
@@ -311,10 +379,12 @@ private:
   bool publish_tf_;
   bool use_cmd_vel_gate_;
   std::string cmd_vel_topic_;
+  std::string profiled_raw_output_topic_;
   double cmd_vel_timeout_;
   double cmd_vel_stationary_linear_threshold_;
   double cmd_vel_stationary_angular_threshold_;
   int queue_size_;
+  lidar_pointcloud_filter::OdometryCovarianceProfile covariance_profile_;
 
   bool have_last_odom_{false};
   bool have_cmd_vel_{false};
@@ -332,6 +402,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr profiled_raw_odom_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };
 

@@ -146,7 +146,16 @@ def generate_launch_description():
             'foot_motor_poll_rate': LaunchConfiguration(
                 'foot_motor_poll_rate'
             ),
+            'foot_odometry_source': LaunchConfiguration(
+                'foot_odometry_source'
+            ),
+            'foot_max_motor_sequence_gap': LaunchConfiguration(
+                'foot_max_motor_sequence_gap'
+            ),
             'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
+            'rf2o_covariance_profile': LaunchConfiguration(
+                'rf2o_covariance_profile'
+            ),
         },
     )
     mapping_actions = readiness_gated_include(
@@ -248,9 +257,8 @@ def generate_launch_description():
             'launch_foot_odometry',
             default_value='true',
             description=(
-                'Fuse motor-validated commanded-stance foot velocity into '
-                'the localization '
-                'EKF.'
+                'Fuse continuity-gated measured-joint foot velocity into '
+                'the localization EKF.'
             ),
         ),
         DeclareLaunchArgument(
@@ -263,9 +271,33 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'foot_odometry_source',
+            default_value='measured_joints',
+            description=(
+                'Foot odometry source: measured_joints or the '
+                'regression-only commanded_targets mode.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'foot_max_motor_sequence_gap',
+            default_value='10',
+            description=(
+                'Maximum gait-phase gap between measured joint snapshots '
+                'used by foot odometry.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'rf2o_log_level',
             default_value='error',
             description='ROS log level for the RF2O process.',
+        ),
+        DeclareLaunchArgument(
+            'rf2o_covariance_profile',
+            default_value='measured',
+            description=(
+                'RF2O odometry covariance profile: measured, relaxed, '
+                'conservative, custom, or legacy_zero.'
+            ),
         ),
         DeclareLaunchArgument(
             'launch_mapping',

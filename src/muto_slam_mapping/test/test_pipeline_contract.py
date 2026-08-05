@@ -16,6 +16,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PACKAGE_ROOT.parent
 SENSOR_ROOT = SOURCE_ROOT / 'lidar_pointcloud_filter'
 HARDWARE_ROOT = SOURCE_ROOT / 'yahboomcar_bringup'
+ODOMETRY_BAG_ROOT = SOURCE_ROOT / 'muto_odometry_bag'
 
 RETIRED_RUNTIME_IDENTIFIERS = (
     '/fused/laserscan',
@@ -52,9 +53,25 @@ def _launch_defaults(path):
         entity.name: perform_substitutions(context, entity.default_value)
         for entity in description.entities
         if isinstance(entity, DeclareLaunchArgument)
+        and entity.default_value is not None
     }
     nodes = [entity for entity in description.entities if isinstance(entity, Node)]
     return defaults, nodes
+
+
+def _launch_configuration_names(path):
+    tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function_name = getattr(node.func, 'id', None)
+        if function_name != 'LaunchConfiguration':
+            continue
+        first_argument = node.args[0]
+        if isinstance(first_argument, ast.Constant):
+            names.add(first_argument.value)
+    return names
 
 
 def test_slam_uses_full_resolution_lidar_directly():
@@ -163,6 +180,8 @@ def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
         assert 'gait_state_publish_rate_hz' not in defaults
 
     assert float(pipeline_defaults['foot_motor_poll_rate']) == 2.0
+    assert pipeline_defaults['foot_odometry_source'] == 'measured_joints'
+    assert int(pipeline_defaults['foot_max_motor_sequence_gap']) == 10
 
 
 def test_ekf_sensor_ownership_keeps_foot_yaw_out_of_the_filter():
@@ -197,6 +216,105 @@ def test_ekf_sensor_ownership_keeps_foot_yaw_out_of_the_filter():
         False, False, False,
         False, False, False,
     ]
+
+    localization_defaults, _ = _launch_defaults(
+        HARDWARE_ROOT / 'launch' / 'ekf_imu_lidar_launch.py'
+    )
+    assert localization_defaults['foot_odometry_source'] == (
+        'measured_joints'
+    )
+    assert int(
+        localization_defaults['foot_max_motor_sequence_gap']
+    ) == 10
+
+
+def test_measured_rf2o_covariance_profile_is_the_replayable_default():
+    launch_paths = (
+        SENSOR_ROOT / 'launch' / 'filter_lidar_odometry_launch.py',
+        HARDWARE_ROOT / 'launch' / 'ekf_imu_lidar_launch.py',
+        PACKAGE_ROOT / 'launch' / 'muto_nav2_pipeline_launch.py',
+        ODOMETRY_BAG_ROOT / 'launch' / 'replay_odometry_bag_launch.py',
+        ODOMETRY_BAG_ROOT / 'launch' /
+        'replay_odometry_comparison_launch.py',
+    )
+
+    for launch_path in launch_paths:
+        defaults, _ = _launch_defaults(launch_path)
+        assert defaults['rf2o_covariance_profile'] == 'measured'
+        assert 'rf2o_covariance_profile' in _launch_configuration_names(
+            launch_path
+        )
+
+
+def test_accelerated_replay_scales_the_stock_rf2o_poll_rate():
+    replay_paths = (
+        ODOMETRY_BAG_ROOT / 'launch' / 'replay_odometry_bag_launch.py',
+        ODOMETRY_BAG_ROOT / 'launch' /
+        'replay_odometry_comparison_launch.py',
+    )
+
+    for launch_path in replay_paths:
+        defaults, _ = _launch_defaults(launch_path)
+        assert defaults['foot_odometry_source'] == 'measured_joints'
+        assert int(defaults['foot_max_motor_sequence_gap']) == 10
+        source = launch_path.read_text(encoding='utf-8')
+        assert "LaunchConfiguration('playback_rate'), ' * 64.0'" in source
+        assert 'rf2o_process_on_scan' not in source
+        assert 'rf2o_scan_queue_size' not in source
+
+    sensor_source = (
+        SENSOR_ROOT / 'launch' / 'filter_lidar_odometry_launch.py'
+    ).read_text(encoding='utf-8')
+    assert "'process_on_scan'" not in sensor_source
+    assert "'laser_scan_queue_size'" not in sensor_source
+    assert "'covariance_profile': LaunchConfiguration(" in sensor_source
+
+
+def test_odometry_comparison_varies_inputs_not_covariance_profile():
+    launch_path = (
+        ODOMETRY_BAG_ROOT / 'launch' /
+        'replay_odometry_comparison_launch.py'
+    )
+    defaults, _ = _launch_defaults(launch_path)
+
+    assert defaults['rf2o_covariance_profile'] == 'measured'
+    assert float(defaults['minimum_start_delay_sec']) == 2.0
+    assert defaults['foot_odometry_source'] == 'measured_joints'
+    assert int(defaults['foot_max_motor_sequence_gap']) == 10
+    assert defaults['lidar_only_output_topic'] == '/odometry/lidar_only'
+    assert defaults['lidar_imu_output_topic'] == '/odometry/lidar_imu'
+    assert defaults['raw_lidar_imu_output_topic'] == (
+        '/odometry/raw_lidar_imu'
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        'replay_odometry_comparison_contract', launch_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    base = _load_yaml(
+        HARDWARE_ROOT / 'config' / 'ekf_lidar_imu.yaml'
+    )['ekf_filter_node']['ros__parameters']
+    lidar_only = module.without_sensor(base, 'imu0')
+
+    assert lidar_only['odom0'] == '/scan_odom'
+    assert not any(
+        name == 'imu0' or name.startswith('imu0_')
+        for name in lidar_only
+    )
+    assert base['imu0'] == '/imu/data_processed'
+    assert base['odom0'] == '/scan_odom'
+
+    source = launch_path.read_text(encoding='utf-8')
+    assert (
+        "raw_lidar_imu_parameters['odom0'] = '/scan_odom_raw_profiled'"
+        in source
+    )
+    assert (
+        "'rf2o_profiled_raw_odom_topic': '/scan_odom_raw_profiled'"
+        in source
+    )
 
 
 def test_retired_combined_scan_path_cannot_reenter_active_packages():

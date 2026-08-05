@@ -15,7 +15,10 @@ find_package(tf2_ros REQUIRED)
 
 add_executable(lidar_laserscan_filter_node src/lidar_laserscan_filter_node.cpp)
 add_executable(camera_depth_to_laserscan_node src/camera_depth_to_laserscan_node.cpp)
-add_executable(odometry_translation_deadband_node src/odometry_translation_deadband_node.cpp)
+add_executable(odometry_translation_deadband_node
+  src/odometry_translation_deadband_node.cpp
+  src/odometry_covariance_profiles.cpp
+)
 
 ament_target_dependencies(camera_depth_to_laserscan_node
   rclcpp
@@ -36,6 +39,7 @@ ament_target_dependencies(odometry_translation_deadband_node
   nav_msgs
   tf2_ros
 )
+target_include_directories(odometry_translation_deadband_node PRIVATE include)
 
 install(TARGETS
   lidar_laserscan_filter_node
@@ -51,9 +55,16 @@ install(DIRECTORY launch
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_odometry_covariance_profiles
+    test/test_odometry_covariance_profiles.cpp
+    src/odometry_covariance_profiles.cpp
+  )
+  target_include_directories(test_odometry_covariance_profiles PRIVATE include)
 endif()
 
 ament_package()

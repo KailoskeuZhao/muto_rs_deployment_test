@@ -68,7 +68,7 @@ pipeline.
 | [`src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py`](../src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py) | Main EKF launch for LiDAR plus IMU odometry. |
 | [`src/yahboomcar_bringup/config/ekf_lidar_imu.yaml`](../src/yahboomcar_bringup/config/ekf_lidar_imu.yaml) | Default EKF fusion configuration. |
 | [`src/yahboomcar_imu/yahboomcar_imu/imu_node.py`](../src/yahboomcar_imu/yahboomcar_imu/imu_node.py) | Publishes raw and processed IMU messages. |
-| [`src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py`](../src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py) | Motor-validated commanded-stance odometry, enabled as a low-trust EKF velocity input by default. |
+| [`src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py`](../src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py) | Continuity-gated measured-joint odometry, enabled as a low-trust EKF velocity input by default. |
 | [`src/muto_slam_mapping/config/mapper_params_online_async.yaml`](../src/muto_slam_mapping/config/mapper_params_online_async.yaml) | SLAM Toolbox frame and scan-topic settings. |
 
 ## Frames And TF Ownership
@@ -134,8 +134,103 @@ RF2O uses TF2 to look up the transform from the scan frame to `base_frame` on
 the first scan. This lets the raw scan remain in `lidar_frame`; the odometry
 result is still expressed for `base_frame`.
 
-RF2O publishes `scan_odom_raw`. It does not own the final `odom -> base_frame`
-TF in the normal EKF pipeline.
+RF2O publishes its original `scan_odom_raw` message and does not own the final
+`odom -> base_frame` TF in the normal EKF pipeline. The RF2O submodule remains
+unmodified. Covariance, deadbanding, and jump rejection are parent-owned
+post-processing in `odometry_translation_deadband_node`.
+
+The covariance profiles are provisional starting points derived from the first
+recorded field bag:
+
+| Profile | X/Y pose variance | Yaw pose variance | Intended use |
+| --- | --- | --- | --- |
+| `measured` | `2.5e-4 m^2` | `1.0e-4 rad^2` | Default bag-derived estimate; about 1.6 cm and 0.57 deg standard deviation. |
+| `relaxed` | `1.0e-3 m^2` | `4.0e-4 rad^2` | Twice the default standard deviation. |
+| `conservative` | `2.5e-3 m^2` | `2.7416e-3 rad^2` | About 5 cm and 3 deg standard deviation. |
+| `legacy_zero` | `0` | `0` | Regression comparison only; not a valid uncertainty model. |
+
+The profile is forwarded through the top-level pipeline as
+`rf2o_covariance_profile`. The parent wrapper writes that covariance into
+`scan_odom`; RF2O itself is unaware of the profile. A `custom` profile is also
+available through the wrapper's `custom_*_variance` parameters for later
+calibration work.
+
+### First bag comparison
+
+`odom_test_001` contains 4,189 scans. RF2O uses the first scan for
+initialization. Accelerated replay raises the stock RF2O polling frequency to
+four times the wall-clock scan arrival rate instead of patching RF2O's callback. The
+four event labels are approximate measured field checkpoints, not motion-capture
+ground truth, so these results are suitable for initial tuning but not final
+covariance calibration.
+
+With foot odometry disabled, the current LiDAR-plus-IMU pipeline produced:
+
+| Input path | Checkpoint position RMSE | Checkpoint yaw RMSE | Final position error | Final yaw error |
+| --- | --- | --- | --- | --- |
+| Raw RF2O, before deadband | `0.0892 m` | `6.226 deg` | `0.0394 m` | `0.405 deg` |
+| Current filtered RF2O and EKF | `0.1223 m` | `6.490 deg` | `0.0384 m` | `2.383 deg` |
+
+Feeding the same filtered trajectory and IMU messages to all covariance
+profiles isolates the confidence change from scan-matching timing:
+
+| Profile | Position RMSE | Yaw RMSE | Position sigma at final marker | Yaw sigma at final marker |
+| --- | --- | --- | --- | --- |
+| `measured` | `0.122337 m` | `6.490 deg` | `0.0437 m` | `2.569 deg` |
+| `relaxed` | `0.122337 m` | `6.490 deg` | `0.0503 m` | `2.734 deg` |
+| `conservative` | `0.122338 m` | `6.490 deg` | `0.0590 m` | `3.510 deg` |
+| `legacy_zero` | `0.122336 m` | `6.490 deg` | `0.0407 m` | `2.506 deg` |
+
+As expected with RF2O as the only absolute pose source, covariance selection
+hardly changes the checkpoint trajectory. It changes the EKF's reported
+confidence. `measured` is therefore the initial default, while the raw versus
+filtered result identifies deadband tuning as a separate follow-up test.
+
+### Measured-profile fusion comparison
+
+The original full comparison launch was run with `rf2o_covariance_profile`
+fixed to `measured`. Each EKF saw the same replay clock and RF2O trajectory;
+only its sensor inputs changed. At that time, the legacy foot implementation
+derived displacement from commanded gait targets and used the 2 Hz motor
+samples only as a tracking check.
+
+| Variant | Checkpoint position RMSE | Checkpoint yaw RMSE | Final-marker position error | Final-marker yaw error |
+| --- | --- | --- | --- | --- |
+| Raw RF2O reference | `0.08900 m` | `6.2256 deg` | `0.03939 m` | `0.4045 deg` |
+| Filtered RF2O reference | `0.12234 m` | `6.4902 deg` | `0.03837 m` | `2.3827 deg` |
+| Filtered LiDAR-only EKF | `0.12234 m` | `6.4887 deg` | `0.03837 m` | `2.3834 deg` |
+| Filtered LiDAR plus IMU EKF | `0.12234 m` | `6.4902 deg` | `0.03837 m` | `2.3827 deg` |
+| Raw RF2O plus IMU EKF | `0.08990 m` | `6.2346 deg` | `0.03907 m` | `0.3711 deg` |
+| Filtered LiDAR plus IMU plus foot EKF | `0.12234 m` | `6.4902 deg` | `0.03837 m` | `2.3827 deg` |
+
+The raw-RF2O-plus-IMU variant was the strongest tested fusion on these sparse
+field markers. Adding IMU yaw rate to filtered LiDAR did not change checkpoint
+accuracy, but it changed inter-scan yaw prediction by `0.225 deg` RMS and
+slightly reduced the EKF yaw uncertainty, so it remains useful as the angular
+velocity source.
+
+Adding the legacy command-derived foot velocity changed the LiDAR-plus-IMU
+trajectory by only `0.0025 m` RMS and did not improve a checkpoint. Its
+standalone estimate reached about `5.95 m` when the robot had returned close to
+its start. This was not a covariance problem: commanded gait displacement was
+being mistaken for measured body displacement. The legacy mode is now retained
+only as `foot_odometry_source:=commanded_targets` for regression testing.
+
+The comparison was rerun after making `measured_joints` the default. The bag has
+525 joint snapshots over 262.6 seconds, approximately 2 Hz. Consecutive moving
+snapshots span 22 to 24 of the 50 Hz gait phases, crossing tripod changes. The
+continuity gate therefore accepted zero moving increments. During replay,
+`/foot_odom` produced 403 valid standby zero-velocity messages, zero nonzero
+twists, and an unchanged pose. The fused trajectory and LiDAR-plus-IMU
+trajectory differed by `0.000033 m` on average; the largest brief position
+difference was `0.0092 m`. This is the intended safe result for an undersampled
+bag. Measured foot displacement requires a validated higher joint-read rate.
+
+No RF2O increment in this bag exceeded the existing `0.03 m` translation or
+`5 deg` yaw jump limits. Consequently, setting only the small RF2O deadbands to
+zero while retaining jump rejection would reproduce the better raw trajectory
+for this trial. That is the next production-oriented A/B test; it does not
+require removing the safety guards.
 
 ## RF2O Deadband And Jump Rejection
 
@@ -191,6 +286,8 @@ IMU topics:
 
 `/imu/data_processed` does not provide orientation. Its orientation covariance is
 set to `-1`, which tells consumers that orientation is unavailable.
+The current angular-velocity variance is `8.5e-6 (rad/s)^2`, estimated from
+stationary raw-gyro samples in `odom_test_001`.
 
 Startup calibration is enabled by default. While the robot is still, the node
 collects raw IMU samples to estimate:
@@ -245,7 +342,7 @@ secondary yaw-rate source, not the source of absolute orientation.
 The EKF publishes the filtered odometry topic and the authoritative
 `odom -> base_frame` TF.
 
-## Commanded-Stance Foot Odometry
+## Measured-Joint Foot Odometry
 
 Foot/gait odometry is enabled by default. It can be disabled with:
 
@@ -253,34 +350,34 @@ Foot/gait odometry is enabled by default. It can be disabled with:
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
 ```
 
-`foot_odometry_node` is not contact-sensed foot odometry. Its motion
-estimate remains based on the host gait trajectory because the 2 Hz motor read
-service is too sparse to establish consecutive planted-foot transforms. The
-custom driver now latches `/cmd_vel` and advances exactly one trajectory phase
-per 50 Hz locomotion tick. It publishes gait state only after sending that
-phase's motor targets; changing a nonzero command preserves phase instead of
-restarting the 20-step cycle. A command older than 0.5 seconds actively returns
-the gait to standby. The node:
+`foot_odometry_node` is measured-joint kinematic odometry, but it is not
+contact-sensed odometry. The custom driver latches `/cmd_vel` and advances
+exactly one trajectory phase per 50 Hz locomotion tick. It publishes gait state
+only after sending that phase's motor targets; changing a nonzero command
+preserves phase instead of restarting the 20-step cycle. A command older than
+0.5 seconds actively returns the gait to standby. The node:
 
-- consumes `/muto/commanded_gait_state` from the custom Muto driver;
-- treats feet commanded in stance in two consecutive phases as stationary;
-- fits the planar body transform from those common-stance foot targets;
-- rejects dropped or stale phases, wrong-frame input, malformed support sets,
-  excessive fit residuals, per-phase motion above `0.05 m` or `0.2 rad`, and
-  inferred rates above `1.0 m/s` or `2.0 rad/s`;
+- retains `/muto/commanded_gait_state` as a 50 Hz history of which feet were
+  commanded in stance or swing;
 - polls `get_motor_angles`, whose response pairs all 18 motor values with the
   gait target and stance mask that were current during that serial read;
 - samples without an artificial settle sleep; the serial read itself still
   holds the shared bus and can delay the 50 Hz timers if its response is slow;
-- converts the calibrated logical motor angles through the custom library's
-  forward kinematics and checks each sampled stance foot against its target;
-- invalidates feedback confidence when the gait mode changes, so a sample from
-  standby, translation, or turning cannot authorize a different mode;
-- publishes and integrates `/foot_odom` only while motor validation is fresh;
-- stamps each output with the source gait measurement time rather than callback
-  processing time;
-- removes millimetre-scale translation leakage from the generated pure-turn
-  trajectory while preserving its fitted yaw increment.
+- converts calibrated logical motor angles through the custom library's forward
+  kinematics to obtain six measured foot positions in `base_frame`;
+- requires a complete gait history, one unchanged gait mode, no more than ten
+  skipped gait phases, and at least three feet that remained in commanded
+  stance throughout the interval between motor snapshots;
+- fits the planar body transform from the current measured support-foot
+  positions to the previous measured support-foot positions;
+- rejects stale or malformed input, incomplete support history, FK residuals
+  above `0.01 m`, steps above `0.05 m` or `0.2 rad`, inferred rates above
+  `1.0 m/s` or `2.0 rad/s`, and command-tracking residuals above `0.03 m`;
+- publishes valid measured increments and weak standby zero-velocity updates,
+  stamping each output with the motor sample's source timestamp.
+
+`odometry_source:=commanded_targets` preserves the previous command-derived
+estimator only for regression. It must not be used as measured odometry.
 
 Motor values are already in firmware-calibrated logical degrees. The node does
 not read or subtract raw servo calibration offsets a second time. The factory
@@ -288,7 +385,9 @@ standing command is `(0, -30, -15)` degrees per leg. That pose and generated
 gait commands are regression-tested against the custom model's `27.5`, `50.59`,
 `72.60`, and `134.5` mm leg dimensions.
 
-The motor check uses the worst sampled stance-foot FK error. Errors up to 5 mm
+The motor check uses the worst sampled stance-foot FK error. It does not supply
+the motion increment; it rejects samples whose stance classification may no
+longer match the commanded geometry. Errors up to 5 mm
 retain full motor confidence; confidence decreases from 5 mm to 30 mm; an error
 above 30 mm suppresses output. Missing, stale, malformed, wrong-frame, or
 wrong-angle-space samples also suppress output. A future-sequence motor sample
@@ -324,13 +423,13 @@ diagonal above the configured planar confidence-scaled values or bounded
 unsupported-axis variances. The node itself does not publish TF in the normal
 pipeline; the EKF remains the sole `odom -> base_frame` owner.
 
-The custom driver converts vendor-model `x=right, y=forward` foot coordinates
-to ROS `base_frame` axes (`x=forward, y=left`) before publishing. A stance label
-means only that the commanded target is on the nominal ground plane. The
-estimator therefore assumes those stance feet are static relative to the
-ground. Servo tracking can expose gross command, calibration, or actuator
-errors, but it still cannot measure ground contact, load, foot slip, or body
-motion caused by external forces.
+The ROS foot-odometry boundary converts vendor-model `x=right, y=forward` foot
+coordinates to `base_frame` axes (`x=forward, y=left`). A stance label means
+only that the target is in the gait's support portion. The estimator therefore
+assumes those feet are static relative to the ground throughout the interval.
+Servo tracking can expose gross command, calibration, or actuator errors, but
+it still cannot measure ground contact, load, foot slip, or body motion caused
+by external forces.
 
 The first locomotion tick after driver startup commands the factory standby
 pose instead of assuming that the physical servos are already there. Support
@@ -388,13 +487,15 @@ port to 1 Mbaud would therefore break communication. Keep 115200 unless
 Yahboom supplies a controller-side procedure or the controller firmware is
 available and explicitly confirms another rate.
 
-Higher-rate motor feedback alone does not make the current estimate measured
-foot odometry. A future measured-joint estimator must associate samples with
-all intervening gait phases, retain stance continuity when 20 Hz feedback skips
-50 Hz targets, and smooth the one-degree joint quantization over multiple
-samples or a gait cycle. Contact and slip would remain unobserved. Until that
-estimator is implemented and validated, foot-derived yaw rate is not fused;
-RF2O supplies yaw and the IMU supplies `wz`.
+The measured-joint estimator now associates every snapshot pair with all
+intervening gait phases and rejects the interval unless support continuity is
+provable. At the current 2 Hz default, moving snapshots are normally separated
+by more than one complete 20-phase gait cycle, so motion output is deliberately
+suppressed. A controlled 10 Hz and then 20 Hz hardware benchmark is still
+required before moving foot velocity becomes available in production. Joint
+quantization, commanded rather than sensed contact, and unmeasured slip remain
+limitations. Foot-derived yaw rate is not fused; RF2O supplies yaw and the IMU
+supplies `wz`.
 
 `ekf_lidar_imu_with_foot.yaml` is loaded as an overlay on the primary
 `ekf_lidar_imu.yaml` configuration. `/foot_odom` contributes only planar body
@@ -510,7 +611,8 @@ time/TF problem.
   checks.
 - The IMU is not providing absolute orientation; it only helps as a yaw-rate
   source.
-- Foot odometry is only command/dead-reckoned and should remain low trust.
+- Foot odometry uses measured joint FK but still lacks contact and slip sensing;
+  it should remain low trust, and moving output is unavailable at 2 Hz.
 - Depth camera information adds forward obstacle observations to Nav2, but it is
   not currently an EKF odometry input.
 
@@ -549,8 +651,8 @@ EKF pipeline.
 - Compare RF2O behavior with any separately reintroduced point-cloud ICP
   experiment only after the normal RF2O/EKF baseline is stable.
 - Revisit EKF covariances after collecting repeatable bag data.
-- Compare localization with `launch_foot_odometry:=true` and `false` using
-  repeatable bags; disable the input if commanded stance does not improve
-  robustness on the physical robot.
+- Validate 10 Hz and then 20 Hz joint polling against gait timing, IMU rate,
+  serial errors, and repeatable measured endpoints before increasing foot
+  odometry weight.
 - Consider depth-camera odometry only as a separate future experiment; the
   current depth-camera path is an independent Nav2 costmap source.

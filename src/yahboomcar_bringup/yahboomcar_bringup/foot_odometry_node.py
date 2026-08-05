@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Motor-validated commanded-stance odometry for the Muto hexapod."""
+"""Continuity-gated measured-joint odometry for the Muto hexapod."""
 
+from collections import deque
 import json
 import math
 
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped
 from muto_hexapod_interfaces_custom.msg import CommandedGaitState
 from muto_hexapod_lib_custom.core.leg import (
@@ -19,17 +21,18 @@ from tf2_ros import TransformBroadcaster
 from .commanded_gait_odometry import (
     CommandedStanceOdometry,
     GaitObservation,
+    MeasuredStanceOdometry,
 )
 
 
 class FootOdometryNode(Node):
     """
-    Estimate body motion from commanded stance with motor FK validation.
+    Estimate body motion from measured joint FK across continuous stance.
 
-    Feet commanded in stance across consecutive gait phases are assumed fixed
-    in the odom frame. Calibrated logical motor readback must track the same
-    kinematic targets before an odometry sample is published. This node still
-    has no contact, load, or slip measurement.
+    Commanded gait states identify candidate support feet, but motion comes
+    from calibrated joint readback. A foot must remain commanded in stance for
+    every gait phase between the two motor samples. This node still has no
+    contact, load, or slip measurement.
     """
 
     def __init__(self):
@@ -45,9 +48,24 @@ class FootOdometryNode(Node):
         self.child_frame_id = self.declare_parameter(
             'child_frame_id', 'base_frame').value
         self.publish_tf = self.declare_parameter('publish_tf', False).value
+        self.odometry_source = str(
+            self.declare_parameter(
+                'odometry_source', 'measured_joints').value
+        )
+        valid_sources = {'measured_joints', 'commanded_targets'}
+        if self.odometry_source not in valid_sources:
+            self.get_logger().warn(
+                f'Unknown odometry_source {self.odometry_source!r}; using '
+                f'measured_joints')
+            self.odometry_source = 'measured_joints'
 
         self.motor_poll_rate = float(
             self.declare_parameter('motor_poll_rate', 2.0).value)
+        self.max_motor_sequence_gap = max(
+            1,
+            int(self.declare_parameter(
+                'max_motor_sequence_gap', 10).value),
+        )
         self.motor_stale_timeout = max(
             0.0,
             float(self.declare_parameter(
@@ -91,7 +109,7 @@ class FootOdometryNode(Node):
                 'unobserved_twist_variance', 1.0).value),
         )
 
-        self.estimator = CommandedStanceOdometry(
+        self.commanded_estimator = CommandedStanceOdometry(
             stance_value=CommandedGaitState.STANCE,
             min_common_stance=3,
             max_fit_residual_m=self.max_fit_residual_m,
@@ -101,6 +119,23 @@ class FootOdometryNode(Node):
             max_angular_speed_radps=self.max_angular_speed_radps,
             max_sample_dt=self.max_sample_dt,
         )
+        self.measured_estimator = MeasuredStanceOdometry(
+            stance_value=CommandedGaitState.STANCE,
+            min_common_stance=3,
+            max_sequence_gap=self.max_motor_sequence_gap,
+            max_fit_residual_m=self.max_fit_residual_m,
+            max_translation_step_m=self.max_translation_step_m,
+            max_rotation_step_rad=self.max_rotation_step_rad,
+            max_linear_speed_mps=self.max_linear_speed_mps,
+            max_angular_speed_radps=self.max_angular_speed_radps,
+            max_sample_dt=self.max_sample_dt,
+        )
+        self.estimator = (
+            self.measured_estimator
+            if self.odometry_source == 'measured_joints'
+            else self.commanded_estimator
+        )
+        self.gait_history = deque(maxlen=max(256, 4 * self.max_motor_sequence_gap))
 
         self.x = 0.0
         self.y = 0.0
@@ -141,13 +176,16 @@ class FootOdometryNode(Node):
             motor_period, self.poll_motor_angles)
 
         self.get_logger().info(
-            f'Publishing motor-validated commanded-stance odometry on '
+            f'Publishing {self.odometry_source} foot odometry on '
             f'{self.odom_topic} from {self.gait_state_topic}; calibrated '
-            f'logical angles come from {self.motor_service_name}')
+            f'logical angles come from {self.motor_service_name} at '
+            f'{self.motor_poll_rate:.1f} Hz')
 
     def gait_state_callback(self, msg):
         if msg.header.frame_id != self.child_frame_id:
             self.estimator.reset()
+            if hasattr(self, 'gait_history'):
+                self.gait_history.clear()
             self.get_logger().warn(
                 f'Ignoring gait state in {msg.header.frame_id!r}; expected '
                 f'{self.child_frame_id!r}',
@@ -180,6 +218,8 @@ class FootOdometryNode(Node):
                 or (self.gait_state_stale_timeout > 0.0
                     and gait_age > self.gait_state_stale_timeout)):
             self.estimator.reset()
+            if hasattr(self, 'gait_history'):
+                self.gait_history.clear()
             self.get_logger().warn(
                 f'Ignoring gait state delayed by {gait_age:.3f} s',
                 throttle_duration_sec=5.0)
@@ -195,8 +235,14 @@ class FootOdometryNode(Node):
             foot_x_m=tuple(value * 0.001 for value in msg.foot_x_mm),
             foot_y_m=tuple(value * 0.001 for value in msg.foot_y_mm),
         )
+        if hasattr(self, 'gait_history'):
+            self.gait_history.append(observation)
+        if getattr(self, 'odometry_source', 'commanded_targets') == (
+                'measured_joints'):
+            return
+
         try:
-            increment = self.estimator.update(observation)
+            increment = self.commanded_estimator.update(observation)
         except ValueError as exc:
             self.get_logger().warn(
                 f'Ignoring invalid commanded gait observation: {exc}',
@@ -220,6 +266,15 @@ class FootOdometryNode(Node):
             self._set_zero_twist()
             return
 
+        self.integrate_increment(increment)
+
+        self.publish_odometry(
+            measurement_stamp,
+            min(self.geometry_confidence, motor_confidence),
+        )
+
+    def integrate_increment(self, increment):
+        """Integrate one body-frame stance transform into odom coordinates."""
         cosine = math.cos(self.yaw)
         sine = math.sin(self.yaw)
         self.x += increment.dx * cosine - increment.dy * sine
@@ -234,11 +289,6 @@ class FootOdometryNode(Node):
                 1.0 - fit_ratio, 0.25, 1.0)
         else:
             self.geometry_confidence = 1.0
-
-        self.publish_odometry(
-            measurement_stamp,
-            min(self.geometry_confidence, motor_confidence),
-        )
 
     def poll_motor_angles(self):
         if self.motor_future is not None and not self.motor_future.done():
@@ -270,9 +320,13 @@ class FootOdometryNode(Node):
 
         try:
             data = json.loads(response.message)
-            residual_m, sequence, mode = self.motor_tracking_residual(
-                data, self.child_frame_id)
-            sample_stamp_sec = self.motor_sample_stamp_sec(data)
+            residual_m, observation, measurement_stamp = (
+                self.measured_motor_observation(
+                    data, self.child_frame_id)
+            )
+            sequence = observation.sequence
+            mode = observation.mode
+            sample_stamp_sec = observation.stamp_sec
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             self.get_logger().warn(
                 f'Could not validate calibrated motor sample: {exc}',
@@ -296,15 +350,63 @@ class FootOdometryNode(Node):
         self.motor_tracking_accepted = (
             residual_m <= self.motor_tracking_reject_residual_m)
         if not self.motor_tracking_accepted:
+            if self.odometry_source == 'measured_joints':
+                self.measured_estimator.reset()
             self.get_logger().warn(
                 f'Worst stance-foot FK residual {residual_m:.3f} m exceeds '
                 f'{self.motor_tracking_reject_residual_m:.3f} m; '
                 f'suppressing {self.odom_topic}',
                 throttle_duration_sec=5.0)
+            return
+
+        if self.odometry_source == 'measured_joints':
+            self.process_measured_observation(
+                observation, measurement_stamp, now)
+
+    def process_measured_observation(self, observation, stamp, now):
+        """Update odometry from one synchronized measured-joint snapshot."""
+        history = list(self.gait_history)
+        if not any(
+                state.sequence == observation.sequence
+                for state in history):
+            history.append(observation)
+
+        increment = self.measured_estimator.update(observation, history)
+        confidence = self.motor_tracking_confidence(
+            now, observation.sequence, observation.mode)
+        if confidence is None:
+            self._set_zero_twist()
+            return
+        if observation.mode == 'standby':
+            self._set_zero_twist()
+            self.geometry_confidence = 1.0
+            self.publish_odometry(stamp, confidence)
+            return
+        if increment is None:
+            self._set_zero_twist()
+            self.geometry_confidence = 0.25
+            self.get_logger().warn(
+                'Measured-joint foot odometry skipped: '
+                f'{self.measured_estimator.last_rejection_reason}',
+                throttle_duration_sec=5.0)
+            return
+
+        self.integrate_increment(increment)
+        self.publish_odometry(
+            stamp, min(self.geometry_confidence, confidence))
 
     @staticmethod
     def motor_tracking_residual(data, expected_frame_id=None):
         """Return worst synchronized stance-foot FK error, sequence and mode."""
+        residual_m, observation, _ = (
+            FootOdometryNode.measured_motor_observation(
+                data, expected_frame_id)
+        )
+        return residual_m, observation.sequence, observation.mode
+
+    @staticmethod
+    def measured_motor_observation(data, expected_frame_id=None):
+        """Return command residual and synchronized measured-FK observation."""
         if data.get('angle_space') != (
                 'firmware_calibrated_logical_degrees'):
             raise ValueError('unexpected or missing motor angle space')
@@ -365,11 +467,23 @@ class FootOdometryNode(Node):
         mode = gait_state.get('mode')
         if not isinstance(mode, str) or not mode:
             raise ValueError('gait mode must be a non-empty string')
-        return max(stance_errors_mm) * 0.001, sequence, mode
+        stamp = FootOdometryNode.motor_sample_stamp(data)
+        observation = GaitObservation(
+            sequence=sequence,
+            mode=mode,
+            phase_index=int(gait_state.get('phase_index')),
+            cycle_length=int(gait_state.get('cycle_length')),
+            stamp_sec=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+            leg_state=tuple(int(state) for state in leg_state),
+            foot_x_m=tuple(point[0] * 0.001 for point in actual_ros_mm),
+            foot_y_m=tuple(point[1] * 0.001 for point in actual_ros_mm),
+        )
+        observation.validate()
+        return max(stance_errors_mm) * 0.001, observation, stamp
 
     @staticmethod
-    def motor_sample_stamp_sec(data):
-        """Return and validate the motor sample's source timestamp."""
+    def motor_sample_stamp(data):
+        """Return and validate the motor sample source timestamp message."""
         stamp = data.get('sample_stamp')
         if not isinstance(stamp, dict):
             raise ValueError('missing motor sample timestamp')
@@ -377,10 +491,15 @@ class FootOdometryNode(Node):
         nanosec = int(stamp.get('nanosec'))
         if sec < 0 or nanosec < 0 or nanosec >= 1_000_000_000:
             raise ValueError('invalid motor sample timestamp')
-        result = float(sec) + float(nanosec) * 1e-9
-        if result <= 0.0 or not math.isfinite(result):
+        if sec == 0 and nanosec == 0:
             raise ValueError('invalid motor sample timestamp')
-        return result
+        return Time(sec=sec, nanosec=nanosec)
+
+    @staticmethod
+    def motor_sample_stamp_sec(data):
+        """Return and validate the motor sample's source timestamp."""
+        stamp = FootOdometryNode.motor_sample_stamp(data)
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     def motor_tracking_confidence(self, now, gait_sequence, gait_mode):
         if (not self.motor_tracking_accepted

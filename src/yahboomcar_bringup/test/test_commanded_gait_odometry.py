@@ -6,6 +6,7 @@ import pytest
 from yahboomcar_bringup.commanded_gait_odometry import (
     CommandedStanceOdometry,
     GaitObservation,
+    MeasuredStanceOdometry,
 )
 
 
@@ -125,3 +126,91 @@ def test_implausible_phase_velocity_is_rejected():
     guarded = CommandedStanceOdometry(max_linear_speed_mps=1.0)
     assert guarded.update(first) is None
     assert guarded.update(second) is None
+
+
+def measured_observation(sequence, stamp_sec, points, leg_state=None):
+    if leg_state is None:
+        leg_state = (STANCE, STANCE, STANCE, SWING, SWING, SWING)
+    return GaitObservation(
+        sequence=sequence,
+        mode='move_x',
+        phase_index=sequence % 20,
+        cycle_length=20,
+        stamp_sec=stamp_sec,
+        leg_state=tuple(leg_state),
+        foot_x_m=tuple(point[0] for point in points),
+        foot_y_m=tuple(point[1] for point in points),
+    )
+
+
+def inverse_body_transform(points, dx, dy, dyaw):
+    cosine = math.cos(-dyaw)
+    sine = math.sin(-dyaw)
+    return tuple(
+        (
+            cosine * (x - dx) - sine * (y - dy),
+            sine * (x - dx) + cosine * (y - dy),
+        )
+        for x, y in points
+    )
+
+
+def test_measured_joint_estimator_fits_continuously_planted_feet():
+    previous_points = (
+        (0.20, 0.15), (0.22, 0.0), (0.20, -0.15),
+        (-0.20, -0.15), (-0.22, 0.0), (-0.20, 0.15),
+    )
+    current_points = inverse_body_transform(
+        previous_points, dx=0.02, dy=-0.01, dyaw=0.05)
+    previous = measured_observation(10, 1.0, previous_points)
+    current = measured_observation(13, 1.1, current_points)
+    history = [
+        measured_observation(sequence, 1.0, previous_points)
+        for sequence in range(10, 14)
+    ]
+    estimator = MeasuredStanceOdometry(max_sequence_gap=5)
+
+    assert estimator.update(previous, history) is None
+    increment = estimator.update(current, history)
+
+    assert increment is not None
+    assert increment.support_count == 3
+    assert increment.dx == pytest.approx(0.02)
+    assert increment.dy == pytest.approx(-0.01)
+    assert increment.dyaw == pytest.approx(0.05)
+    assert increment.residual_m < 1e-12
+
+
+def test_measured_joint_estimator_rejects_intervening_swing():
+    points = (
+        (0.20, 0.15), (0.22, 0.0), (0.20, -0.15),
+        (-0.20, -0.15), (-0.22, 0.0), (-0.20, 0.15),
+    )
+    previous = measured_observation(10, 1.0, points)
+    current = measured_observation(12, 1.1, points)
+    changed_support = (STANCE, STANCE, SWING, SWING, SWING, SWING)
+    history = [
+        previous,
+        measured_observation(11, 1.05, points, changed_support),
+        current,
+    ]
+    estimator = MeasuredStanceOdometry(max_sequence_gap=5)
+
+    assert estimator.update(previous, history) is None
+    assert estimator.update(current, history) is None
+    assert estimator.last_rejection_reason == (
+        'only 2 feet remained in stance; need 3'
+    )
+
+
+def test_measured_joint_estimator_rejects_sparse_motor_samples():
+    points = tuple((0.1 * index, 0.0) for index in range(6))
+    previous = measured_observation(10, 1.0, points)
+    current = measured_observation(21, 1.5, points)
+    estimator = MeasuredStanceOdometry(max_sequence_gap=10)
+
+    assert estimator.update(previous, [previous]) is None
+    assert estimator.update(current, [previous, current]) is None
+    assert estimator.last_rejection_reason == (
+        'motor samples span 11 gait phases; maximum is 10'
+    )

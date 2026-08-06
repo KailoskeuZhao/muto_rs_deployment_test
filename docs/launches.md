@@ -132,8 +132,10 @@ Startup IMU calibration targets 300 valid samples, permits at most 600 serial
 attempts, and has a 30 s wall-clock limit; the same defaults are exposed by the
 hardware and one-shot launches.
 The top-level pipeline and localization launch also expose
-`foot_motor_poll_rate`, which remains at 2 Hz until higher feedback rates are
-validated on the controller.
+`foot_motor_poll_rate`, whose production limit remains 2 Hz. The 2026-08-05
+10 Hz test delayed gait and IMU intervals to about 40 ms at the 95th
+percentile, so a higher rate requires the explicit
+`allow_experimental_high_rate_motor_polling:=true` test-only opt-in.
 
 Start static sensor TF:
 

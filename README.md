@@ -11,6 +11,8 @@ Expect launch files, topic names, frames, calibration values, and filtering assu
 Hardware-specific assumptions are currently embedded in several places, especially frame names, sensor poses, IMU calibration constants, LiDAR/depth-camera filtering ranges, and SLAM/EKF parameters.
 
 Detailed odometry and localization notes are in [docs/odometry.md](docs/odometry.md).
+The 2026-08-05 10 Hz joint-feedback mini-test is documented in
+[docs/odometry_10hz_mini_test_2026-08-05.md](docs/odometry_10hz_mini_test_2026-08-05.md).
 Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
 The current SLAM and Nav2 runbook is in [docs/slam_pipeline.md](docs/slam_pipeline.md).
 Repeatable odometry recording and replay is in [src/muto_odometry_bag/README.md](src/muto_odometry_bag/README.md).
@@ -188,16 +190,12 @@ By default this uses the raw TG30 `LaserScan` path. It publishes:
 `filter_lidar_odometry_launch.py` keeps the RF2O submodule unmodified. RF2O
 publishes its original `scan_odom_raw`, then the parent-owned
 `lidar_pointcloud_filter/odometry_translation_deadband_node` applies covariance
-and republishes the EKF-facing `scan_odom`. The wrapper applies a small
-per-update planar
-translation deadband by default (`rf2o_translation_deadband:=0.0025`) so
-stationary scan-match drift does not feed `/scan_odom`. At the default 16 Hz
-RF2O rate, this accepts roughly `>=4 cm/s` planar motion. Set
-`rf2o_translation_deadband:=0.0` to disable it, or tune the value in meters for
-the robot. By default, only the RF2O deadbands are gated per axis by recent
-`cmd_vel`: translation deadbanding applies while commanded planar motion is
-near zero, and yaw deadbanding applies while commanded yaw is near zero. Jump
-rejection remains active whether the robot is stationary or moving.
+and republishes the EKF-facing `scan_odom`. Translation and yaw deadbands now
+default to zero (`rf2o_translation_deadband:=0.0`,
+`rf2o_yaw_deadband:=0.0`) so scan-match motion is not discarded. Jump rejection
+remains active at `0.03 m` translation and `0.087266 rad` yaw. The deadbands
+remain available as explicit tuning parameters and are gated per axis by recent
+`cmd_vel` when enabled.
 
 The default `rf2o_covariance_profile:=measured` uses the first bag-derived
 estimate: `2.5e-4 m^2` for X/Y pose and `1.0e-4 rad^2` for yaw. Select
@@ -233,7 +231,10 @@ commanded gait stream identifies support continuity, but does not supply the
 motion: at least three of the same feet must remain in commanded stance through
 every intervening 50 Hz gait phase. At the conservative 2 Hz joint-read default,
 moving samples are normally too far apart and are suppressed; valid standby
-samples can still provide a weak zero-velocity update. To disable it:
+samples can still provide a weak zero-velocity update. The tested 10 Hz rate
+delayed the gait and IMU loops and produced under-scaled foot motion, so rates
+above 2 Hz require `allow_experimental_high_rate_motor_polling:=true` and must
+not be used for normal deployment. To disable foot input entirely:
 
 ```bash
 ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false

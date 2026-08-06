@@ -180,6 +180,9 @@ def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
         assert 'gait_state_publish_rate_hz' not in defaults
 
     assert float(pipeline_defaults['foot_motor_poll_rate']) == 2.0
+    assert pipeline_defaults[
+        'allow_experimental_high_rate_motor_polling'
+    ] == 'false'
     assert pipeline_defaults['foot_odometry_source'] == 'measured_joints'
     assert int(pipeline_defaults['foot_max_motor_sequence_gap']) == 10
 
@@ -223,6 +226,10 @@ def test_ekf_sensor_ownership_keeps_foot_yaw_out_of_the_filter():
     assert localization_defaults['foot_odometry_source'] == (
         'measured_joints'
     )
+    assert float(localization_defaults['foot_motor_poll_rate']) == 2.0
+    assert localization_defaults[
+        'allow_experimental_high_rate_motor_polling'
+    ] == 'false'
     assert int(
         localization_defaults['foot_max_motor_sequence_gap']
     ) == 10
@@ -246,6 +253,31 @@ def test_measured_rf2o_covariance_profile_is_the_replayable_default():
         )
 
 
+def test_rf2o_deadbands_are_disabled_but_jump_guards_remain_default():
+    launch_paths = (
+        SENSOR_ROOT / 'launch' / 'filter_lidar_odometry_launch.py',
+        HARDWARE_ROOT / 'launch' / 'ekf_imu_lidar_launch.py',
+        PACKAGE_ROOT / 'launch' / 'muto_nav2_pipeline_launch.py',
+        ODOMETRY_BAG_ROOT / 'launch' / 'replay_odometry_bag_launch.py',
+        ODOMETRY_BAG_ROOT / 'launch' /
+        'replay_odometry_comparison_launch.py',
+    )
+
+    for launch_path in launch_paths:
+        defaults, _ = _launch_defaults(launch_path)
+        assert float(defaults['rf2o_translation_deadband']) == 0.0
+        assert float(defaults['rf2o_yaw_deadband']) == 0.0
+
+    for launch_path in launch_paths[:2]:
+        defaults, _ = _launch_defaults(launch_path)
+        assert float(
+            defaults['rf2o_translation_jump_rejection_threshold']
+        ) == 0.03
+        assert float(
+            defaults['rf2o_yaw_jump_rejection_threshold']
+        ) == 0.087266
+
+
 def test_accelerated_replay_scales_the_stock_rf2o_poll_rate():
     replay_paths = (
         ODOMETRY_BAG_ROOT / 'launch' / 'replay_odometry_bag_launch.py',
@@ -255,12 +287,17 @@ def test_accelerated_replay_scales_the_stock_rf2o_poll_rate():
 
     for launch_path in replay_paths:
         defaults, _ = _launch_defaults(launch_path)
+        assert float(defaults['foot_motor_poll_rate']) == 2.0
         assert defaults['foot_odometry_source'] == 'measured_joints'
         assert int(defaults['foot_max_motor_sequence_gap']) == 10
         source = launch_path.read_text(encoding='utf-8')
         assert "LaunchConfiguration('playback_rate'), ' * 64.0'" in source
         assert 'rf2o_process_on_scan' not in source
         assert 'rf2o_scan_queue_size' not in source
+        assert (
+            "'allow_experimental_high_rate_motor_polling': 'true'"
+            in source
+        )
 
     sensor_source = (
         SENSOR_ROOT / 'launch' / 'filter_lidar_odometry_launch.py'
@@ -268,6 +305,17 @@ def test_accelerated_replay_scales_the_stock_rf2o_poll_rate():
     assert "'process_on_scan'" not in sensor_source
     assert "'laser_scan_queue_size'" not in sensor_source
     assert "'covariance_profile': LaunchConfiguration(" in sensor_source
+
+
+def test_hardware_motor_polling_above_two_hz_requires_opt_in():
+    record_defaults, _ = _launch_defaults(
+        ODOMETRY_BAG_ROOT / 'launch' / 'record_odometry_bag_launch.py'
+    )
+
+    assert float(record_defaults['motor_poll_rate']) == 2.0
+    assert record_defaults[
+        'allow_experimental_high_rate_motor_polling'
+    ] == 'false'
 
 
 def test_odometry_comparison_varies_inputs_not_covariance_profile():
@@ -280,6 +328,7 @@ def test_odometry_comparison_varies_inputs_not_covariance_profile():
     assert defaults['rf2o_covariance_profile'] == 'measured'
     assert float(defaults['minimum_start_delay_sec']) == 2.0
     assert defaults['foot_odometry_source'] == 'measured_joints'
+    assert float(defaults['foot_motor_poll_rate']) == 2.0
     assert int(defaults['foot_max_motor_sequence_gap']) == 10
     assert defaults['lidar_only_output_topic'] == '/odometry/lidar_only'
     assert defaults['lidar_imu_output_topic'] == '/odometry/lidar_imu'

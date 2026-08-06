@@ -138,7 +138,8 @@ Useful top-level switches include:
 | `imu_calibration_sample_count` | `300` | Valid stationary IMU samples targeted at startup. |
 | `imu_calibration_max_reads` | `600` | Maximum serial attempts allowed for that calibration. |
 | `imu_calibration_timeout_sec` | `30.0` | Hard wall-clock cap on startup calibration. |
-| `foot_motor_poll_rate` | `2.0` | Requests synchronized 18-joint feedback for foot validation; raise only during a controlled hardware benchmark. |
+| `foot_motor_poll_rate` | `2.0` | Production limit for synchronized 18-joint feedback. The tested 10 Hz rate delayed gait and IMU processing. |
+| `allow_experimental_high_rate_motor_polling` | `false` | Required explicit opt-in above 2 Hz; never enable for normal deployment with the current blocking serial service. |
 
 If a prerequisite stage is disabled, any enabled downstream stage must already
 have equivalent topics and TF supplied externally.

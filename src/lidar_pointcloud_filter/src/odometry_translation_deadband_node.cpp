@@ -19,8 +19,8 @@ public:
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "scan_odom_raw");
     output_topic_ = declare_parameter<std::string>("output_topic", "scan_odom");
-    translation_deadband_ = declare_parameter<double>("translation_deadband", 0.0025);
-    yaw_deadband_ = declare_parameter<double>("yaw_deadband", 0.001);
+    translation_deadband_ = declare_parameter<double>("translation_deadband", 0.0);
+    yaw_deadband_ = declare_parameter<double>("yaw_deadband", 0.0);
     translation_jump_rejection_threshold_ =
       declare_parameter<double>("translation_jump_rejection_threshold", 0.03);
     max_translation_rate_ = declare_parameter<double>("max_translation_rate", 0.0);

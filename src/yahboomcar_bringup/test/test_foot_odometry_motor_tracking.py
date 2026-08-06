@@ -55,6 +55,16 @@ def moving_state():
     return plan.next_step()[2]
 
 
+def test_production_motor_poll_rate_requires_explicit_high_rate_opt_in():
+    assert FootOdometryNode.validate_motor_poll_rate(2.0, False) == 2.0
+    assert FootOdometryNode.validate_motor_poll_rate(10.0, True) == 10.0
+
+    with pytest.raises(ValueError, match='production limit'):
+        FootOdometryNode.validate_motor_poll_rate(10.0, False)
+    with pytest.raises(ValueError, match='finite and positive'):
+        FootOdometryNode.validate_motor_poll_rate(0.0, False)
+
+
 def test_calibrated_fk_tracks_generated_stance_targets():
     state = moving_state()
     payload = motor_payload(state, command_angles_for_state(state))

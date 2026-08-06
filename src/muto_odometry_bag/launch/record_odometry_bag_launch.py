@@ -32,7 +32,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'motor_poll_rate',
             default_value='2.0',
-            description='Rate in Hz for recording get_motor_angles snapshots.',
+            description=(
+                'Rate in Hz for recording get_motor_angles snapshots. The '
+                'production limit is 2 Hz.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'allow_experimental_high_rate_motor_polling',
+            default_value='false',
+            description=(
+                'Required opt-in above the 2 Hz production limit. Use only '
+                'for a controlled hardware benchmark.'
+            ),
         ),
         Node(
             package='muto_odometry_bag',
@@ -44,6 +55,12 @@ def generate_launch_description():
                 'motor_poll_rate': ParameterValue(
                     LaunchConfiguration('motor_poll_rate'),
                     value_type=float,
+                ),
+                'allow_experimental_high_rate_motor_polling': ParameterValue(
+                    LaunchConfiguration(
+                        'allow_experimental_high_rate_motor_polling'
+                    ),
+                    value_type=bool,
                 ),
             }],
         ),

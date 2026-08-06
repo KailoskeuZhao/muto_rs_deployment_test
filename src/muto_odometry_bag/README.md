@@ -53,8 +53,11 @@ lost contact.
 The conservative 2 Hz recorder rate is suitable for residual and timing
 diagnostics, but it is generally too sparse for moving foot odometry. The
 estimator suppresses such intervals rather than treating a complete gait cycle
-as one planted-foot transform. Record at 10 Hz or 20 Hz only after that rate is
-validated against the 50 Hz gait and IMU loops on hardware.
+as one planted-foot transform. The 2026-08-05 10 Hz hardware test delayed gait
+and IMU processing and still produced severely under-scaled measured foot
+motion. Rates above 2 Hz now require an explicit experimental opt-in, and 20 Hz
+must not be attempted with the current blocking serial service. See
+[`../../docs/odometry_10hz_mini_test_2026-08-05.md`](../../docs/odometry_10hz_mini_test_2026-08-05.md).
 
 ## Record
 
@@ -65,6 +68,19 @@ pipeline, then attach the recorder:
 ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
   bag_path:=/data/bags/muto_odom_001
 ```
+
+The default `motor_poll_rate:=2.0` is the production limit. A controlled
+high-rate experiment must state both the rate and the safety override:
+
+```bash
+ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
+  bag_path:=/data/bags/muto_odom_experimental \
+  motor_poll_rate:=10.0 \
+  allow_experimental_high_rate_motor_polling:=true
+```
+
+This override is not approval for normal deployment; it only prevents an
+experimental rate from being selected accidentally.
 
 Stop the recorder with `Ctrl-C` so rosbag2 writes its final metadata. If
 `bag_path` is omitted, the node creates a timestamped directory in its current

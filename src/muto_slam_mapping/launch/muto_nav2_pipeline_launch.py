@@ -146,6 +146,11 @@ def generate_launch_description():
             'foot_motor_poll_rate': LaunchConfiguration(
                 'foot_motor_poll_rate'
             ),
+            'allow_experimental_high_rate_motor_polling': (
+                LaunchConfiguration(
+                    'allow_experimental_high_rate_motor_polling'
+                )
+            ),
             'foot_odometry_source': LaunchConfiguration(
                 'foot_odometry_source'
             ),
@@ -155,6 +160,12 @@ def generate_launch_description():
             'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
             'rf2o_covariance_profile': LaunchConfiguration(
                 'rf2o_covariance_profile'
+            ),
+            'rf2o_translation_deadband': LaunchConfiguration(
+                'rf2o_translation_deadband'
+            ),
+            'rf2o_yaw_deadband': LaunchConfiguration(
+                'rf2o_yaw_deadband'
             ),
         },
     )
@@ -266,8 +277,16 @@ def generate_launch_description():
             default_value='2.0',
             description=(
                 'Rate in Hz for synchronized 18-joint motor feedback used '
-                'by foot odometry. Keep 2.0 until higher rates are '
-                'validated on hardware.'
+                'by foot odometry. The current blocking hardware interface '
+                'has a 2 Hz production limit.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'allow_experimental_high_rate_motor_polling',
+            default_value='false',
+            description=(
+                'Required opt-in when foot_motor_poll_rate exceeds the 2 Hz '
+                'production limit. Use only for controlled tests.'
             ),
         ),
         DeclareLaunchArgument(
@@ -297,6 +316,22 @@ def generate_launch_description():
             description=(
                 'RF2O odometry covariance profile: measured, relaxed, '
                 'conservative, custom, or legacy_zero.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'rf2o_translation_deadband',
+            default_value='0.0',
+            description=(
+                'RF2O planar translation deadband in meters. The production '
+                'default is 0.0; jump rejection remains active.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'rf2o_yaw_deadband',
+            default_value='0.0',
+            description=(
+                'RF2O yaw deadband in radians. The production default is '
+                '0.0; jump rejection remains active.'
             ),
         ),
         DeclareLaunchArgument(

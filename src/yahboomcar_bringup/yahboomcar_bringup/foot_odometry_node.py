@@ -35,6 +35,8 @@ class FootOdometryNode(Node):
     contact, load, or slip measurement.
     """
 
+    PRODUCTION_MOTOR_POLL_RATE_HZ = 2.0
+
     def __init__(self):
         super().__init__('foot_odometry_node')
 
@@ -59,8 +61,26 @@ class FootOdometryNode(Node):
                 f'measured_joints')
             self.odometry_source = 'measured_joints'
 
-        self.motor_poll_rate = float(
+        requested_motor_poll_rate = float(
             self.declare_parameter('motor_poll_rate', 2.0).value)
+        allow_experimental_high_rate = bool(
+            self.declare_parameter(
+                'allow_experimental_high_rate_motor_polling',
+                False,
+            ).value
+        )
+        self.motor_poll_rate = self.validate_motor_poll_rate(
+            requested_motor_poll_rate,
+            allow_experimental_high_rate,
+        )
+        if self.motor_poll_rate > self.PRODUCTION_MOTOR_POLL_RATE_HZ:
+            self.get_logger().warn(
+                f'Experimental {self.motor_poll_rate:.1f} Hz motor polling '
+                f'exceeds the {self.PRODUCTION_MOTOR_POLL_RATE_HZ:.1f} Hz '
+                'production limit. The 2026-08-05 10 Hz test produced '
+                'approximately 40 ms p95 gait and IMU intervals; use this '
+                'setting only for controlled tests or replay.'
+            )
         self.max_motor_sequence_gap = max(
             1,
             int(self.declare_parameter(
@@ -394,6 +414,25 @@ class FootOdometryNode(Node):
         self.integrate_increment(increment)
         self.publish_odometry(
             stamp, min(self.geometry_confidence, confidence))
+
+    @staticmethod
+    def validate_motor_poll_rate(rate_hz, allow_experimental_high_rate):
+        """Validate the explicit safety opt-in for blocking motor reads."""
+        rate_hz = float(rate_hz)
+        if not math.isfinite(rate_hz) or rate_hz <= 0.0:
+            raise ValueError('motor_poll_rate must be finite and positive')
+        if (
+            rate_hz > FootOdometryNode.PRODUCTION_MOTOR_POLL_RATE_HZ
+            and not allow_experimental_high_rate
+        ):
+            raise ValueError(
+                f'motor_poll_rate {rate_hz:.1f} Hz exceeds the '
+                f'{FootOdometryNode.PRODUCTION_MOTOR_POLL_RATE_HZ:.1f} Hz '
+                'production limit; set '
+                'allow_experimental_high_rate_motor_polling:=true only for '
+                'controlled tests or replay'
+            )
+        return rate_hz
 
     @staticmethod
     def motor_tracking_residual(data, expected_frame_id=None):

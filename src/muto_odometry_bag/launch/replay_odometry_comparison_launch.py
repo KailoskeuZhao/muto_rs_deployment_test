@@ -87,6 +87,10 @@ def generate_launch_description():
             'foot_max_motor_sequence_gap': LaunchConfiguration(
                 'foot_max_motor_sequence_gap'
             ),
+            'foot_motor_poll_rate': LaunchConfiguration(
+                'foot_motor_poll_rate'
+            ),
+            'allow_experimental_high_rate_motor_polling': 'true',
             'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
             'rf2o_freq': PythonExpression([
                 LaunchConfiguration('playback_rate'), ' * 64.0'
@@ -94,6 +98,12 @@ def generate_launch_description():
             'rf2o_profiled_raw_odom_topic': '/scan_odom_raw_profiled',
             'rf2o_covariance_profile': LaunchConfiguration(
                 'rf2o_covariance_profile'
+            ),
+            'rf2o_translation_deadband': LaunchConfiguration(
+                'rf2o_translation_deadband'
+            ),
+            'rf2o_yaw_deadband': LaunchConfiguration(
+                'rf2o_yaw_deadband'
             ),
         }.items(),
     )
@@ -141,6 +151,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'foot_motor_poll_rate',
+            default_value='2.0',
+            description=(
+                'Virtual motor-service polling rate during replay. High '
+                'rates are safe here because no hardware serial read occurs.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'foot_max_motor_sequence_gap',
             default_value='10',
             description=(
@@ -154,6 +172,16 @@ def generate_launch_description():
                 'RF2O odometry covariance profile: measured, relaxed, '
                 'conservative, custom, or legacy_zero.'
             ),
+        ),
+        DeclareLaunchArgument(
+            'rf2o_translation_deadband',
+            default_value='0.0',
+            description='RF2O planar translation deadband in meters.',
+        ),
+        DeclareLaunchArgument(
+            'rf2o_yaw_deadband',
+            default_value='0.0',
+            description='RF2O yaw deadband in radians.',
         ),
         DeclareLaunchArgument(
             'replay_processed_imu',

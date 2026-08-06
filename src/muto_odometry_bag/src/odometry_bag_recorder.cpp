@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -61,6 +62,7 @@ constexpr char kMetadataTopic[] = "/muto/odometry_recording_metadata";
 constexpr char kMetadataType[] = "std_msgs/msg/String";
 constexpr char kTfStaticTopic[] = "/tf_static";
 constexpr char kTfStaticType[] = "tf2_msgs/msg/TFMessage";
+constexpr double kProductionMotorPollRateHz = 2.0;
 
 std::string timestamped_bag_name()
 {
@@ -86,6 +88,8 @@ public:
     motor_service_name_ =
       declare_parameter<std::string>("motor_service_name", "get_motor_angles");
     motor_poll_rate_ = declare_parameter<double>("motor_poll_rate", 2.0);
+    const bool allow_experimental_high_rate = declare_parameter<bool>(
+      "allow_experimental_high_rate_motor_polling", false);
 
     if (bag_path.empty()) {
       bag_path = timestamped_bag_name();
@@ -93,8 +97,24 @@ public:
     if (motor_service_name_.empty()) {
       throw std::invalid_argument("motor_service_name must not be empty");
     }
-    if (motor_poll_rate_ <= 0.0) {
-      throw std::invalid_argument("motor_poll_rate must be positive");
+    if (!std::isfinite(motor_poll_rate_) || motor_poll_rate_ <= 0.0) {
+      throw std::invalid_argument("motor_poll_rate must be finite and positive");
+    }
+    if (motor_poll_rate_ > kProductionMotorPollRateHz &&
+      !allow_experimental_high_rate)
+    {
+      throw std::invalid_argument(
+              "motor_poll_rate exceeds the 2 Hz production limit; set "
+              "allow_experimental_high_rate_motor_polling:=true only for a "
+              "controlled hardware benchmark");
+    }
+    if (motor_poll_rate_ > kProductionMotorPollRateHz) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Experimental %.1f Hz motor recording exceeds the %.1f Hz production "
+        "limit. The 2026-08-05 10 Hz test produced approximately 40 ms p95 "
+        "gait and IMU intervals",
+        motor_poll_rate_, kProductionMotorPollRateHz);
     }
 
     const auto absolute_path = std::filesystem::absolute(bag_path);

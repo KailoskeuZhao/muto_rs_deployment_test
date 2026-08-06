@@ -183,8 +183,8 @@ profiles isolates the confidence change from scan-matching timing:
 
 As expected with RF2O as the only absolute pose source, covariance selection
 hardly changes the checkpoint trajectory. It changes the EKF's reported
-confidence. `measured` is therefore the initial default, while the raw versus
-filtered result identifies deadband tuning as a separate follow-up test.
+confidence. `measured` is therefore the default. The raw-versus-filtered result
+motivated the production deadband change below.
 
 ### Measured-profile fusion comparison
 
@@ -224,13 +224,14 @@ continuity gate therefore accepted zero moving increments. During replay,
 twists, and an unchanged pose. The fused trajectory and LiDAR-plus-IMU
 trajectory differed by `0.000033 m` on average; the largest brief position
 difference was `0.0092 m`. This is the intended safe result for an undersampled
-bag. Measured foot displacement requires a validated higher joint-read rate.
+bag. Measured foot displacement requires non-blocking, verified physical-joint
+feedback; simply increasing the blocking service rate has now been tested and
+rejected.
 
 No RF2O increment in this bag exceeded the existing `0.03 m` translation or
-`5 deg` yaw jump limits. Consequently, setting only the small RF2O deadbands to
-zero while retaining jump rejection would reproduce the better raw trajectory
-for this trial. That is the next production-oriented A/B test; it does not
-require removing the safety guards.
+`5 deg` yaw jump limits. Consequently, the production defaults now set only the
+small RF2O deadbands to zero while retaining jump rejection. This preserves the
+better raw trajectory observed in the trial without removing the safety guards.
 
 ## RF2O Deadband And Jump Rejection
 
@@ -244,11 +245,11 @@ Current default filters:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `translation_deadband` | `0.0025` m | Suppress tiny per-update XY drift; at 16 Hz RF2O, this accepts roughly `>=4 cm/s`. |
-| `yaw_deadband` | `0.001` rad | Suppress tiny per-update yaw drift. |
-| `translation_jump_rejection_threshold` | `0.03` m | Reject RF2O XY updates above 3 cm per update in every motion state. |
+| `translation_deadband` | `0.0` m | Production default preserves all RF2O translation increments. Set explicitly only for a stationary-drift experiment. |
+| `yaw_deadband` | `0.0` rad | Production default preserves all RF2O yaw increments. Set explicitly only for a stationary-drift experiment. |
+| `translation_jump_rejection_threshold` | `0.03` m | Reject RF2O XY updates above 3 cm per update in every motion state; retained with deadbands disabled. |
 | `max_translation_rate` | `0.0` m/s | Disabled so translation jump rejection uses only the per-update 3 cm cap. |
-| `yaw_jump_rejection_threshold` | `0.087266` rad | Reject RF2O yaw updates above 5 deg per update in every motion state. |
+| `yaw_jump_rejection_threshold` | `0.087266` rad | Reject RF2O yaw updates above 5 deg per update in every motion state; retained with deadbands disabled. |
 | `max_yaw_rate` | `0.0` rad/s | Disabled so yaw jump rejection uses only the per-update 5 deg cap. |
 | `use_cmd_vel_gate` | `true` | Apply RF2O deadbands per axis only when recent `cmd_vel` for that axis is near zero; jump rejection is always active. |
 | `cmd_vel_timeout` | `0.5` s | If no fresh `cmd_vel` is seen, assume stationary and apply the filters. |
@@ -439,14 +440,15 @@ until a complete response arrives and returns early rather than sleeping for a
 fixed 50 or 100 ms on every read. Each moving phase uses six vendor `LEG`
 packets instead of eighteen individual joint packets, reducing its serial
 traffic from 216 to 84 bytes. The motor read rate remains at the conservative
-2 Hz default until the controller's response latency and complete gait, IMU,
-and motor-read rates are measured on hardware. The localization and top-level
+2 Hz production default. The 2026-08-05 10 Hz hardware test measured a
+`25.67 ms` median motor response, about `40 ms` p95 gait and IMU intervals, and
+an IMU average of only `41.44 Hz`; 10 Hz is therefore rejected for production
+with the current blocking serial service. The localization and top-level
 pipeline launches expose this as `foot_motor_poll_rate`; each successful
 `get_motor_angles` response includes `read_duration_sec` so serial response
 latency can be measured directly.
 
-For the first supported-robot benchmark, keep the robot's legs clear and run
-the normal pipeline at 2 Hz before testing 10 Hz and then 20 Hz:
+Normal production startup keeps the 2 Hz limit:
 
 ```bash
 ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py \
@@ -458,9 +460,13 @@ ros2 topic hz /foot_odom
 ros2 service call /get_motor_angles std_srvs/srv/Trigger "{}"
 ```
 
-Repeat with `foot_motor_poll_rate:=10.0` and then `20.0`. Stop the test if the
-gait-state or IMU rate falls materially, motor reads time out, checksums fail,
-or FK residuals increase. Do not test a new serial baud rate in the same run.
+Any rate above 2 Hz now requires the explicit
+`allow_experimental_high_rate_motor_polling:=true` launch argument. Do not use
+that override on the deployed robot until feedback is streamed or otherwise
+decoupled from the single-threaded gait and IMU serial path. In particular, do
+not proceed to 20 Hz with the current controller interface. The complete test
+record is in
+[`odometry_10hz_mini_test_2026-08-05.md`](odometry_10hz_mini_test_2026-08-05.md).
 
 The offline byte budget at 115200 baud, including 8-N-1 framing, is:
 
@@ -470,8 +476,9 @@ The offline byte budget at 115200 baud, including 8-N-1 framing, is:
 | 20 Hz | 6,650 bytes/s | 57.7% |
 | 50 Hz | 7,700 bytes/s | 66.8% |
 
-This shows that 20 Hz is possible by bandwidth, but it does not prove the
-controller can answer with sufficient latency. A synthetic delayed-reply test
+This shows that 20 Hz fits the average byte budget, but the 10 Hz hardware
+result proves that average bandwidth is not the acceptance criterion and 20 Hz
+is not safe with the current blocking service. A synthetic delayed-reply test
 on the host measured a moving gait phase at about `6.7 ms`. With both sensor
 reads due, the combined callback time was about `17.6 ms` for a `5 ms` reply
 and `22.0 ms` for a `7 ms` reply. Therefore a slow or timed-out response can
@@ -487,15 +494,17 @@ port to 1 Mbaud would therefore break communication. Keep 115200 unless
 Yahboom supplies a controller-side procedure or the controller firmware is
 available and explicitly confirms another rate.
 
-The measured-joint estimator now associates every snapshot pair with all
+The measured-joint estimator associates every snapshot pair with all
 intervening gait phases and rejects the interval unless support continuity is
-provable. At the current 2 Hz default, moving snapshots are normally separated
-by more than one complete 20-phase gait cycle, so motion output is deliberately
-suppressed. A controlled 10 Hz and then 20 Hz hardware benchmark is still
-required before moving foot velocity becomes available in production. Joint
-quantization, commanded rather than sensed contact, and unmeasured slip remain
-limitations. Foot-derived yaw rate is not fused; RF2O supplies yaw and the IMU
-supplies `wz`.
+provable. At the 2 Hz production default, moving snapshots are normally
+separated by more than one complete 20-phase gait cycle, so motion output is
+deliberately suppressed. The 10 Hz test produced moving updates, but their
+straight and yaw displacement were severely under-scaled and the blocking
+reads delayed the gait and IMU loops. Moving foot velocity is therefore not
+validated for production. Joint quantization, uncertain feedback semantics,
+commanded rather than sensed contact, and unmeasured slip remain limitations.
+Foot-derived yaw rate is not fused; RF2O supplies yaw and the IMU supplies
+`wz`.
 
 `ekf_lidar_imu_with_foot.yaml` is loaded as an overlay on the primary
 `ekf_lidar_imu.yaml` configuration. `/foot_odom` contributes only planar body
@@ -651,8 +660,9 @@ EKF pipeline.
 - Compare RF2O behavior with any separately reintroduced point-cloud ICP
   experiment only after the normal RF2O/EKF baseline is stable.
 - Revisit EKF covariances after collecting repeatable bag data.
-- Validate 10 Hz and then 20 Hz joint polling against gait timing, IMU rate,
-  serial errors, and repeatable measured endpoints before increasing foot
-  odometry weight.
+- Replace or decouple the blocking joint-read path, confirm that feedback is
+  physical present position, then repeat the 10 Hz test with numeric endpoints
+  before considering any increase in foot-odometry weight. Do not proceed to
+  20 Hz on the current controller interface.
 - Consider depth-camera odometry only as a separate future experiment; the
   current depth-camera path is an independent Nav2 costmap source.

@@ -79,11 +79,10 @@ def generate_launch_description():
     )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         "rf2o_translation_deadband",
-        default_value="0.0025",
+        default_value="0.0",
         description=(
             "Per-update RF2O planar translation deadband in meters. "
-            "At the default 16 Hz RF2O rate, 0.0025 m accepts roughly >=4 cm/s. "
-            "Set 0.0 to disable."
+            "The production default is 0.0; jump rejection remains active."
         ),
     )
     rf2o_translation_jump_rejection_threshold_arg = DeclareLaunchArgument(
@@ -105,10 +104,10 @@ def generate_launch_description():
     )
     rf2o_yaw_deadband_arg = DeclareLaunchArgument(
         "rf2o_yaw_deadband",
-        default_value="0.001",
+        default_value="0.0",
         description=(
-            "Per-update RF2O yaw deadband in radians. "
-            "Set 0.0 to disable."
+            "Per-update RF2O yaw deadband in radians. The production default "
+            "is 0.0; jump rejection remains active."
         ),
     )
     rf2o_yaw_jump_rejection_threshold_arg = DeclareLaunchArgument(
@@ -169,8 +168,16 @@ def generate_launch_description():
         default_value="2.0",
         description=(
             "Rate in Hz at which foot odometry requests all 18 measured "
-            "motor angles. Keep 2.0 until higher rates are validated on "
-            "hardware."
+            "motor angles. The current blocking hardware interface has a "
+            "2 Hz production limit."
+        ),
+    )
+    allow_experimental_high_rate_motor_polling_arg = DeclareLaunchArgument(
+        "allow_experimental_high_rate_motor_polling",
+        default_value="false",
+        description=(
+            "Required opt-in when foot_motor_poll_rate exceeds the 2 Hz "
+            "production limit. Use only for controlled tests or replay."
         ),
     )
     foot_odometry_source_arg = DeclareLaunchArgument(
@@ -234,6 +241,7 @@ def generate_launch_description():
         rf2o_cmd_vel_stationary_angular_threshold_arg,
         launch_foot_odometry_arg,
         foot_motor_poll_rate_arg,
+        allow_experimental_high_rate_motor_polling_arg,
         foot_odometry_source_arg,
         foot_max_motor_sequence_gap_arg,
         imu_only_arg,
@@ -289,6 +297,12 @@ def generate_launch_description():
                 'motor_poll_rate': ParameterValue(
                     LaunchConfiguration("foot_motor_poll_rate"),
                     value_type=float,
+                ),
+                'allow_experimental_high_rate_motor_polling': ParameterValue(
+                    LaunchConfiguration(
+                        "allow_experimental_high_rate_motor_polling"
+                    ),
+                    value_type=bool,
                 ),
                 'odometry_source': LaunchConfiguration(
                     "foot_odometry_source"

@@ -139,11 +139,10 @@ def generate_launch_description():
     )
     rf2o_translation_deadband_arg = DeclareLaunchArgument(
         'rf2o_translation_deadband',
-        default_value='0.0025',
+        default_value='0.0',
         description=(
             'Per-update RF2O planar translation deadband in meters. '
-            'At the default 16 Hz RF2O rate, 0.0025 m accepts roughly >=4 cm/s. '
-            'Set 0.0 to disable.'
+            'The production default is 0.0; jump rejection remains active.'
         ),
     )
     rf2o_translation_jump_rejection_threshold_arg = DeclareLaunchArgument(
@@ -165,10 +164,10 @@ def generate_launch_description():
     )
     rf2o_yaw_deadband_arg = DeclareLaunchArgument(
         'rf2o_yaw_deadband',
-        default_value='0.001',
+        default_value='0.0',
         description=(
-            'Per-update RF2O yaw deadband in radians. '
-            'Set 0.0 to disable.'
+            'Per-update RF2O yaw deadband in radians. The production default '
+            'is 0.0; jump rejection remains active.'
         ),
     )
     rf2o_yaw_jump_rejection_threshold_arg = DeclareLaunchArgument(

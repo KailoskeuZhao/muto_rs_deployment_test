@@ -40,15 +40,31 @@ command_layer:
     exploration_service_timeout: 5.0
     save_map_timeout: 10.0
 
-    # Explore, pause, scan 360 degrees in eight observed steps, and repeat.
+    # Explore, pause, scan 360 degrees in six observed steps, and repeat.
     # Once frontiers are exhausted, walk geometry-selected viewpoints and
     # continue scanning the static scene instead of ending immediately.
     program_endpoint_timeout: 5.0
+    # This is a minimum interval. If Nav2 is still driving to a frontier when
+    # it elapses, finish that travel goal before pausing to scan.
     exploration_cycle_duration: 10.0
+    # Per-step timeout; observation normally ends sooner after this many fresh
+    # detector result messages. Set the frame count to 0 for a fixed dwell.
     observation_duration: 3.0
-    scan_step_count: 8
+    observation_min_detection_frames: 3
+    scan_step_count: 6
     spin_time_allowance: 15.0
-    navigation_settle_time: 1.0
+    navigation_settle_time: 0.25
+    finish_active_frontier_goal_before_scan: true
+    detections_topic: /sam2/detections
+
+    # The standalone muto_exploration_bag process opens one MCAP per goal.
+    # This command node only publishes lifecycle events and optionally waits
+    # for the matching recorder-ready acknowledgement.
+    exploration_bag_enabled: true
+    exploration_bag_required: false
+    exploration_bag_start_timeout: 2.0
+    exploration_bag_event_topic: /explore_and_record/recording_event
+    exploration_bag_status_topic: /explore_and_record/bag_status
 
     visibility_coverage_enabled: true
     # SLAM occupancy geometry used only for predicted visibility coverage.

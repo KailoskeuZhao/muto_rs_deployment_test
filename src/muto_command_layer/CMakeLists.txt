@@ -53,6 +53,7 @@ target_include_directories(command_layer_node PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(command_layer_node
+  action_msgs
   frontier_exploration_ros2
   geometry_msgs
   nav2_msgs
@@ -61,6 +62,7 @@ ament_target_dependencies(command_layer_node
   rclcpp_action
   sam2_object_registry
   slam_toolbox
+  std_msgs
   std_srvs
   tf2
   tf2_geometry_msgs

@@ -109,19 +109,20 @@ online mapper must have received a map before this command can succeed.
 `/explore_and_record` is the command-layer coordinator for autonomous mapping
 and object collection. Its default cycle is:
 
-1. Run frontier exploration for 10 seconds.
-2. Stop exploration and cancel its active Nav2 navigation goal.
-3. Wait 1 second for navigation ownership to settle.
-4. Perform eight positive 45-degree in-place turns through Nav2 `/spin`, for a
+1. Run frontier exploration for at least 10 seconds.
+2. If Nav2 is still driving to a frontier, let that travel goal finish; then
+   pause exploration at the goal boundary.
+3. Wait 0.25 seconds for the robot to settle.
+4. Perform six positive 60-degree in-place turns through Nav2 `/spin`, for a
    complete 360-degree scan.
-5. After every 45-degree step, hold position for 3 seconds while YOLO, SAM 2,
-   and the registry continue processing camera observations.
+5. After every step, wait for three fresh `/sam2/detections` messages. Three
+   seconds remains the timeout if perception is slow or unavailable.
 6. Checkpoint confirmed objects through `/sam2/save_stored_objects`.
 7. Resume exploration and repeat.
 8. When frontier exploration reports exhaustion, snapshot `/map`, request the
    Nav2 global costmap, and switch to adaptive predicted-visibility coverage.
 9. Navigate to reachable viewpoints selected for new free-space and obstacle-
-   boundary visibility, perform the same eight-step scan, checkpoint, and
+   boundary visibility, perform the same six-step scan, checkpoint, and
    repeat until the configured predicted-coverage ratio is reached.
 
 The registry assumes observed objects are static. The program does not create a
@@ -139,8 +140,13 @@ ros2 action send_goal /explore_and_record \
 ```
 
 Zero-valued durations and scan step count select the configured defaults. The
-step angle is always `360 / scan_step_count`; the default is eight 45-degree
-steps. A nonzero `max_cycles` makes a bounded run, where one cycle is one full
+step angle is always `360 / scan_step_count`; the default is six 60-degree
+steps. `exploration_cycle_duration` is a minimum rather than a travel timeout,
+so a frontier trip already in progress may extend a cycle. `observation_duration`
+is a per-step maximum: observation normally ends as soon as
+`observation_min_detection_frames` fresh detector results arrive. Set that
+frame count to zero to restore a fixed-duration dwell. A nonzero `max_cycles`
+makes a bounded run, where one cycle is one full
 360-degree scan during frontier exploration. It completes before the
 post-frontier phase if that limit is reached. With the default `max_cycles: 0`,
 frontier exhaustion starts predicted-visibility coverage. Canceling the action
@@ -148,6 +154,59 @@ cancels any active navigation or spin, stops exploration, and makes a
 best-effort final registry checkpoint.
 `/go_to_object` goals and direct `/explore` calls are rejected while this
 program owns navigation.
+
+### Automatic mission bag
+
+The standalone `muto_exploration_bag` package opens one MCAP rosbag for each
+`/explore_and_record` goal and finalizes it after success, cancellation, or
+failure. `command_layer_launch.py` starts that recorder by default; this
+command node only publishes mission lifecycle events and waits for the
+recorder-ready acknowledgement. By default the recorder captures all
+discovered topics, hidden action topics, and available service-event topics.
+Metadata stores the action goal context, recorder git revision, and dirty flag.
+
+The default parent directory is
+`$HOME/.ros/bags/explore_and_record`; on the root-run robot this is
+`/root/.ros/bags/explore_and_record`. The exact path is logged and published
+transient-local:
+
+```bash
+ros2 topic echo --once --qos-durability transient_local \
+  /explore_and_record/last_bag_path
+ros2 bag info /root/.ros/bags/explore_and_record/muto_explore_<timestamp>_<goal>
+```
+
+Replay the complete bag on a development machine or an isolated ROS domain:
+
+```bash
+export ROS_DOMAIN_ID=77
+ros2 bag play <bag-directory> --clock
+```
+
+Do not replay the unfiltered all-topic bag on the live robot domain: it may
+contain motion and command topics. Use `ros2 bag play --topics ...` when only a
+specific sensor or diagnostic path is needed.
+
+`/explore_and_record/recording_event` marks recording start, terminal outcome,
+and resolved action settings inside the bag. Use the separate operator topic
+for a short manual note—JSON is unnecessary:
+
+```bash
+ros2 topic pub --once /explore_and_record/operator_event std_msgs/msg/String \
+  "{data: 'observation: chair visible left of the doorway'}"
+```
+
+The default all-topic mode includes raw camera and point-cloud streams and can
+grow quickly. For longer deployments, set an explicit `topics` list in
+`muto_exploration_bag/config/exploration_bag.yaml`, or pass
+`exploration_bag_topics_regex` and `exploration_bag_exclude_regex` to the
+command launch.
+`exploration_bag_enabled:=false` omits the standalone recorder from the command
+launch. `exploration_bag_required:=true` makes a missing/error recorder-ready
+acknowledgement abort the mission instead of continuing with a prominent
+error. See the
+[`muto_exploration_bag` README](../muto_exploration_bag/README.md) for the
+standalone launch and operator-event quick reference.
 
 Post-frontier coverage is a geometric prediction over two aligned layers. The
 latest transient-local `/map` defines free-space and occupied-boundary targets.
@@ -164,7 +223,8 @@ planner credits the free and occupied-boundary cells that its 2-D line-of-sight
 model predicts were visible. The command does not use RGB delivery, depth
 points, detections, or registry changes as coverage evidence. Camera and
 perception failures can therefore reduce actual observations without reducing
-the reported estimate.
+the reported estimate. Detector messages shorten the observation wait, but a
+timeout warns and proceeds rather than claiming or denying coverage.
 
 Completion requires both predicted observable free-space coverage and
 predicted observable boundary coverage to reach

@@ -7,7 +7,7 @@ runtime contracts.
 
 ## Scope and process graph
 
-The launch starts eight ROS nodes from five packages:
+The launch starts nine ROS nodes from six packages:
 
 ```text
 RGB + depth + CameraInfo + TF
@@ -28,6 +28,10 @@ RGB + depth + CameraInfo + TF
                |                             |
                v                             +--> /go_to_object
          /find_object                        +--> /save_map
+                                             +--> mission lifecycle events
+
+  muto_exploration_bag
+    mission lifecycle -> one action-scoped diagnostic MCAP
 
   active_object_search
     /find_object + /explore_and_record + /sam2/stored_objects
@@ -260,7 +264,7 @@ registry metadata rather than image evidence.
 `/find_something` wires together `/find_object`, `/explore_and_record`, and the
 transient-local `/sam2/stored_objects` snapshot. It first searches without
 moving. If no registered object matches, it starts the normal exploration,
-eight-step scans, recording, and predicted-visibility mission. Each changed set
+six-step scans, recording, and predicted-visibility mission. Each changed set
 of confirmed registry IDs triggers another `/find_object` query. A match
 cancels the mission and is returned as the existing `ObjectMatch` type.
 
@@ -278,7 +282,7 @@ approach a match.
 
 ### 9. Explore and record with predicted visibility
 
-`/explore_and_record` alternates frontier navigation with eight-step,
+`/explore_and_record` alternates frontier navigation with six-step,
 360-degree observation scans and registry checkpoints. When frontier
 exploration reports completion, the command snapshots the SLAM occupancy map
 and Nav2 global costmap, generates robot-reachable viewpoints, and continues
@@ -287,14 +291,23 @@ ratios reach `visibility_completion_ratio`.
 
 This completion value is a 2-D geometric estimate. After Nav2 reaches a
 viewpoint and completes the requested spin steps, the planner credits cells
-predicted visible by occupancy-grid line of sight. It does not validate RGB or
-depth delivery, detector execution, detections, or registry growth. The
-default `0.98` therefore means 98 percent of the planner's predicted coverable
-free and boundary cells, not measured camera coverage or detector recall.
+predicted visible by occupancy-grid line of sight. Fresh detector messages end
+each observation wait early, but their contents and registry growth are not
+coverage evidence; a detector timeout warns and proceeds. The default `0.98`
+therefore means 98 percent of the planner's predicted coverable free and
+boundary cells, not measured camera coverage or detector recall.
 
 The prediction is consistent with the pipeline's static-object mission but
 does not establish that every static object was observed. Navigation failures
 discard the selected viewpoint without predicted-visibility credit.
+
+The separate `muto_exploration_bag` process owns each rosbag2 recording. The
+default all-topic MCAP includes hidden action status and feedback, `/tf_static`,
+sensor and perception streams, maps, odometry, logs, lifecycle events, and any
+plain-text `/explore_and_record/operator_event`. The finalized path is
+published on `/explore_and_record/last_bag_path`; metadata includes the action
+goal context and recorder build git state. Bags are finalized on success,
+cancel, and abort.
 
 ### 10. Navigate to and face a registered object
 
@@ -401,7 +414,11 @@ or ROS parameters.
 | `/find_something` | Action: `muto_command_layer/action/FindSomething` | Search the registry, then compose exploration and recording until a static-object match appears or predictive coverage completes. |
 | `/go_to_object` | Action: `muto_command_layer/action/GoToObject` | Approach and face one exact object ID through Nav2. |
 | `/global_costmap/get_costmap` | Service: `nav2_msgs/srv/GetCostmap` | Current Nav2 master costmap used for object approach and visibility traversal. |
-| `/explore_and_record` | Action: `muto_command_layer/action/ExploreAndRecord` | Alternate frontier exploration with eight-step scans, then pursue predicted 2-D visibility coverage and checkpoint static objects. |
+| `/explore_and_record` | Action: `muto_command_layer/action/ExploreAndRecord` | Alternate frontier exploration with six-step scans, then pursue predicted 2-D visibility coverage and checkpoint static objects. |
+| `/explore_and_record/recording_event` | Topic: `std_msgs/msg/String` | Command-layer JSON mission start and terminal events that control the standalone recorder. |
+| `/explore_and_record/bag_status` | Topic: `std_msgs/msg/String` | Transient recorder-ready, finishing, finalized, or error acknowledgement. |
+| `/explore_and_record/last_bag_path` | Topic: `std_msgs/msg/String` | Transient-local path of the latest per-mission MCAP bag. |
+| `/explore_and_record/operator_event` | Topic: `std_msgs/msg/String` | Plain-text manual observation or milestone retained in the active bag. |
 | `/explore` | Service: `std_srvs/srv/SetBool` | Start (`true`) or stop (`false`) Muto frontier exploration. |
 | `/save_map` | Service: `slam_toolbox/srv/SaveMap` | Save the live occupancy map beneath the configured output directory. |
 | `/vlm/generate` | Action: `muto_vlm_socket/action/GenerateVlm` | Ordered text/JPEG VLM request with optional structured output. |

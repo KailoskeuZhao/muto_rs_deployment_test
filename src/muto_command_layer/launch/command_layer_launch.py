@@ -9,7 +9,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import AndSubstitution, LaunchConfiguration
 from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -54,6 +54,11 @@ def generate_launch_description():
         get_package_share_directory('muto_command_layer'),
         'config',
         'object_pipeline_vlm.yaml',
+    )
+    default_exploration_bag_params = os.path.join(
+        get_package_share_directory('muto_exploration_bag'),
+        'config',
+        'exploration_bag.yaml',
     )
 
     object_pipeline = include_launch(
@@ -303,16 +308,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'exploration_cycle_duration',
             default_value='10.0',
-            description='Exploration time between observation stops.',
+            description=(
+                'Minimum exploration time before scanning; active frontier '
+                'travel may extend it.'
+            ),
         ),
         DeclareLaunchArgument(
             'observation_duration',
             default_value='3.0',
-            description='Stationary object-observation dwell per scan step.',
+            description='Maximum stationary observation time per scan step.',
+        ),
+        DeclareLaunchArgument(
+            'observation_min_detection_frames',
+            default_value='3',
+            description=(
+                'Fresh detector messages needed to finish observation early; '
+                'zero retains a fixed dwell.'
+            ),
         ),
         DeclareLaunchArgument(
             'scan_step_count',
-            default_value='8',
+            default_value='6',
             description='Equal spin-and-observe steps in one 360-degree scan.',
         ),
         DeclareLaunchArgument(
@@ -322,8 +338,104 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'navigation_settle_time',
-            default_value='1.0',
-            description='Delay after canceling the frontier Nav2 goal.',
+            default_value='0.25',
+            description='Short stabilization delay before scanning.',
+        ),
+        DeclareLaunchArgument(
+            'finish_active_frontier_goal_before_scan',
+            default_value='true',
+            description=(
+                'Let the current frontier Nav2 goal finish after the minimum '
+                'exploration interval.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_enabled',
+            default_value='true',
+            description=(
+                'Expect a standalone recorder and wait for its ready status.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'launch_exploration_bag_recorder',
+            default_value='true',
+            description=(
+                'Launch the recorder here; false permits a separately '
+                'started recorder.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_required',
+            default_value='false',
+            description='Abort the mission if its rosbag cannot be opened.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_start_timeout',
+            default_value='2.0',
+            description='Recorder-ready handshake timeout in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_params_file',
+            default_value=default_exploration_bag_params,
+            description='Standalone exploration recorder parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_output_directory',
+            default_value='',
+            description=(
+                'Parent directory for mission bags; empty uses '
+                '$HOME/.ros/bags/explore_and_record.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_storage_id',
+            default_value='mcap',
+            description='rosbag2 storage plugin used for mission bags.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_storage_preset',
+            default_value='none',
+            description='Storage preset such as none or zstd_fast.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_topics_regex',
+            default_value='',
+            description='Optional topic inclusion regex; empty records all.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_exclude_regex',
+            default_value='',
+            description='Optional rosbag2 exclusion regex.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_max_cache_size',
+            default_value='104857600',
+            description='Recorder write cache in bytes; zero disables it.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_post_result_delay',
+            default_value='0.25',
+            description='Time to capture terminal events before bag closure.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_event_topic',
+            default_value='/explore_and_record/recording_event',
+            description='Mission recording lifecycle event topic.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_path_topic',
+            default_value='/explore_and_record/last_bag_path',
+            description='Transient topic containing the latest bag path.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_bag_status_topic',
+            default_value='/explore_and_record/bag_status',
+            description='Standalone recorder readiness and status topic.',
+        ),
+        DeclareLaunchArgument(
+            'exploration_operator_event_topic',
+            default_value='/explore_and_record/operator_event',
+            description='Plain-text manual observation and milestone topic.',
         ),
         DeclareLaunchArgument(
             'visibility_coverage_enabled',
@@ -462,6 +574,64 @@ def generate_launch_description():
             ],
         ),
         Node(
+            package='muto_exploration_bag',
+            executable='exploration_bag_recorder',
+            name='exploration_bag_recorder',
+            output='screen',
+            condition=IfCondition(
+                AndSubstitution(
+                    LaunchConfiguration('exploration_bag_enabled'),
+                    LaunchConfiguration('launch_exploration_bag_recorder'),
+                )
+            ),
+            parameters=[
+                LaunchConfiguration('exploration_bag_params_file'),
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration('use_sim_time'),
+                        value_type=bool,
+                    ),
+                    'output_directory': LaunchConfiguration(
+                        'exploration_bag_output_directory'
+                    ),
+                    'storage_id': LaunchConfiguration(
+                        'exploration_bag_storage_id'
+                    ),
+                    'storage_preset': LaunchConfiguration(
+                        'exploration_bag_storage_preset'
+                    ),
+                    'topics_regex': LaunchConfiguration(
+                        'exploration_bag_topics_regex'
+                    ),
+                    'exclude_regex': LaunchConfiguration(
+                        'exploration_bag_exclude_regex'
+                    ),
+                    'max_cache_size': ParameterValue(
+                        LaunchConfiguration('exploration_bag_max_cache_size'),
+                        value_type=int,
+                    ),
+                    'post_terminal_delay': ParameterValue(
+                        LaunchConfiguration(
+                            'exploration_bag_post_result_delay'
+                        ),
+                        value_type=float,
+                    ),
+                    'lifecycle_event_topic': LaunchConfiguration(
+                        'exploration_bag_event_topic'
+                    ),
+                    'status_topic': LaunchConfiguration(
+                        'exploration_bag_status_topic'
+                    ),
+                    'path_topic': LaunchConfiguration(
+                        'exploration_bag_path_topic'
+                    ),
+                    'operator_event_topic': LaunchConfiguration(
+                        'exploration_operator_event_topic'
+                    ),
+                },
+            ],
+        ),
+        Node(
             package='muto_command_layer',
             executable='command_layer_node',
             name='command_layer',
@@ -531,6 +701,9 @@ def generate_launch_description():
                     'exploration_completion_topic': LaunchConfiguration(
                         'exploration_completion_topic'
                     ),
+                    'detections_topic': LaunchConfiguration(
+                        'detections_topic'
+                    ),
                     'exploration_service_timeout': LaunchConfiguration(
                         'exploration_service_timeout'
                     ),
@@ -543,6 +716,9 @@ def generate_launch_description():
                     'observation_duration': LaunchConfiguration(
                         'observation_duration'
                     ),
+                    'observation_min_detection_frames': LaunchConfiguration(
+                        'observation_min_detection_frames'
+                    ),
                     'scan_step_count': LaunchConfiguration(
                         'scan_step_count'
                     ),
@@ -551,6 +727,30 @@ def generate_launch_description():
                     ),
                     'navigation_settle_time': LaunchConfiguration(
                         'navigation_settle_time'
+                    ),
+                    'finish_active_frontier_goal_before_scan': ParameterValue(
+                        LaunchConfiguration(
+                            'finish_active_frontier_goal_before_scan'
+                        ),
+                        value_type=bool,
+                    ),
+                    'exploration_bag_enabled': ParameterValue(
+                        LaunchConfiguration('exploration_bag_enabled'),
+                        value_type=bool,
+                    ),
+                    'exploration_bag_required': ParameterValue(
+                        LaunchConfiguration('exploration_bag_required'),
+                        value_type=bool,
+                    ),
+                    'exploration_bag_start_timeout': ParameterValue(
+                        LaunchConfiguration('exploration_bag_start_timeout'),
+                        value_type=float,
+                    ),
+                    'exploration_bag_event_topic': LaunchConfiguration(
+                        'exploration_bag_event_topic'
+                    ),
+                    'exploration_bag_status_topic': LaunchConfiguration(
+                        'exploration_bag_status_topic'
                     ),
                     'visibility_coverage_enabled': ParameterValue(
                         LaunchConfiguration('visibility_coverage_enabled'),

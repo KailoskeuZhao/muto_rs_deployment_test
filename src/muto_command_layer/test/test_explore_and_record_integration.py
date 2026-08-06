@@ -2,12 +2,13 @@
 
 import math
 import os
+from pathlib import Path
 import signal
 import subprocess
 import threading
 import time
 
-from action_msgs.msg import GoalStatus
+from action_msgs.msg import GoalStatus, GoalStatusArray
 from frontier_exploration_ros2.srv import ControlExploration
 from geometry_msgs.msg import TransformStamped
 from muto_command_layer.action import ExploreAndRecord
@@ -20,11 +21,14 @@ from rclpy.action import ActionClient, ActionServer
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import qos_profile_action_status_default
+from sam2_object_registry.msg import DetectedObjectArray
 from sam2_object_registry.srv import GetStoredObjects
 from slam_toolbox.srv import SaveMap
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from std_srvs.srv import SetBool, Trigger
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
+import yaml
 
 
 def wait_future(future, timeout=5.0):
@@ -42,15 +46,35 @@ def wait_until(predicate, timeout=5.0):
     assert predicate(), 'condition did not become true before timeout'
 
 
+def wait_for_single_finalized_bag(output_directory, timeout=5.0):
+    output_directory = Path(output_directory)
+
+    def finalized_metadata_paths():
+        paths = list(output_directory.glob('muto_explore_*/metadata.yaml'))
+        return [
+            path for path in paths
+            if 'muto_schema: explore_and_record_v1' in
+            path.read_text(encoding='utf-8')
+        ]
+
+    wait_until(
+        lambda: len(finalized_metadata_paths()) == 1,
+        timeout=timeout,
+    )
+    return finalized_metadata_paths()[0]
+
+
 class FakeProgramBackends(Node):
     def __init__(self):
         super().__init__('fake_explore_and_record_backends')
         self.control_actions = []
         self.navigate_poses = []
         self.spin_angles = []
+        self.publish_detections_after_spin = True
         self.save_calls = 0
         self.map_save_prefixes = []
         self.map_save_directory = ''
+        self.bag_output_directory = ''
         self.create_service(
             ControlExploration,
             '/control_exploration',
@@ -97,6 +121,15 @@ class FakeProgramBackends(Node):
             OccupancyGrid, '/map', map_qos)
         self.completion_publisher = self.create_publisher(
             Empty, '/explore/exploration_complete', 1)
+        self.detections_publisher = self.create_publisher(
+            DetectedObjectArray, '/sam2/detections', 10)
+        self.navigation_status_publisher = self.create_publisher(
+            GoalStatusArray,
+            '/navigate_to_pose/_action/status',
+            qos_profile_action_status_default,
+        )
+        self.operator_event_publisher = self.create_publisher(
+            String, '/explore_and_record/operator_event', 10)
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         self.publish_test_environment()
 
@@ -126,6 +159,19 @@ class FakeProgramBackends(Node):
 
     def publish_exploration_complete(self):
         self.completion_publisher.publish(Empty())
+
+    def publish_navigation_active(self, active):
+        message = GoalStatusArray()
+        if active:
+            status = GoalStatus()
+            status.status = GoalStatus.STATUS_EXECUTING
+            message.status_list.append(status)
+        self.navigation_status_publisher.publish(message)
+
+    def publish_detection_burst(self):
+        for _ in range(3):
+            self.detections_publisher.publish(DetectedObjectArray())
+            time.sleep(0.01)
 
     def control_callback(self, request, response):
         self.control_actions.append(request.action)
@@ -168,7 +214,16 @@ class FakeProgramBackends(Node):
     def execute_spin(self, goal_handle):
         self.spin_angles.append(goal_handle.request.target_yaw)
         goal_handle.succeed()
+        if self.publish_detections_after_spin:
+            threading.Thread(
+                target=self._publish_delayed_detection_burst,
+                daemon=True,
+            ).start()
         return Spin.Result()
+
+    def _publish_delayed_detection_burst(self):
+        time.sleep(0.02)
+        self.publish_detection_burst()
 
     def execute_navigation(self, goal_handle):
         self.navigate_poses.append(goal_handle.request.pose)
@@ -181,17 +236,38 @@ def running_command_layer(tmp_path):
     rclpy.init()
     backend = FakeProgramBackends()
     backend.map_save_directory = str(tmp_path)
+    backend.bag_output_directory = str(tmp_path / 'bags')
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(backend)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
+    recorder_process = subprocess.Popen(
+        [
+            'ros2', 'run', 'muto_exploration_bag',
+            'exploration_bag_recorder',
+            '--ros-args',
+            '-p', f'output_directory:={backend.bag_output_directory}',
+            '-p', 'post_terminal_delay:=0.1',
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    wait_until(
+        lambda: backend.count_subscribers(
+            '/explore_and_record/recording_event') >= 1,
+        timeout=5.0,
+    )
     process = subprocess.Popen(
         [
             'ros2', 'run', 'muto_command_layer', 'command_layer_node',
             '--ros-args',
             '-p', 'exploration_cycle_duration:=0.1',
-            '-p', 'observation_duration:=0.05',
-            '-p', 'navigation_settle_time:=0.0',
+            '-p', 'observation_duration:=1.0',
+            '-p', 'observation_min_detection_frames:=3',
+            '-p', 'scan_step_count:=6',
+            '-p', 'navigation_settle_time:=0.01',
             '-p', 'program_endpoint_timeout:=1.0',
             '-p', 'spin_time_allowance:=1.0',
             '-p', 'tf_timeout:=1.0',
@@ -207,6 +283,9 @@ def running_command_layer(tmp_path):
             '-p', f'map_save_directory:={tmp_path}',
             '-p', 'default_map_name:=test_default',
             '-p', 'save_map_timeout:=1.0',
+            '-p', 'exploration_bag_enabled:=true',
+            '-p', 'exploration_bag_required:=true',
+            '-p', 'exploration_bag_start_timeout:=2.0',
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -219,17 +298,33 @@ def running_command_layer(tmp_path):
         assert action_client.wait_for_server(timeout_sec=5.0)
         yield backend, action_client
     finally:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            bag_directories = list(
+                Path(backend.bag_output_directory).glob('muto_explore_*'))
+            if (not bag_directories or
+                    all((path / 'metadata.yaml').exists()
+                        for path in bag_directories)):
+                break
+            time.sleep(0.02)
         os.killpg(process.pid, signal.SIGINT)
         try:
             output, _ = process.communicate(timeout=5.0)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             output, _ = process.communicate(timeout=5.0)
+        os.killpg(recorder_process.pid, signal.SIGINT)
+        try:
+            recorder_output, _ = recorder_process.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            os.killpg(recorder_process.pid, signal.SIGKILL)
+            recorder_output, _ = recorder_process.communicate(timeout=5.0)
         executor.shutdown(timeout_sec=5.0)
         spin_thread.join(timeout=5.0)
         backend.destroy_node()
         rclpy.shutdown()
         assert process.returncode == 0, output
+        assert recorder_process.returncode == 0, recorder_output
 
 
 def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
@@ -239,7 +334,15 @@ def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
 
     goal_handle = wait_future(action_client.send_goal_async(goal))
     assert goal_handle.accepted
+    wait_until(lambda: backend.control_actions == [
+        ControlExploration.Request.ACTION_START,
+    ])
+    operator_event = String()
+    operator_event.data = 'observation: test chair visible by the doorway'
+    backend.operator_event_publisher.publish(operator_event)
+    started = time.monotonic()
     result_response = wait_future(goal_handle.get_result_async())
+    elapsed = time.monotonic() - started
 
     assert result_response.status == GoalStatus.STATUS_SUCCEEDED
     assert result_response.result.success
@@ -251,8 +354,76 @@ def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
         ControlExploration.Request.ACTION_STOP,
     ]
     assert backend.save_calls == 1
-    assert backend.spin_angles == pytest.approx([math.pi / 4.0] * 8)
+    assert elapsed < 5.0
+    assert backend.spin_angles == pytest.approx([math.pi / 3.0] * 6)
     assert sum(backend.spin_angles) == pytest.approx(2.0 * math.pi)
+
+    metadata_path = wait_for_single_finalized_bag(
+        backend.bag_output_directory)
+    metadata = metadata_path.read_text(encoding='utf-8')
+    assert 'muto_schema: explore_and_record_v1' in metadata
+    assert 'git_revision:' in metadata
+    assert 'git_dirty:' in metadata
+    assert '/sam2/detections' in metadata
+    assert '/tf_static' in metadata
+    assert '/navigate_to_pose/_action/status' in metadata
+    assert '/explore_and_record/recording_event' in metadata
+    assert '/explore_and_record/operator_event' in metadata
+    metadata_document = yaml.safe_load(metadata)
+    topic_counts = {
+        entry['topic_metadata']['name']: entry['message_count']
+        for entry in metadata_document[
+            'rosbag2_bagfile_information']['topics_with_message_count']
+    }
+    assert topic_counts['/explore_and_record/operator_event'] == 1
+    assert topic_counts['/explore_and_record/recording_event'] >= 2
+    assert list(metadata_path.parent.glob('*.mcap'))
+
+
+def test_minimum_interval_does_not_interrupt_active_frontier_travel(
+        running_command_layer):
+    backend, action_client = running_command_layer
+    backend.publish_navigation_active(True)
+    goal = ExploreAndRecord.Goal()
+    goal.max_cycles = 1
+
+    goal_handle = wait_future(action_client.send_goal_async(goal))
+    assert goal_handle.accepted
+    wait_until(lambda: backend.control_actions == [
+        ControlExploration.Request.ACTION_START,
+    ])
+    time.sleep(0.25)
+
+    assert backend.control_actions == [
+        ControlExploration.Request.ACTION_START,
+    ]
+    assert backend.spin_angles == []
+
+    backend.publish_navigation_active(False)
+    result_response = wait_future(goal_handle.get_result_async())
+
+    assert result_response.status == GoalStatus.STATUS_SUCCEEDED
+    assert backend.control_actions == [
+        ControlExploration.Request.ACTION_START,
+        ControlExploration.Request.ACTION_STOP,
+    ]
+    assert backend.spin_angles == pytest.approx([math.pi / 3.0] * 6)
+
+
+def test_detector_timeout_preserves_scan_when_perception_is_unavailable(
+        running_command_layer):
+    backend, action_client = running_command_layer
+    backend.publish_detections_after_spin = False
+    goal = ExploreAndRecord.Goal()
+    goal.observation_duration = 0.05
+    goal.max_cycles = 1
+
+    goal_handle = wait_future(action_client.send_goal_async(goal))
+    assert goal_handle.accepted
+    result_response = wait_future(goal_handle.get_result_async())
+
+    assert result_response.status == GoalStatus.STATUS_SUCCEEDED
+    assert backend.spin_angles == pytest.approx([math.pi / 3.0] * 6)
 
 
 def test_save_map_wrapper_confines_names_and_applies_default(
@@ -314,6 +485,13 @@ def test_cancel_stops_exploration_and_rejects_manual_control(
     assert backend.spin_angles == []
     assert backend.save_calls == 1
 
+    metadata_path = wait_for_single_finalized_bag(
+        backend.bag_output_directory)
+    metadata = metadata_path.read_text(encoding='utf-8')
+    assert 'muto_schema: explore_and_record_v1' in metadata
+    assert '/explore_and_record/recording_event' in metadata
+    assert list(metadata_path.parent.glob('*.mcap'))
+
 
 def test_frontier_completion_runs_visibility_navigation_and_scan(
         running_command_layer):
@@ -341,5 +519,5 @@ def test_frontier_completion_runs_visibility_navigation_and_scan(
     assert target.header.frame_id == 'map'
     assert 0.0 < target.pose.position.x < 2.0
     assert 0.0 < target.pose.position.y < 2.0
-    assert backend.spin_angles == pytest.approx([math.pi / 4.0] * 8)
+    assert backend.spin_angles == pytest.approx([math.pi / 3.0] * 6)
     assert backend.save_calls == 2

@@ -10,16 +10,20 @@
 #include <filesystem>
 #include <functional>
 #include <future>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
 
+#include "action_msgs/msg/goal_status.hpp"
+#include "action_msgs/msg/goal_status_array.hpp"
 #include "frontier_exploration_ros2/srv/control_exploration.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -33,9 +37,12 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "rclcpp_action/qos.hpp"
+#include "sam2_object_registry/msg/detected_object_array.hpp"
 #include "sam2_object_registry/srv/get_stored_objects.hpp"
 #include "slam_toolbox/srv/save_map.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2/exceptions.hpp"
@@ -162,6 +169,29 @@ public:
           exploration_completed_.store(true);
         }
       });
+    detections_sub_ =
+      create_subscription<sam2_object_registry::msg::DetectedObjectArray>(
+      detections_topic_, rclcpp::QoS(10).reliable().durability_volatile(),
+      [this](sam2_object_registry::msg::DetectedObjectArray::ConstSharedPtr)
+      {
+        detection_frame_count_.fetch_add(1U, std::memory_order_relaxed);
+      });
+    navigation_status_sub_ =
+      create_subscription<action_msgs::msg::GoalStatusArray>(
+      action_status_topic(navigate_action_),
+      rclcpp_action::DefaultActionStatusQoS(),
+      [this](action_msgs::msg::GoalStatusArray::ConstSharedPtr status_array)
+      {
+        const bool active = std::any_of(
+          status_array->status_list.begin(), status_array->status_list.end(),
+          [](const action_msgs::msg::GoalStatus & status)
+          {
+            return status.status == action_msgs::msg::GoalStatus::STATUS_ACCEPTED ||
+                   status.status == action_msgs::msg::GoalStatus::STATUS_EXECUTING ||
+                   status.status == action_msgs::msg::GoalStatus::STATUS_CANCELING;
+          });
+        navigation_active_.store(active, std::memory_order_relaxed);
+      });
     visibility_map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
       visibility_map_topic_,
       rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local(),
@@ -176,6 +206,15 @@ public:
       create_publisher<geometry_msgs::msg::PoseStamped>(
       visibility_target_pose_topic_,
       rclcpp::QoS(1).reliable().transient_local());
+    program_bag_event_publisher_ = create_publisher<std_msgs::msg::String>(
+      exploration_bag_event_topic_,
+      rclcpp::QoS(1).reliable().transient_local());
+    program_bag_status_sub_ = create_subscription<std_msgs::msg::String>(
+      exploration_bag_status_topic_,
+      rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(
+        &CommandLayerNode::handle_program_bag_status, this,
+        std::placeholders::_1));
 
     command_server_ = rclcpp_action::create_server<CommandAction>(
       this,
@@ -209,6 +248,7 @@ public:
       "explore=%s program=%s spin=%s frontier_control=%s "
       "save_map=%s->%s map_directory=%s "
       "coverage=%s visibility_map=%s global_costmap=%s "
+      "bag_handshake=%s bag_status=%s "
       "minimum_approach_radius=%.2f m frames=%s<-%s",
       action_name_.c_str(), registry_service_.c_str(), navigate_action_.c_str(),
       explore_service_name_.c_str(), program_action_name_.c_str(),
@@ -217,6 +257,8 @@ public:
       slam_toolbox_save_map_service_.c_str(), map_save_directory_.c_str(),
       visibility_coverage_enabled_ ? "on" : "off",
       visibility_map_topic_.c_str(), global_costmap_service_.c_str(),
+      exploration_bag_enabled_ ? "on" : "off",
+      exploration_bag_status_topic_.c_str(),
       approach_distance_, global_frame_.c_str(), robot_base_frame_.c_str());
   }
 
@@ -225,6 +267,7 @@ public:
     stopping_.store(true);
     worker_condition_.notify_all();
     program_condition_.notify_all();
+    program_bag_status_condition_.notify_all();
     if (worker_.joinable()) {
       worker_.join();
     }
@@ -319,6 +362,92 @@ private:
       });
   }
 
+  static std::string action_status_topic(std::string action_name)
+  {
+    while (action_name.size() > 1U && action_name.back() == '/') {
+      action_name.pop_back();
+    }
+    return action_name + "/_action/status";
+  }
+
+  static std::string goal_id_string(const rclcpp_action::GoalUUID & goal_id)
+  {
+    std::ostringstream text;
+    text << std::hex << std::setfill('0');
+    for (const auto byte : goal_id) {
+      text << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return text.str();
+  }
+
+  static std::string json_escape(const std::string & value)
+  {
+    std::ostringstream escaped;
+    for (const unsigned char character : value) {
+      switch (character) {
+        case '"':
+          escaped << "\\\"";
+          break;
+        case '\\':
+          escaped << "\\\\";
+          break;
+        case '\n':
+          escaped << "\\n";
+          break;
+        case '\r':
+          escaped << "\\r";
+          break;
+        case '\t':
+          escaped << "\\t";
+          break;
+        default:
+          if (character < 0x20U) {
+            escaped << "\\u" << std::hex << std::setw(4) <<
+              std::setfill('0') << static_cast<unsigned int>(character) <<
+              std::dec;
+          } else {
+            escaped << character;
+          }
+      }
+    }
+    return escaped.str();
+  }
+
+  static std::optional<std::string> json_string_field(
+    const std::string & json, const std::string & key)
+  {
+    const std::string quoted_key = "\"" + key + "\"";
+    const auto key_position = json.find(quoted_key);
+    if (key_position == std::string::npos) {
+      return std::nullopt;
+    }
+    const auto colon = json.find(':', key_position + quoted_key.size());
+    if (colon == std::string::npos) {
+      return std::nullopt;
+    }
+    const auto opening_quote = json.find('"', colon + 1U);
+    if (opening_quote == std::string::npos) {
+      return std::nullopt;
+    }
+
+    std::string value;
+    bool escaped = false;
+    for (std::size_t index = opening_quote + 1U; index < json.size(); ++index) {
+      const char character = json[index];
+      if (escaped) {
+        value.push_back(character);
+        escaped = false;
+      } else if (character == '\\') {
+        escaped = true;
+      } else if (character == '"') {
+        return value;
+      } else {
+        value.push_back(character);
+      }
+    }
+    return std::nullopt;
+  }
+
   void declare_parameters()
   {
     declare_parameter<std::string>("action_name", "/go_to_object");
@@ -345,6 +474,7 @@ private:
       "registry_save_service", "/sam2/save_stored_objects");
     declare_parameter<std::string>(
       "exploration_completion_topic", "/explore/exploration_complete");
+    declare_parameter<std::string>("detections_topic", "/sam2/detections");
     declare_parameter<bool>("visibility_coverage_enabled", true);
     declare_parameter<std::string>("visibility_map_topic", "/map");
     declare_parameter<std::string>(
@@ -366,9 +496,18 @@ private:
     declare_parameter<double>("program_endpoint_timeout", 5.0);
     declare_parameter<double>("exploration_cycle_duration", 10.0);
     declare_parameter<double>("observation_duration", 3.0);
-    declare_parameter<int64_t>("scan_step_count", 8);
+    declare_parameter<int64_t>("observation_min_detection_frames", 3);
+    declare_parameter<int64_t>("scan_step_count", 6);
     declare_parameter<double>("spin_time_allowance", 15.0);
-    declare_parameter<double>("navigation_settle_time", 1.0);
+    declare_parameter<double>("navigation_settle_time", 0.25);
+    declare_parameter<bool>("finish_active_frontier_goal_before_scan", true);
+    declare_parameter<bool>("exploration_bag_enabled", false);
+    declare_parameter<bool>("exploration_bag_required", false);
+    declare_parameter<double>("exploration_bag_start_timeout", 2.0);
+    declare_parameter<std::string>(
+      "exploration_bag_event_topic", "/explore_and_record/recording_event");
+    declare_parameter<std::string>(
+      "exploration_bag_status_topic", "/explore_and_record/bag_status");
     declare_parameter<double>("visibility_map_timeout", 10.0);
     declare_parameter<int64_t>("visibility_free_threshold", 20);
     declare_parameter<int64_t>("visibility_occupied_threshold", 65);
@@ -422,6 +561,7 @@ private:
       get_parameter("registry_save_service").as_string();
     exploration_completion_topic_ =
       get_parameter("exploration_completion_topic").as_string();
+    detections_topic_ = get_parameter("detections_topic").as_string();
     visibility_coverage_enabled_ =
       get_parameter("visibility_coverage_enabled").as_bool();
     visibility_map_topic_ = get_parameter("visibility_map_topic").as_string();
@@ -450,10 +590,24 @@ private:
     exploration_cycle_duration_ =
       get_parameter("exploration_cycle_duration").as_double();
     observation_duration_ = get_parameter("observation_duration").as_double();
+    observation_min_detection_frames_ =
+      get_parameter("observation_min_detection_frames").as_int();
     scan_step_count_ = get_parameter("scan_step_count").as_int();
     spin_time_allowance_ = get_parameter("spin_time_allowance").as_double();
     navigation_settle_time_ =
       get_parameter("navigation_settle_time").as_double();
+    finish_active_frontier_goal_before_scan_ =
+      get_parameter("finish_active_frontier_goal_before_scan").as_bool();
+    exploration_bag_enabled_ =
+      get_parameter("exploration_bag_enabled").as_bool();
+    exploration_bag_required_ =
+      get_parameter("exploration_bag_required").as_bool();
+    exploration_bag_start_timeout_ =
+      get_parameter("exploration_bag_start_timeout").as_double();
+    exploration_bag_event_topic_ =
+      get_parameter("exploration_bag_event_topic").as_string();
+    exploration_bag_status_topic_ =
+      get_parameter("exploration_bag_status_topic").as_string();
     visibility_map_timeout_ =
       get_parameter("visibility_map_timeout").as_double();
     visibility_planner_config_.free_threshold = static_cast<int>(
@@ -511,6 +665,10 @@ private:
     require_name(registry_save_service_, "registry_save_service");
     require_name(
       exploration_completion_topic_, "exploration_completion_topic");
+    require_name(detections_topic_, "detections_topic");
+    require_name(exploration_bag_event_topic_, "exploration_bag_event_topic");
+    require_name(
+      exploration_bag_status_topic_, "exploration_bag_status_topic");
     require_name(visibility_map_topic_, "visibility_map_topic");
     require_name(
       visibility_target_pose_topic_, "visibility_target_pose_topic");
@@ -602,6 +760,12 @@ private:
       throw std::invalid_argument(
               "observation_duration must be finite and positive");
     }
+    if (observation_min_detection_frames_ < 0 ||
+      observation_min_detection_frames_ > 1000)
+    {
+      throw std::invalid_argument(
+              "observation_min_detection_frames must be in [0, 1000]");
+    }
     if (scan_step_count_ <= 0 || scan_step_count_ > 360) {
       throw std::invalid_argument("scan_step_count must be in [1, 360]");
     }
@@ -614,6 +778,16 @@ private:
     {
       throw std::invalid_argument(
               "navigation_settle_time must be finite and nonnegative");
+    }
+    if (exploration_bag_required_ && !exploration_bag_enabled_) {
+      throw std::invalid_argument(
+              "exploration_bag_required cannot be true when recording is disabled");
+    }
+    if (!std::isfinite(exploration_bag_start_timeout_) ||
+      exploration_bag_start_timeout_ <= 0.0)
+    {
+      throw std::invalid_argument(
+              "exploration_bag_start_timeout must be finite and positive");
     }
     if (!std::isfinite(visibility_map_timeout_) ||
       visibility_map_timeout_ <= 0.0)
@@ -905,6 +1079,116 @@ private:
     program_condition_.notify_one();
   }
 
+  void handle_program_bag_status(
+    const std_msgs::msg::String::ConstSharedPtr message)
+  {
+    const auto event = json_string_field(message->data, "event");
+    const auto goal_id = json_string_field(message->data, "goal_id");
+    if (!event || !goal_id) {
+      RCLCPP_WARN(
+        get_logger(), "Ignoring malformed exploration bag status: %s",
+        message->data.c_str());
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(program_bag_status_mutex_);
+    latest_program_bag_status_event_ = *event;
+    latest_program_bag_status_goal_id_ = *goal_id;
+    latest_program_bag_status_detail_ =
+      json_string_field(message->data, "detail").value_or("");
+    latest_program_bag_status_path_ =
+      json_string_field(message->data, "bag_path").value_or("");
+    program_bag_status_condition_.notify_all();
+  }
+
+  void publish_program_lifecycle_event(
+    const std::shared_ptr<ProgramGoalHandle> & goal_handle,
+    const std::string & event,
+    const uint32_t completed_cycles = 0U,
+    const uint32_t objects_before = 0U,
+    const uint32_t objects_after = 0U)
+  {
+    if (!program_bag_event_publisher_) {
+      return;
+    }
+
+    const auto goal = goal_handle->get_goal();
+    const double exploration_duration = goal->exploration_duration > 0.0F ?
+      static_cast<double>(goal->exploration_duration) :
+      exploration_cycle_duration_;
+    const double observation_duration = goal->observation_duration > 0.0F ?
+      static_cast<double>(goal->observation_duration) : observation_duration_;
+    const uint32_t scan_steps = goal->scan_step_count > 0U ?
+      goal->scan_step_count : static_cast<uint32_t>(scan_step_count_);
+    const std::string goal_id = goal_id_string(goal_handle->get_goal_id());
+
+    std_msgs::msg::String message;
+    message.data =
+      "{\"schema\":\"muto_explore_lifecycle_v1\",\"event\":\"" +
+      json_escape(event) + "\",\"action_name\":\"" +
+      json_escape(program_action_name_) + "\",\"goal_id\":\"" +
+      goal_id + "\",\"exploration_duration_s\":" +
+      std::to_string(exploration_duration) +
+      ",\"observation_timeout_s\":" +
+      std::to_string(observation_duration) +
+      ",\"observation_detection_frames\":" +
+      std::to_string(observation_min_detection_frames_) +
+      ",\"scan_step_count\":" + std::to_string(scan_steps) +
+      ",\"max_cycles\":" + std::to_string(goal->max_cycles) +
+      ",\"completed_cycles\":" + std::to_string(completed_cycles) +
+      ",\"objects_before\":" + std::to_string(objects_before) +
+      ",\"objects_after\":" + std::to_string(objects_after) + "}";
+    program_bag_event_publisher_->publish(message);
+  }
+
+  bool announce_program_start(
+    const std::shared_ptr<ProgramGoalHandle> & goal_handle,
+    std::string & error)
+  {
+    const std::string goal_id = goal_id_string(goal_handle->get_goal_id());
+    {
+      std::lock_guard<std::mutex> lock(program_bag_status_mutex_);
+      latest_program_bag_status_event_.clear();
+      latest_program_bag_status_goal_id_.clear();
+      latest_program_bag_status_detail_.clear();
+      latest_program_bag_status_path_.clear();
+    }
+    publish_program_lifecycle_event(goal_handle, "mission_started");
+
+    if (!exploration_bag_enabled_) {
+      return true;
+    }
+
+    std::unique_lock<std::mutex> lock(program_bag_status_mutex_);
+    const bool received = program_bag_status_condition_.wait_for(
+      lock, std::chrono::duration<double>(exploration_bag_start_timeout_),
+      [this, &goal_id]() {
+        return stopping_.load() ||
+               (latest_program_bag_status_goal_id_ == goal_id &&
+               (latest_program_bag_status_event_ == "recording_ready" ||
+               latest_program_bag_status_event_ == "recording_error"));
+      });
+    if (!received) {
+      error = "timed out waiting for standalone exploration recorder";
+      return false;
+    }
+    if (stopping_.load()) {
+      error = "command layer is stopping";
+      return false;
+    }
+    if (latest_program_bag_status_event_ == "recording_error") {
+      error = latest_program_bag_status_detail_.empty() ?
+        "standalone exploration recorder reported an error" :
+        latest_program_bag_status_detail_;
+      return false;
+    }
+
+    RCLCPP_INFO(
+      get_logger(), "Standalone exploration recorder is ready: %s",
+      latest_program_bag_status_path_.c_str());
+    return true;
+  }
+
   void program_worker_loop()
   {
     while (!stopping_.load()) {
@@ -923,7 +1207,23 @@ private:
       }
 
       try {
-        execute_program(goal_handle);
+        std::string bag_error;
+        const bool bag_ready = announce_program_start(goal_handle, bag_error);
+        if (!bag_ready && exploration_bag_required_) {
+          abort_program(
+            goal_handle,
+            "exploration bag recording is required but could not start: " +
+            bag_error,
+            0U, 0U, 0U);
+        } else {
+          if (!bag_ready) {
+            RCLCPP_ERROR(
+              get_logger(),
+              "Continuing exploration without a confirmed bag: %s",
+              bag_error.c_str());
+          }
+          execute_program(goal_handle);
+        }
       } catch (const std::exception & error) {
         RCLCPP_ERROR(
           get_logger(), "Unhandled explore-and-record error: %s", error.what());
@@ -1094,6 +1394,84 @@ private:
     return ProgramDelayStatus::elapsed;
   }
 
+  ProgramDelayStatus wait_for_detection_frames(
+    const std::shared_ptr<ProgramGoalHandle> & goal_handle,
+    const double timeout_seconds,
+    const bool watch_exploration_completion = true)
+  {
+    if (observation_min_detection_frames_ == 0) {
+      return wait_program_delay(
+        goal_handle, timeout_seconds, watch_exploration_completion);
+    }
+
+    const uint64_t first_frame = detection_frame_count_.load(
+      std::memory_order_relaxed);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(timeout_seconds);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (goal_handle->is_canceling()) {
+        return ProgramDelayStatus::canceled;
+      }
+      if (stopping_.load() || !rclcpp::ok()) {
+        return ProgramDelayStatus::stopping;
+      }
+      if (watch_exploration_completion && exploration_completed_.load()) {
+        return ProgramDelayStatus::exploration_complete;
+      }
+      const uint64_t received = detection_frame_count_.load(
+        std::memory_order_relaxed) - first_frame;
+      if (received >=
+        static_cast<uint64_t>(observation_min_detection_frames_))
+      {
+        return ProgramDelayStatus::elapsed;
+      }
+      std::this_thread::sleep_for(20ms);
+    }
+
+    const uint64_t received = detection_frame_count_.load(
+      std::memory_order_relaxed) - first_frame;
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Detector observation timed out after %.2fs with %llu/%lld fresh frames",
+      timeout_seconds, static_cast<unsigned long long>(received),
+      static_cast<long long>(observation_min_detection_frames_));
+    return ProgramDelayStatus::elapsed;
+  }
+
+  ProgramDelayStatus wait_for_frontier_navigation_idle(
+    const std::shared_ptr<ProgramGoalHandle> & goal_handle,
+    const uint32_t completed_cycles,
+    const uint32_t object_count)
+  {
+    if (!finish_active_frontier_goal_before_scan_ ||
+      !navigation_active_.load(std::memory_order_relaxed))
+    {
+      return ProgramDelayStatus::elapsed;
+    }
+
+    publish_program_feedback(
+      goal_handle, kProgramExploringPhase,
+      "minimum exploration interval elapsed; finishing current frontier travel",
+      completed_cycles, object_count);
+    RCLCPP_INFO(
+      get_logger(),
+      "Exploration interval elapsed while Nav2 is traveling; waiting for the "
+      "active frontier goal to finish before scanning");
+    while (navigation_active_.load(std::memory_order_relaxed)) {
+      if (goal_handle->is_canceling()) {
+        return ProgramDelayStatus::canceled;
+      }
+      if (stopping_.load() || !rclcpp::ok()) {
+        return ProgramDelayStatus::stopping;
+      }
+      if (exploration_completed_.load()) {
+        return ProgramDelayStatus::exploration_complete;
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    return ProgramDelayStatus::elapsed;
+  }
+
   void best_effort_stop_exploration()
   {
     if (!frontier_control_client_ || !rclcpp::ok()) {
@@ -1153,6 +1531,8 @@ private:
     result->completed_cycles = completed_cycles;
     result->objects_before = objects_before;
     result->objects_after = objects_after;
+    publish_program_lifecycle_event(
+      goal_handle, "canceled", completed_cycles, objects_before, objects_after);
     if (goal_handle->is_canceling()) {
       goal_handle->canceled(result);
     }
@@ -1173,6 +1553,8 @@ private:
     result->completed_cycles = completed_cycles;
     result->objects_before = objects_before;
     result->objects_after = objects_after;
+    publish_program_lifecycle_event(
+      goal_handle, "aborted", completed_cycles, objects_before, objects_after);
     if (goal_handle->is_canceling()) {
       goal_handle->canceled(result);
     } else if (goal_handle->is_active()) {
@@ -1194,6 +1576,8 @@ private:
     result->completed_cycles = completed_cycles;
     result->objects_before = objects_before;
     result->objects_after = objects_after;
+    publish_program_lifecycle_event(
+      goal_handle, "succeeded", completed_cycles, objects_before, objects_after);
     if (goal_handle->is_active()) {
       goal_handle->succeed(result);
     }
@@ -2058,7 +2442,7 @@ private:
           "observing static objects at visibility viewpoint " +
           std::to_string(viewpoint_number) + ", scan step " + scan_progress,
           completed_cycles, object_count);
-        const auto observation_status = wait_program_delay(
+        const auto observation_status = wait_for_detection_frames(
           goal_handle, observation_duration, false);
         if (observation_status == ProgramDelayStatus::canceled) {
           error = "explore-and-record canceled during visibility observation";
@@ -2284,10 +2668,14 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "Explore-and-record started: explore=%.2fs scan=%ux%.1fdeg "
-      "observe=%.2fs/step max_cycles=%u objects=%u",
+      "Explore-and-record started: explore>=%.2fs scan=%ux%.1fdeg "
+      "observe=%lld frames (%.2fs max)/step finish_travel=%s "
+      "max_cycles=%u objects=%u",
       exploration_duration, scan_step_count, spin_angle_degrees,
-      observation_duration, max_cycles, objects_before);
+      static_cast<long long>(observation_min_detection_frames_),
+      observation_duration,
+      finish_active_frontier_goal_before_scan_ ? "yes" : "no",
+      max_cycles, objects_before);
 
     while (rclcpp::ok() && !stopping_.load()) {
       publish_program_feedback(
@@ -2310,6 +2698,23 @@ private:
         return;
       }
 
+      const auto travel_wait = wait_for_frontier_navigation_idle(
+        goal_handle, completed_cycles, objects_after);
+      if (travel_wait == ProgramDelayStatus::canceled) {
+        cancel_program(
+          goal_handle, "explore-and-record canceled during frontier travel",
+          completed_cycles, objects_before, objects_after);
+        return;
+      }
+      if (travel_wait == ProgramDelayStatus::stopping) {
+        best_effort_stop_exploration();
+        return;
+      }
+      if (travel_wait == ProgramDelayStatus::exploration_complete) {
+        finish_after_frontier();
+        return;
+      }
+
       publish_program_feedback(
         goal_handle, kProgramPausingPhase,
         "stopping frontier exploration", completed_cycles, objects_after);
@@ -2326,6 +2731,22 @@ private:
         cancel_program(
           goal_handle, "explore-and-record canceled while pausing",
           completed_cycles, objects_before, objects_after);
+        return;
+      }
+
+      const auto cancellation_wait = wait_for_frontier_navigation_idle(
+        goal_handle, completed_cycles, objects_after);
+      if (cancellation_wait == ProgramDelayStatus::canceled) {
+        cancel_program(
+          goal_handle, "explore-and-record canceled while pausing",
+          completed_cycles, objects_before, objects_after);
+        return;
+      }
+      if (cancellation_wait == ProgramDelayStatus::stopping) {
+        return;
+      }
+      if (cancellation_wait == ProgramDelayStatus::exploration_complete) {
+        finish_after_frontier();
         return;
       }
 
@@ -2374,7 +2795,7 @@ private:
           goal_handle, kProgramObservingPhase,
           "observing objects at scan step " + scan_progress,
           completed_cycles, objects_after);
-        const auto observation_wait = wait_program_delay(
+        const auto observation_wait = wait_for_detection_frames(
           goal_handle, observation_duration);
         if (observation_wait == ProgramDelayStatus::canceled) {
           cancel_program(
@@ -2687,6 +3108,9 @@ private:
   std::string spin_action_;
   std::string registry_save_service_;
   std::string exploration_completion_topic_;
+  std::string detections_topic_;
+  std::string exploration_bag_event_topic_;
+  std::string exploration_bag_status_topic_;
   std::string visibility_map_topic_;
   std::string visibility_target_pose_topic_;
   std::string global_frame_;
@@ -2707,9 +3131,14 @@ private:
   double program_endpoint_timeout_{5.0};
   double exploration_cycle_duration_{10.0};
   double observation_duration_{3.0};
-  int64_t scan_step_count_{8};
+  int64_t observation_min_detection_frames_{3};
+  int64_t scan_step_count_{6};
   double spin_time_allowance_{15.0};
-  double navigation_settle_time_{1.0};
+  double navigation_settle_time_{0.25};
+  bool finish_active_frontier_goal_before_scan_{true};
+  bool exploration_bag_enabled_{false};
+  bool exploration_bag_required_{false};
+  double exploration_bag_start_timeout_{2.0};
   bool visibility_coverage_enabled_{true};
   double visibility_map_timeout_{10.0};
   VisibilityPlannerConfig visibility_planner_config_;
@@ -2736,8 +3165,16 @@ private:
     target_pose_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr
     visibility_target_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
+    program_bag_event_publisher_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    program_bag_status_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr
     exploration_completion_sub_;
+  rclcpp::Subscription<sam2_object_registry::msg::DetectedObjectArray>::SharedPtr
+    detections_sub_;
+  rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr
+    navigation_status_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr
     visibility_map_sub_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -2746,9 +3183,13 @@ private:
   std::atomic<bool> stopping_{false};
   std::atomic<bool> program_active_{false};
   std::atomic<bool> exploration_completed_{false};
+  std::atomic<bool> navigation_active_{false};
+  std::atomic<uint64_t> detection_frame_count_{0U};
   std::mutex frontier_request_mutex_;
   std::mutex visibility_map_mutex_;
+  std::mutex program_bag_status_mutex_;
   std::mutex worker_mutex_;
+  std::condition_variable program_bag_status_condition_;
   std::condition_variable worker_condition_;
   std::condition_variable program_condition_;
   std::thread worker_;
@@ -2756,6 +3197,10 @@ private:
   bool busy_{false};
   std::shared_ptr<CommandGoalHandle> pending_goal_;
   std::shared_ptr<ProgramGoalHandle> pending_program_goal_;
+  std::string latest_program_bag_status_event_;
+  std::string latest_program_bag_status_goal_id_;
+  std::string latest_program_bag_status_detail_;
+  std::string latest_program_bag_status_path_;
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_visibility_map_;
 };
 

@@ -1,0 +1,24 @@
+exploration_bag_recorder:
+  ros__parameters:
+    # Empty resolves to $HOME/.ros/bags/explore_and_record.
+    output_directory: ""
+    storage_id: mcap
+    storage_preset: none
+
+    # An empty topic list and regex record the complete discovered graph.
+    # Long camera and point-cloud runs can become large; use one selector or
+    # exclude_regex to constrain them. Topic names must be absolute.
+    # Leave `topics` undeclared here for the node's empty-list default. To use
+    # an explicit source contract, uncomment a non-empty list such as:
+    # topics: [/tf, /tf_static, /map, /odom, /scan]
+    topics_regex: ""
+    exclude_regex: ""
+    include_hidden_topics: true
+    record_all_services: true
+    max_cache_size: 104857600
+    post_terminal_delay: 0.25
+
+    lifecycle_event_topic: /explore_and_record/recording_event
+    status_topic: /explore_and_record/bag_status
+    path_topic: /explore_and_record/last_bag_path
+    operator_event_topic: /explore_and_record/operator_event

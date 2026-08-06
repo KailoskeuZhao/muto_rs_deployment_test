@@ -80,7 +80,10 @@ install(FILES README.md
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+  ament_add_gtest(test_rosbag2_compat test/test_rosbag2_compat.cpp)
+  target_include_directories(test_rosbag2_compat PRIVATE include)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()

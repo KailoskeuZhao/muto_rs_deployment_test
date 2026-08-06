@@ -163,7 +163,12 @@ failure. `command_layer_launch.py` starts that recorder by default; this
 command node only publishes mission lifecycle events and waits for the
 recorder-ready acknowledgement. By default the recorder captures all
 discovered topics, hidden action topics, and available service-event topics.
-Metadata stores the action goal context, recorder git revision, and dirty flag.
+Each bag's `muto_recording_manifest.json` stores the action goal context, ROS
+distribution, recorder Git revision, dirty flag, and topic scope. Newer
+rosbag2 releases also copy these fields into `metadata.yaml`; ROS 2 Humble does
+not provide that storage API. Humble also lacks the newer `all_services`
+selector, but all-topic mode records service-event topics exposed by server
+introspection as ordinary topics.
 
 The default parent directory is
 `$HOME/.ros/bags/explore_and_record`; on the root-run robot this is

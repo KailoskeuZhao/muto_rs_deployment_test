@@ -25,6 +25,14 @@ service-event topics where server introspection is enabled. Success,
 cancellation, and abort events close the current bag after a short terminal
 capture delay.
 
+The recorder supports the ROS 2 Humble API used on the Orin and the newer
+Jazzy API used for development. Every bag directory contains
+`muto_recording_manifest.json` with the goal context, resolved start event,
+ROS distribution, Git revision, dirty flag, and topic scope. Newer rosbag2
+versions also mirror these fields into `metadata.yaml`. Humble has no native
+`all_services` selector; its all-topic mode still captures service-event topics
+that servers expose through introspection.
+
 The default directory on the root-run robot is:
 
 ```text
@@ -39,6 +47,7 @@ ros2 topic echo --once --qos-durability transient_local \
 ros2 topic echo --once --qos-durability transient_local \
   /explore_and_record/last_bag_path
 ros2 bag info <bag-directory>
+cat <bag-directory>/muto_recording_manifest.json
 ```
 
 `recording_ready` means the action-scoped bag is open;

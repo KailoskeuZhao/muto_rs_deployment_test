@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iterator>
@@ -138,6 +139,35 @@ std::string timestamped_bag_name(const std::string & goal_id)
   name << "muto_explore_" << std::put_time(&local_time, "%Y%m%d_%H%M%S") <<
     "_" << safe_goal_id.substr(0U, 8U);
   return name.str();
+}
+
+void write_recording_manifest(
+  const std::filesystem::path & bag_path,
+  const std::unordered_map<std::string, std::string> & custom_data)
+{
+  std::vector<std::pair<std::string, std::string>> sorted_data(
+    custom_data.begin(), custom_data.end());
+  std::sort(sorted_data.begin(), sorted_data.end());
+
+  const auto manifest_path = bag_path / "muto_recording_manifest.json";
+  std::ofstream manifest(manifest_path, std::ios::out | std::ios::trunc);
+  if (!manifest.is_open()) {
+    throw std::runtime_error(
+            "could not open recording manifest: " + manifest_path.string());
+  }
+
+  manifest << "{\n";
+  for (std::size_t index = 0U; index < sorted_data.size(); ++index) {
+    manifest << "  \"" << json_escape(sorted_data[index].first) << "\": \"" <<
+      json_escape(sorted_data[index].second) << "\"";
+    manifest << (index + 1U == sorted_data.size() ? "\n" : ",\n");
+  }
+  manifest << "}\n";
+  manifest.flush();
+  if (!manifest.good()) {
+    throw std::runtime_error(
+            "could not write recording manifest: " + manifest_path.string());
+  }
 }
 
 }  // namespace
@@ -331,25 +361,39 @@ private:
     options.include_hidden_topics = include_hidden_topics_;
     options.record_all_services = record_all_services_;
     options.use_sim_time = use_sim_time;
+    const char * ros_distro = std::getenv("ROS_DISTRO");
     options.custom_data = {
       {"muto_schema", "explore_and_record_v1"},
       {"goal_id", goal_id},
       {"start_event", start_event},
+      {"bag_path", bag_path.string()},
       {"git_revision", muto_exploration_bag_build::kGitRevision},
       {"git_dirty",
         muto_exploration_bag_build::kGitDirty ? "true" : "false"},
+      {"ros_distro", ros_distro == nullptr ? "unknown" : ros_distro},
       {"topic_scope", topics_.empty() ?
         (topics_regex_.empty() ? "all_topics" : "regex") :
         "configured_topics"},
       {"operator_event_topic", operator_event_topic_},
+      {"manifest_file", "muto_recording_manifest.json"},
     };
 
     try {
       transport_->start(options);
+      write_recording_manifest(bag_path, options.custom_data);
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
-        get_logger(), "Could not start exploration bag for goal %s: %s",
+        get_logger(), "Could not prepare exploration bag for goal %s: %s",
         goal_id.c_str(), error.what());
+      if (transport_->active()) {
+        try {
+          transport_->stop();
+        } catch (const std::exception & stop_error) {
+          RCLCPP_ERROR(
+            get_logger(), "Could not close incomplete exploration bag: %s",
+            stop_error.what());
+        }
+      }
       publish_status("recording_error", goal_id, error.what());
       return;
     }

@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "muto_exploration_bag/rosbag2_compat.hpp"
 #include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/logging.hpp"
 #include "rclcpp/node_options.hpp"
@@ -69,19 +70,37 @@ void ExplorationBagTransport::start(const ExplorationBagOptions & options)
   storage_options.storage_id = options.storage_id;
   storage_options.max_cache_size = options.max_cache_size;
   storage_options.storage_preset_profile = options.storage_preset_profile;
-  storage_options.custom_data = options.custom_data;
+  const bool storage_supports_custom_data =
+    rosbag2_compat::set_custom_data(storage_options, options.custom_data);
 
   rosbag2_transport::RecordOptions record_options;
-  record_options.all_topics =
+  const bool record_all_topics =
     options.topics.empty() && options.topics_regex.empty();
-  record_options.all_services = options.record_all_services;
+  rosbag2_compat::set_all_topics(record_options, record_all_topics);
+  const bool recorder_supports_all_services =
+    rosbag2_compat::set_all_services(
+    record_options, options.record_all_services);
   record_options.topics = options.topics;
   record_options.regex = options.topics_regex;
-  record_options.exclude_regex = options.exclude_regex;
+  rosbag2_compat::set_exclude_regex(record_options, options.exclude_regex);
   record_options.include_hidden_topics = options.include_hidden_topics;
-  record_options.disable_keyboard_controls = true;
+  rosbag2_compat::disable_keyboard_controls(record_options);
   record_options.use_sim_time = options.use_sim_time;
   record_options.rmw_serialization_format = rmw_get_serialization_format();
+
+  if (!storage_supports_custom_data) {
+    RCLCPP_DEBUG(
+      rclcpp::get_logger("exploration_bag_transport"),
+      "This rosbag2 version has no StorageOptions custom_data; the portable "
+      "mission manifest remains available in the bag directory");
+  }
+  if (options.record_all_services && !recorder_supports_all_services) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("exploration_bag_transport"),
+      "This rosbag2 version has no all-services selector. Service-event "
+      "topics already exposed by introspection are still captured when they "
+      "match the active topic selection");
+  }
 
   rclcpp::NodeOptions node_options;
   node_options.context(context_);

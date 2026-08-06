@@ -14,6 +14,8 @@ exploration_bag_recorder:
     topics_regex: ""
     exclude_regex: ""
     include_hidden_topics: true
+    # Native all-services selection is available on newer rosbag2. On Humble,
+    # exposed service-event topics are still included by all-topic recording.
     record_all_services: true
     max_cache_size: 104857600
     post_terminal_delay: 0.25

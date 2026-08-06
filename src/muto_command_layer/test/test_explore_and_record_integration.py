@@ -1,5 +1,6 @@
 """Integration tests for the synthetic exploration and recording command."""
 
+import json
 import math
 import os
 from pathlib import Path
@@ -378,6 +379,15 @@ def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
     assert topic_counts['/explore_and_record/operator_event'] == 1
     assert topic_counts['/explore_and_record/recording_event'] >= 2
     assert list(metadata_path.parent.glob('*.mcap'))
+    manifest_path = metadata_path.parent / 'muto_recording_manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    assert manifest['muto_schema'] == 'explore_and_record_v1'
+    assert manifest['goal_id']
+    assert manifest['git_revision']
+    assert manifest['git_dirty'] in ('true', 'false')
+    assert manifest['bag_path'] == str(metadata_path.parent)
+    assert manifest['manifest_file'] == manifest_path.name
+    assert json.loads(manifest['start_event'])['event'] == 'mission_started'
 
 
 def test_minimum_interval_does_not_interrupt_active_frontier_travel(

@@ -33,10 +33,10 @@ versions also mirror these fields into `metadata.yaml`. Humble has no native
 `all_services` selector; its all-topic mode still captures service-event topics
 that servers expose through introspection.
 
-The default directory on the root-run robot is:
+The default directory on the robot is:
 
 ```text
-/root/.ros/bags/explore_and_record/muto_explore_<timestamp>_<goal-id>
+/opt/muto_rs_ws/bags/muto_explore_<timestamp>_<goal-id>
 ```
 
 Read the latest path and inspect it with:

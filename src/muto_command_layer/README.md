@@ -170,15 +170,13 @@ not provide that storage API. Humble also lacks the newer `all_services`
 selector, but all-topic mode records service-event topics exposed by server
 introspection as ordinary topics.
 
-The default parent directory is
-`$HOME/.ros/bags/explore_and_record`; on the root-run robot this is
-`/root/.ros/bags/explore_and_record`. The exact path is logged and published
-transient-local:
+The default parent directory is `/opt/muto_rs_ws/bags`. The exact path is
+logged and published transient-local:
 
 ```bash
 ros2 topic echo --once --qos-durability transient_local \
   /explore_and_record/last_bag_path
-ros2 bag info /root/.ros/bags/explore_and_record/muto_explore_<timestamp>_<goal>
+ros2 bag info /opt/muto_rs_ws/bags/muto_explore_<timestamp>_<goal>
 ```
 
 Replay the complete bag on a development machine or an isolated ROS domain:

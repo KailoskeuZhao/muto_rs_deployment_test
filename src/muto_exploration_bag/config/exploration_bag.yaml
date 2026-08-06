@@ -1,7 +1,7 @@
 exploration_bag_recorder:
   ros__parameters:
-    # Empty resolves to $HOME/.ros/bags/explore_and_record.
-    output_directory: ""
+    # Parent directory for action-scoped exploration bags.
+    output_directory: "/opt/muto_rs_ws/bags"
     storage_id: mcap
     storage_preset: none
 

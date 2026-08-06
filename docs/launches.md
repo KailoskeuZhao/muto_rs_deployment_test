@@ -359,9 +359,9 @@ before the scan begins. The action owns
 command-layer navigation until it succeeds, aborts, or is canceled.
 
 The launch starts the standalone `muto_exploration_bag` recorder by default.
-It opens one MCAP per mission under `$HOME/.ros/bags/explore_and_record`, records
-the complete topic graph including hidden action topics, and finalizes on
-success, cancellation, or abort. Read the exact transient-local path from
+It opens one MCAP per mission under `/opt/muto_rs_ws/bags`, records the complete
+topic graph including hidden action topics, and finalizes on success,
+cancellation, or abort. Read the exact transient-local path from
 `/explore_and_record/last_bag_path`. Publish a short manual note on
 `/explore_and_record/operator_event` while the action is active. Because
 all-topic mode includes raw camera and point-cloud streams, configure `topics`

@@ -31,6 +31,7 @@ namespace
 {
 
 constexpr char kStartedEvent[] = "mission_started";
+constexpr char kDefaultOutputDirectory[] = "/opt/muto_rs_ws/bags";
 
 bool is_terminal_event(const std::string & event)
 {
@@ -178,8 +179,8 @@ public:
   ExplorationBagRecorderNode()
   : Node("exploration_bag_recorder")
   {
-    output_directory_ =
-      declare_parameter<std::string>("output_directory", "");
+    output_directory_ = declare_parameter<std::string>(
+      "output_directory", kDefaultOutputDirectory);
     storage_id_ = declare_parameter<std::string>("storage_id", "mcap");
     storage_preset_ =
       declare_parameter<std::string>("storage_preset", "none");
@@ -250,14 +251,7 @@ private:
   void resolve_and_validate_parameters()
   {
     if (output_directory_.empty()) {
-      const char * home = std::getenv("HOME");
-      if (home == nullptr || *home == '\0') {
-        throw std::invalid_argument(
-                "output_directory is empty and HOME is unavailable");
-      }
-      output_directory_ =
-        (std::filesystem::path(home) / ".ros" / "bags" /
-        "explore_and_record").string();
+      output_directory_ = kDefaultOutputDirectory;
     }
     output_directory_ = std::filesystem::path(
       output_directory_).lexically_normal().string();

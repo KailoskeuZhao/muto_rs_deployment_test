@@ -381,11 +381,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'exploration_bag_output_directory',
-            default_value='',
-            description=(
-                'Parent directory for mission bags; empty uses '
-                '$HOME/.ros/bags/explore_and_record.'
-            ),
+            default_value='/opt/muto_rs_ws/bags',
+            description='Parent directory for mission bags.',
         ),
         DeclareLaunchArgument(
             'exploration_bag_storage_id',

@@ -28,11 +28,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'output_directory',
-            default_value='',
-            description=(
-                'Parent directory for action-scoped bags; empty uses '
-                '$HOME/.ros/bags/explore_and_record.'
-            ),
+            default_value='/opt/muto_rs_ws/bags',
+            description='Parent directory for action-scoped bags.',
         ),
         DeclareLaunchArgument('storage_id', default_value='mcap'),
         DeclareLaunchArgument('storage_preset', default_value='none'),

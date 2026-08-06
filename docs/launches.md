@@ -1,6 +1,6 @@
 # Launch Reference
 
-Date: 2026-08-05
+Date: 2026-08-06
 
 This document summarizes the launch files that matter for the current Muto RS
 workspace. It separates the normal robot sequence from experimental and
@@ -28,7 +28,8 @@ files invoke its installed `ekf_node`; this workspace does not keep
 | `muto_odometry_bag/launch/record_odometry_bag_launch.py` | Records raw LiDAR, raw and processed IMU, commanded gait, `cmd_vel`, endpoint events, build metadata, `/tf_static`, and polled motor-service snapshots through `rosbag2_cpp::Writer`. | Attach to a live hardware pipeline to capture only odometry source data and field-test provenance. |
 | `muto_odometry_bag/launch/replay_odometry_bag_launch.py` | Publishes the recorded source topics and `/clock`, recreates `get_motor_angles`, and starts the normal LiDAR/foot/EKF launch. It uses current static sensor TF by default or recorded `/tf_static` on request. | Offline repeatable odometry run through the original nodes; no hardware, mapping, or Nav2. |
 | `muto_odometry_bag/launch/replay_odometry_comparison_launch.py` | Replays one source bag through LiDAR-only, leg-only, LiDAR-plus-IMU EKF, and LiDAR-plus-leg-plus-IMU EKF paths concurrently. Only the fully fused EKF publishes odom TF. | Side-by-side odometry comparison under one replay clock. |
-| `muto_exploration_bag/launch/record_exploration_bag_launch.py` | Arms a standalone all-topic MCAP recorder that opens and closes one bag from `/explore_and_record` lifecycle events and retains manual operator events. | Automatic with the command launch, or launch separately before an exploration action. |
+| `muto_exploration_bag/launch/record_exploration_bag_launch.py` | Arms a standalone compact MCAP recorder that retains navigation, odometry, structured object results, action traffic, and operator events while excluding bulky image and point-cloud payloads. | Automatic with the command launch, or launch separately before an exploration action. |
+| `muto_nav2_bag/launch/record_nav2_bag_launch.py` | Immediately opens a manually controlled, navigation-only MCAP with TF, maps, odometry, scans, goals, paths, costmaps, commands, Nav2 action progress, and diagnostic context. | Attach to any live Nav2 run; stop with its service or `Ctrl-C`. It is independent of the mission recorder. |
 | `lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Converts raw depth plus CameraInfo into the narrow, NaN-masked `/camera/filtered_laserscan`. It does not subscribe to LiDAR. | Independent camera preprocessing component. The top-level pipeline includes it when `launch_camera_obstacle_scan:=true`. |
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
@@ -359,15 +360,15 @@ before the scan begins. The action owns
 command-layer navigation until it succeeds, aborts, or is canceled.
 
 The launch starts the standalone `muto_exploration_bag` recorder by default.
-It opens one MCAP per mission under `/opt/muto_rs_ws/bags`, records the complete
-topic graph including hidden action topics, and finalizes on success,
-cancellation, or abort. Read the exact transient-local path from
+It opens one MCAP per mission under `/opt/muto_rs_ws/bags`, retains the
+navigation, odometry, structured object-result, log, lifecycle, and hidden
+action graph, and finalizes on success, cancellation, or abort. Raw camera
+images, derived SAM2 images, and point clouds are excluded by default. Read the
+exact transient-local path from
 `/explore_and_record/last_bag_path`. Publish a short manual note on
-`/explore_and_record/operator_event` while the action is active. Because
-all-topic mode includes raw camera and point-cloud streams, configure `topics`
-in the exploration-bag parameter file, or pass
-`exploration_bag_topics_regex`/`exploration_bag_exclude_regex` to the command
-launch for long runs with limited storage.
+`/explore_and_record/operator_event` while the action is active. Clear
+`exploration_bag_exclude_regex` only for a dedicated raw-perception capture, or
+use `exploration_bag_topics_regex` for a narrower recording contract.
 
 When frontier exploration reports completion, the action snapshots `/map` and
 Nav2's global costmap and visits viewpoints selected by a 2-D line-of-sight
@@ -376,6 +377,33 @@ and occupied-boundary coverage. Successful navigation and spin steps receive
 the model's predicted visibility credit; RGB, depth, detector, and registry
 results are not coverage inputs. Treat this as a geometric mission-progress
 estimate, not measured camera coverage or proof that every object was seen.
+
+### Standalone Nav2 Diagnostic Bag
+
+To inspect navigation without recording perception imagery or the full ROS
+graph, start this in a separate terminal after the Nav2 pipeline:
+
+```bash
+ros2 launch muto_nav2_bag record_nav2_bag_launch.py
+```
+
+It writes under `/opt/muto_rs_ws/bags/muto_nav2_<timestamp>_<session-id>` and
+continues until `Ctrl-C` or:
+
+```bash
+ros2 service call /muto/nav2_bag/stop std_srvs/srv/Trigger "{}"
+```
+
+Read `/muto/nav2_bag/path` with transient-local durability for the exact bag
+directory. Add a timestamped field note with a short string on
+`/muto/nav2_bag/event`. The directory includes a manifest and snapshots of the
+Nav2, frontier, and SLAM parameter files plus both Muto behavior trees used by
+the recorder launch.
+
+The Humble deployment cannot capture ordinary Nav2 action goal/result service
+payloads unless service introspection is enabled. Plans, feedback/status, RViz
+goals, frontier/object goal mirrors, and operator events are retained; annotate
+a goal sent directly through an action client when its target matters.
 
 ### Joystick Teleop
 

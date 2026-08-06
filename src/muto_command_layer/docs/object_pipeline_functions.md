@@ -301,13 +301,14 @@ The prediction is consistent with the pipeline's static-object mission but
 does not establish that every static object was observed. Navigation failures
 discard the selected viewpoint without predicted-visibility credit.
 
-The separate `muto_exploration_bag` process owns each rosbag2 recording. The
-default all-topic MCAP includes hidden action status and feedback, `/tf_static`,
-sensor and perception streams, maps, odometry, logs, lifecycle events, and any
-plain-text `/explore_and_record/operator_event`. The finalized path is
+The separate `muto_exploration_bag` process owns each rosbag2 recording. Its
+default compact MCAP retains hidden action status and feedback, `/tf_static`,
+scans, structured object results, maps, odometry, logs, lifecycle events, and
+any plain-text `/explore_and_record/operator_event`. It excludes raw camera
+images, derived mask/annotation images, and point clouds. The finalized path is
 published on `/explore_and_record/last_bag_path`; metadata includes the action
-goal context and recorder build git state. Bags are finalized on success,
-cancel, and abort.
+goal context, recorder build git state, and active exclusion regex. Bags are
+finalized on success, cancel, and abort.
 
 ### 10. Navigate to and face a registered object
 

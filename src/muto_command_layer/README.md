@@ -161,8 +161,10 @@ The standalone `muto_exploration_bag` package opens one MCAP rosbag for each
 `/explore_and_record` goal and finalizes it after success, cancellation, or
 failure. `command_layer_launch.py` starts that recorder by default; this
 command node only publishes mission lifecycle events and waits for the
-recorder-ready acknowledgement. By default the recorder captures all
-discovered topics, hidden action topics, and available service-event topics.
+recorder-ready acknowledgement. By default the recorder discovers the graph
+but filters out raw camera images, derived mask/annotation images, and point
+clouds. It retains navigation, odometry, hidden action, structured object
+result, lifecycle, operator-event, and available service-event topics.
 Each bag's `muto_recording_manifest.json` stores the action goal context, ROS
 distribution, recorder Git revision, dirty flag, and topic scope. Newer
 rosbag2 releases also copy these fields into `metadata.yaml`; ROS 2 Humble does
@@ -186,9 +188,9 @@ export ROS_DOMAIN_ID=77
 ros2 bag play <bag-directory> --clock
 ```
 
-Do not replay the unfiltered all-topic bag on the live robot domain: it may
-contain motion and command topics. Use `ros2 bag play --topics ...` when only a
-specific sensor or diagnostic path is needed.
+Do not replay a complete mission bag on the live robot domain: it may contain
+motion and command topics. Use `ros2 bag play --topics ...` when only a specific
+sensor or diagnostic path is needed.
 
 `/explore_and_record/recording_event` marks recording start, terminal outcome,
 and resolved action settings inside the bag. Use the separate operator topic
@@ -199,11 +201,10 @@ ros2 topic pub --once /explore_and_record/operator_event std_msgs/msg/String \
   "{data: 'observation: chair visible left of the doorway'}"
 ```
 
-The default all-topic mode includes raw camera and point-cloud streams and can
-grow quickly. For longer deployments, set an explicit `topics` list in
-`muto_exploration_bag/config/exploration_bag.yaml`, or pass
-`exploration_bag_topics_regex` and `exploration_bag_exclude_regex` to the
-command launch.
+The default compact profile excludes raw camera images, derived SAM2 image
+outputs, and point clouds. Clear `exploration_bag_exclude_regex` only for a
+dedicated perception-replay capture; use `exploration_bag_topics_regex` or an
+explicit `topics` list for an even narrower contract.
 `exploration_bag_enabled:=false` omits the standalone recorder from the command
 launch. `exploration_bag_required:=true` makes a missing/error recorder-ready
 acknowledgement abort the mission instead of continuing with a prominent

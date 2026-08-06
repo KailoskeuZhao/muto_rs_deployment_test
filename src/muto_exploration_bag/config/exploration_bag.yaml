@@ -5,14 +5,14 @@ exploration_bag_recorder:
     storage_id: mcap
     storage_preset: none
 
-    # An empty topic list and regex record the complete discovered graph.
-    # Long camera and point-cloud runs can become large; use one selector or
-    # exclude_regex to constrain them. Topic names must be absolute.
+    # Discover the complete graph, excluding high-bandwidth raw/derived image
+    # and point-cloud payloads. Navigation, odometry, action, structured
+    # detection, registry, TF, map, scan, log, and operator-event topics remain.
     # Leave `topics` undeclared here for the node's empty-list default. To use
     # an explicit source contract, uncomment a non-empty list such as:
     # topics: [/tf, /tf_static, /map, /odom, /scan]
     topics_regex: ""
-    exclude_regex: ""
+    exclude_regex: "^(/camera/[^/]+/(image_raw|points)(/.*)?|/sam2/(annotated_image|mask|instance_mask|instance_pointcloud)(/.*)?|/lidar/PointCloud.*)$"
     include_hidden_topics: true
     # Native all-services selection is available on newer rosbag2. On Humble,
     # exposed service-event topics are still included by all-topic recording.

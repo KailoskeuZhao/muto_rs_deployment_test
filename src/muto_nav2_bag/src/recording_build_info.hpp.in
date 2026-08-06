@@ -1,0 +1,12 @@
+#ifndef MUTO_NAV2_BAG__RECORDING_BUILD_INFO_HPP_
+#define MUTO_NAV2_BAG__RECORDING_BUILD_INFO_HPP_
+
+namespace muto_nav2_bag_build
+{
+
+inline constexpr char kGitRevision[] = "@MUTO_RS_GIT_REVISION@";
+inline constexpr bool kGitDirty = @MUTO_RS_GIT_DIRTY@;
+
+}  // namespace muto_nav2_bag_build
+
+#endif  // MUTO_NAV2_BAG__RECORDING_BUILD_INFO_HPP_

@@ -20,18 +20,19 @@ ros2 launch muto_command_layer command_layer_launch.py \
 ```
 
 The recorder waits without writing until it receives a `mission_started`
-event. It then records the discovered topic graph, hidden action topics, and
-service-event topics where server introspection is enabled. Success,
-cancellation, and abort events close the current bag after a short terminal
-capture delay.
+event. It then discovers the topic graph and records the compact diagnostic
+profile described below, including hidden action topics and service-event
+topics where server introspection is enabled. Success, cancellation, and abort
+events close the current bag after a short terminal capture delay.
 
 The recorder supports the ROS 2 Humble API used on the Orin and the newer
 Jazzy API used for development. Every bag directory contains
 `muto_recording_manifest.json` with the goal context, resolved start event,
 ROS distribution, Git revision, dirty flag, and topic scope. Newer rosbag2
-versions also mirror these fields into `metadata.yaml`. Humble has no native
-`all_services` selector; its all-topic mode still captures service-event topics
-that servers expose through introspection.
+versions also mirror these fields into `metadata.yaml`. The manifest records
+the active exclusion regex. Humble has no native `all_services` selector; topic
+discovery still captures service-event topics that servers expose through
+introspection and that pass the filter.
 
 The default directory on the robot is:
 
@@ -75,17 +76,28 @@ arrives while no mission bag is active.
 
 ## Topic selection
 
-The default all-topic mode is intended for diagnosis and may grow quickly from
-camera and point-cloud traffic. Configure an explicit `topics` list in
-`config/exploration_bag.yaml`, or select/exclude topics at launch:
+The default compact profile discovers all topics but excludes:
+
+- raw camera images and their transport variants;
+- camera point clouds;
+- SAM2 annotated images, masks, instance masks, and instance point clouds;
+- legacy LiDAR point-cloud topics.
+
+It retains camera calibration, the derived camera obstacle scan, LiDAR scans,
+TF, maps, odometry, action traffic, logs, lifecycle/operator events,
+`/sam2/detections`, `/sam2/segments`, `/sam2/stored_objects`, and object markers.
+
+To record raw perception payloads for a dedicated perception trial, clear the
+default exclusion:
 
 ```bash
 ros2 launch muto_exploration_bag record_exploration_bag_launch.py \
-  topics_regex:='(/tf.*|/map|/odom|/scan|/sam2/.*)' \
-  exclude_regex:='/camera/.*/image_raw'
+  exclude_regex:=''
 ```
 
-`topics` and `topics_regex` are mutually exclusive.
+For a narrower contract, configure an explicit `topics` list in
+`config/exploration_bag.yaml` or pass `topics_regex`. `topics` and
+`topics_regex` are mutually exclusive.
 
 Replay complete bags only on a development machine or isolated ROS domain;
 they may contain `/cmd_vel` and other command topics:

@@ -8,6 +8,13 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+DEFAULT_EXCLUDE_REGEX = (
+    r'^(/camera/[^/]+/(image_raw|points)(/.*)?|'
+    r'/sam2/(annotated_image|mask|instance_mask|instance_pointcloud)(/.*)?|'
+    r'/lidar/PointCloud.*)$'
+)
+
+
 def generate_launch_description():
     default_params = os.path.join(
         get_package_share_directory('muto_exploration_bag'),
@@ -36,9 +43,19 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'topics_regex',
             default_value='',
-            description='Optional inclusion regex; empty records all topics.',
+            description=(
+                'Optional inclusion regex; empty discovers all topics before '
+                'applying the exclusion regex.'
+            ),
         ),
-        DeclareLaunchArgument('exclude_regex', default_value=''),
+        DeclareLaunchArgument(
+            'exclude_regex',
+            default_value=DEFAULT_EXCLUDE_REGEX,
+            description=(
+                'Topic exclusion regex; the default omits high-bandwidth '
+                'images and point clouds. Pass an empty value to retain all.'
+            ),
+        ),
         DeclareLaunchArgument('max_cache_size', default_value='104857600'),
         DeclareLaunchArgument('post_terminal_delay', default_value='0.25'),
         DeclareLaunchArgument(

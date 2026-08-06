@@ -14,6 +14,13 @@ from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+DEFAULT_EXPLORATION_BAG_EXCLUDE_REGEX = (
+    r'^(/camera/[^/]+/(image_raw|points)(/.*)?|'
+    r'/sam2/(annotated_image|mask|instance_mask|instance_pointcloud)(/.*)?|'
+    r'/lidar/PointCloud.*)$'
+)
+
+
 def include_launch(package, filename, arguments):
     """Include one launch file with isolated arguments and simulation time."""
     source = PythonLaunchDescriptionSource(os.path.join(
@@ -397,12 +404,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'exploration_bag_topics_regex',
             default_value='',
-            description='Optional topic inclusion regex; empty records all.',
+            description=(
+                'Optional inclusion regex; empty discovers all topics before '
+                'applying the exclusion regex.'
+            ),
         ),
         DeclareLaunchArgument(
             'exploration_bag_exclude_regex',
-            default_value='',
-            description='Optional rosbag2 exclusion regex.',
+            default_value=DEFAULT_EXPLORATION_BAG_EXCLUDE_REGEX,
+            description=(
+                'Topic exclusion regex; the default omits high-bandwidth '
+                'images and point clouds. Pass an empty value to retain all.'
+            ),
         ),
         DeclareLaunchArgument(
             'exploration_bag_max_cache_size',

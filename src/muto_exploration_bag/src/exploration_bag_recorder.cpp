@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "muto_exploration_bag/exploration_bag_transport.hpp"
+#include "muto_exploration_bag/recording_defaults.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 
@@ -187,7 +188,8 @@ public:
     topics_ = declare_parameter<std::vector<std::string>>(
       "topics", std::vector<std::string>{});
     topics_regex_ = declare_parameter<std::string>("topics_regex", "");
-    exclude_regex_ = declare_parameter<std::string>("exclude_regex", "");
+    exclude_regex_ = declare_parameter<std::string>(
+      "exclude_regex", muto_exploration_bag::kDefaultExcludeRegex);
     max_cache_size_ =
       declare_parameter<int64_t>("max_cache_size", 104857600);
     post_terminal_delay_ =
@@ -355,6 +357,16 @@ private:
     options.include_hidden_topics = include_hidden_topics_;
     options.record_all_services = record_all_services_;
     options.use_sim_time = use_sim_time;
+    std::string topic_scope = "configured_topics";
+    if (topics_.empty()) {
+      if (!topics_regex_.empty()) {
+        topic_scope = "regex";
+      } else if (!exclude_regex_.empty()) {
+        topic_scope = "all_topics_excluding_regex";
+      } else {
+        topic_scope = "all_topics";
+      }
+    }
     const char * ros_distro = std::getenv("ROS_DISTRO");
     options.custom_data = {
       {"muto_schema", "explore_and_record_v1"},
@@ -365,9 +377,8 @@ private:
       {"git_dirty",
         muto_exploration_bag_build::kGitDirty ? "true" : "false"},
       {"ros_distro", ros_distro == nullptr ? "unknown" : ros_distro},
-      {"topic_scope", topics_.empty() ?
-        (topics_regex_.empty() ? "all_topics" : "regex") :
-        "configured_topics"},
+      {"topic_scope", topic_scope},
+      {"exclude_regex", exclude_regex_},
       {"operator_event_topic", operator_event_topic_},
       {"manifest_file", "muto_recording_manifest.json"},
     };

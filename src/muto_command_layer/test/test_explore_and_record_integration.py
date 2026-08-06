@@ -387,6 +387,9 @@ def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
     assert manifest['git_dirty'] in ('true', 'false')
     assert manifest['bag_path'] == str(metadata_path.parent)
     assert manifest['manifest_file'] == manifest_path.name
+    assert manifest['topic_scope'] == 'all_topics_excluding_regex'
+    assert '/camera/' in manifest['exclude_regex']
+    assert '/sam2/' in manifest['exclude_regex']
     assert json.loads(manifest['start_event'])['event'] == 'mission_started'
 
 

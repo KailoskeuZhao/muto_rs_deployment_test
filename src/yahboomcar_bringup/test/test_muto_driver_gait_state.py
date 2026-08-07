@@ -259,6 +259,88 @@ def test_locomotion_timer_reports_a_missed_tick_deadline(monkeypatch):
     assert warnings[0].startswith('Locomotion tick delayed:')
 
 
+class FakeImuPublisher:
+    def __init__(self):
+        self.response_timeout_sec = 0.008
+        self.skipped = 0
+        self.attitude_skipped = 0
+        self.timeouts = []
+        self.attitude_timeouts = []
+
+    def note_poll_skipped_for_locomotion(self):
+        self.skipped += 1
+
+    def publish_imu_data(self, response_timeout_sec=None):
+        self.timeouts.append(response_timeout_sec)
+        return True
+
+    def note_attitude_poll_skipped_for_locomotion(self):
+        self.attitude_skipped += 1
+
+    def publish_controller_attitude(self, response_timeout_sec=None):
+        self.attitude_timeouts.append(response_timeout_sec)
+        return True
+
+
+def test_imu_poll_is_skipped_when_gait_deadline_is_too_close(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.018)
+    driver = SimpleNamespace(
+        imu=FakeImuPublisher(),
+        last_locomotion_tick_monotonic=10.0,
+        locomotion_update_rate_hz=50.0,
+        imu_locomotion_guard_sec=0.003,
+    )
+
+    assert yahboomcar_driver.poll_imu(driver) is False
+    assert driver.imu.skipped == 1
+    assert driver.imu.timeouts == []
+
+
+def test_imu_poll_uses_remaining_gait_budget(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.010)
+    driver = SimpleNamespace(
+        imu=FakeImuPublisher(),
+        last_locomotion_tick_monotonic=10.0,
+        locomotion_update_rate_hz=50.0,
+        imu_locomotion_guard_sec=0.003,
+    )
+
+    assert yahboomcar_driver.poll_imu(driver) is True
+    assert driver.imu.skipped == 0
+    assert len(driver.imu.timeouts) == 1
+    assert abs(driver.imu.timeouts[0] - 0.007) < 1e-9
+
+
+def test_attitude_poll_is_skipped_when_gait_deadline_is_too_close(
+        monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.018)
+    driver = SimpleNamespace(
+        imu=FakeImuPublisher(),
+        last_locomotion_tick_monotonic=10.0,
+        locomotion_update_rate_hz=50.0,
+        imu_locomotion_guard_sec=0.003,
+    )
+
+    assert yahboomcar_driver.poll_controller_attitude(driver) is False
+    assert driver.imu.attitude_skipped == 1
+    assert driver.imu.attitude_timeouts == []
+
+
+def test_attitude_poll_uses_remaining_gait_budget(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.010)
+    driver = SimpleNamespace(
+        imu=FakeImuPublisher(),
+        last_locomotion_tick_monotonic=10.0,
+        locomotion_update_rate_hz=50.0,
+        imu_locomotion_guard_sec=0.003,
+    )
+
+    assert yahboomcar_driver.poll_controller_attitude(driver) is True
+    assert driver.imu.attitude_skipped == 0
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert abs(driver.imu.attitude_timeouts[0] - 0.007) < 1e-9
+
+
 def test_cmd_vel_callback_only_updates_desired_levels(monkeypatch):
     monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.0)
     driver = timer_driver(last_cmd_vel_monotonic=None)

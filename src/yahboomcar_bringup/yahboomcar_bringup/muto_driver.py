@@ -34,6 +34,10 @@ import yaml
 
 CALIBRATED_MAPPING = 'calibrated'
 LEGACY_MAPPING = 'legacy_100'
+DEFAULT_IMU_POLL_RATE_HZ = 10.0
+DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ = 10.0
+DEFAULT_IMU_LOCOMOTION_GUARD_SEC = 0.003
+MIN_IMU_TRANSACTION_BUDGET_SEC = 0.004
 
 
 def _default_calibration_file():
@@ -42,6 +46,27 @@ def _default_calibration_file():
         'config',
         'muto_locomotion_provisional_20260806.yaml',
     )
+
+
+def _available_telemetry_response_timeout(driver):
+    """Return a serial-read budget that preserves the next gait deadline."""
+    response_timeout = driver.imu.response_timeout_sec
+    if driver.last_locomotion_tick_monotonic is None:
+        return response_timeout
+
+    now_monotonic = time.monotonic()
+    next_locomotion_deadline = (
+        driver.last_locomotion_tick_monotonic
+        + 1.0 / driver.locomotion_update_rate_hz
+    )
+    available = (
+        next_locomotion_deadline
+        - now_monotonic
+        - driver.imu_locomotion_guard_sec
+    )
+    if available < MIN_IMU_TRANSACTION_BUDGET_SEC:
+        return None
+    return min(response_timeout, available)
 
 
 def load_velocity_calibration(path, phase_rate_hz):
@@ -198,7 +223,12 @@ class yahboomcar_driver(Node):
         self.cmd_vel_timed_out = False
         self.motors_released = False
 
-        self.muto = Muto(gait_step_callback=self.publish_commanded_gait_state)
+        self.batch_gait_phase_writes = bool(self.declare_parameter(
+            'batch_gait_phase_writes', True).value)
+        self.muto = Muto(
+            gait_step_callback=self.publish_commanded_gait_state,
+            batch_gait_phase_writes=self.batch_gait_phase_writes,
+        )
         self.muto.set_motion_command(0.0, 0.0, 0.0)
         self.last_velocity_selection = self._standby_selection(
             'startup standby')
@@ -206,17 +236,50 @@ class yahboomcar_driver(Node):
         self.declare_parameter('imu_link', 'imu_link')
         imu_link = self.get_parameter(
             'imu_link').get_parameter_value().string_value
-        self.declare_parameter('imu_publish_rate_hz', 50.0)
+        self.declare_parameter(
+            'imu_publish_rate_hz', DEFAULT_IMU_POLL_RATE_HZ)
         imu_publish_rate_hz = self.get_parameter(
             'imu_publish_rate_hz').get_parameter_value().double_value
-        if imu_publish_rate_hz <= 0.0:
+        if (not math.isfinite(imu_publish_rate_hz)
+                or imu_publish_rate_hz <= 0.0):
             self.get_logger().warn(
-                'imu_publish_rate_hz must be positive; using 50.0')
-            imu_publish_rate_hz = 50.0
+                'imu_publish_rate_hz must be positive; using '
+                f'{DEFAULT_IMU_POLL_RATE_HZ:.1f}')
+            imu_publish_rate_hz = DEFAULT_IMU_POLL_RATE_HZ
+        self.imu_poll_rate_hz = imu_publish_rate_hz
+        self.declare_parameter(
+            'imu_attitude_publish_rate_hz',
+            DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ,
+        )
+        imu_attitude_publish_rate_hz = self.get_parameter(
+            'imu_attitude_publish_rate_hz').get_parameter_value().double_value
+        if (not math.isfinite(imu_attitude_publish_rate_hz)
+                or imu_attitude_publish_rate_hz < 0.0):
+            self.get_logger().warn(
+                'imu_attitude_publish_rate_hz must be finite and '
+                'non-negative; using '
+                f'{DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ:.1f}')
+            imu_attitude_publish_rate_hz = DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ
+        self.imu_attitude_poll_rate_hz = imu_attitude_publish_rate_hz
+        self.imu_locomotion_guard_sec = float(self.declare_parameter(
+            'imu_locomotion_guard_sec',
+            DEFAULT_IMU_LOCOMOTION_GUARD_SEC,
+        ).value)
+        if (not math.isfinite(self.imu_locomotion_guard_sec)
+                or self.imu_locomotion_guard_sec < 0.0):
+            self.get_logger().warn(
+                'imu_locomotion_guard_sec must be finite and non-negative; '
+                f'using {DEFAULT_IMU_LOCOMOTION_GUARD_SEC:.3f}')
+            self.imu_locomotion_guard_sec = (
+                DEFAULT_IMU_LOCOMOTION_GUARD_SEC)
 
-        # IMU calibration assumes a still robot. Enforce standby immediately
-        # after calibration and before ROS timers begin dispatching callbacks.
+        # IMU calibration assumes a still robot. Dispatch a physical standby
+        # phase before collecting samples; set_motion_command() only updates
+        # the host-side desired state and does not itself write the servos.
+        self.muto.tick_motion()
         self.imu = ImuPublisher(self, self.muto, imu_link)
+        # Reassert standby after the bounded calibration interval, then start
+        # the periodic ROS callbacks.
         self.update_locomotion()
         self.locomotion_timer = self.create_timer(
             1.0 / self.locomotion_update_rate_hz,
@@ -224,14 +287,37 @@ class yahboomcar_driver(Node):
         )
         self.imu_timer = self.create_timer(
             1.0 / imu_publish_rate_hz,
-            self.imu.publish_imu_data,
+            self.poll_imu,
         )
+        self.imu_attitude_timer = None
+        if imu_attitude_publish_rate_hz > 0.0:
+            self.imu_attitude_timer = self.create_timer(
+                1.0 / imu_attitude_publish_rate_hz,
+                self.poll_controller_attitude,
+            )
         self.get_logger().info(
-            f'IMU publish rate set to {imu_publish_rate_hz:.1f} Hz')
+            f'IMU controller poll rate set to {imu_publish_rate_hz:.1f} Hz; '
+            'identical accel/gyro snapshots are '
+            + (
+                'suppressed'
+                if self.imu.suppress_identical_snapshots
+                else 'republished for diagnostics'
+            ))
+        if imu_attitude_publish_rate_hz > 0.0:
+            self.get_logger().info(
+                'Controller-fused 0x60 attitude polling enabled at '
+                f'{imu_attitude_publish_rate_hz:.1f} Hz on '
+                '/imu/controller_attitude; diagnostic only, not fused')
+        else:
+            self.get_logger().info(
+                'Controller-fused 0x60 attitude polling disabled')
         self.get_logger().info(
             'Locomotion phase loop set to '
             f'{self.locomotion_update_rate_hz:.1f} Hz with '
             f'{self.cmd_vel_timeout:.2f} s cmd_vel timeout')
+        self.get_logger().info(
+            'Gait phase serial batching is '
+            f'{"enabled" if self.batch_gait_phase_writes else "disabled"}')
         self.get_logger().info(
             'Locomotion cmd_vel mapping: ' + calibration_description)
 
@@ -285,6 +371,26 @@ class yahboomcar_driver(Node):
                 f'{dispatch_duration:.4f} s exceeds {tick_period:.4f} s',
                 throttle_duration_sec=5.0,
             )
+
+    def poll_imu(self):
+        """Poll telemetry only when it fits before the next gait deadline."""
+        response_timeout = _available_telemetry_response_timeout(self)
+        if response_timeout is None:
+            self.imu.note_poll_skipped_for_locomotion()
+            return False
+
+        return self.imu.publish_imu_data(
+            response_timeout_sec=response_timeout)
+
+    def poll_controller_attitude(self):
+        """Poll fused 0x60 attitude within the same gait deadline guard."""
+        response_timeout = _available_telemetry_response_timeout(self)
+        if response_timeout is None:
+            self.imu.note_attitude_poll_skipped_for_locomotion()
+            return False
+
+        return self.imu.publish_controller_attitude(
+            response_timeout_sec=response_timeout)
 
     def publish_commanded_gait_state(self, state):
         """Publish the trajectory phase just sent to the motor controller."""

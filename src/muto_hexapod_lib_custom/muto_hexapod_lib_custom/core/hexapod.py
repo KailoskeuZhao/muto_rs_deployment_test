@@ -9,9 +9,12 @@ from ..movement.gait import GaitPlan
 
 
 class Hexapod:
-    def __init__(self, serial_port, gait_step_callback=None):
-        servo = Servo(serial_port)
-        self._legs = [RealLeg(index, servo) for index in range(6)]
+    def __init__(
+            self, serial_port, gait_step_callback=None,
+            batch_gait_phase_writes=True):
+        self._servo = Servo(serial_port)
+        self._legs = [RealLeg(index, self._servo) for index in range(6)]
+        self._batch_gait_phase_writes = bool(batch_gait_phase_writes)
         self._gait = GaitPlan()
         self._gait_step_callback = gait_step_callback
         self._command_key = None
@@ -81,7 +84,7 @@ class Hexapod:
         )
         self._command_key = command_key
 
-    def tick(self):
+    def tick(self, notify=True):
         """Advance and command exactly one trajectory phase."""
         if self._pending_command is not None and self._gait.at_cycle_boundary:
             command = self._pending_command
@@ -89,12 +92,31 @@ class Hexapod:
             self._apply_command(command)
 
         complete, target_locations, state = self._gait.next_step()
-        for index, leg in enumerate(self._legs):
-            target = target_locations.get(index)
-            leg.move_tip(point3d(target.x, target.y, target.z))
+        if self._batch_gait_phase_writes:
+            phase_commands = []
+            commanded_targets = []
+            for index, leg in enumerate(self._legs):
+                target = target_locations.get(index)
+                target_world = point3d(target.x, target.y, target.z)
+                angles = leg._prepare_tip_move(target_world)
+                if angles is not None:
+                    phase_commands.append((index, angles))
+                    commanded_targets.append((leg, target_world))
+            self._servo.set_leg_angles_batch(phase_commands)
+            for leg, target_world in commanded_targets:
+                leg._commit_tip_move(target_world)
+        else:
+            for index, leg in enumerate(self._legs):
+                target = target_locations.get(index)
+                leg.move_tip(point3d(target.x, target.y, target.z))
         state = self._with_pending_state(state)
-        self._notify_gait_step(state)
+        if notify:
+            self._notify_gait_step(state)
         return complete, state
+
+    def notify_gait_step(self, state):
+        """Invoke the optional observer after serial ownership is released."""
+        self._notify_gait_step(state)
 
     def move(self, x_level, y_level, z_level):
         """Block until the requested command reaches a complete boundary."""

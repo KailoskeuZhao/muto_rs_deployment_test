@@ -134,13 +134,19 @@ Useful top-level switches include:
 | `launch_camera_obstacle_scan` | `true` | Starts the independent camera costmap source in the top-level pipeline. |
 | `camera_scan_max_publish_rate` | `7.0` | Caps camera depth-to-scan processing. |
 | `locomotion_update_rate_hz` | `50.0` | Advances one custom-library gait phase per driver tick. |
+| `batch_gait_phase_writes` | `true` | Sends the six unchanged leg frames in one contiguous write; `false` restores per-leg pacing. |
 | `cmd_vel_timeout` | `0.5` | Returns the gait to standby when velocity commands stop. |
 | `locomotion_command_mapping` | `calibrated` | Uses an explicit physical velocity profile; `legacy_100` is rollback-only. |
 | `locomotion_calibration_file` | `muto_locomotion_provisional_20260806.yaml` | Provisional gait-level mapping; replace after marked-field trials. |
-| `imu_calibration_sample_count` | `300` | Valid stationary IMU samples targeted at startup. |
-| `imu_calibration_max_reads` | `600` | Maximum serial attempts allowed for that calibration. |
-| `imu_calibration_timeout_sec` | `30.0` | Hard wall-clock cap on startup calibration. |
-| `foot_motor_poll_rate` | `2.0` | Production limit for synchronized 18-joint feedback. The tested 10 Hz rate delayed gait and IMU processing. |
+| `imu_publish_rate_hz` | `10.0` | Host poll rate for the controller-cached snapshot; it does not set sensor ODR. |
+| `imu_attitude_publish_rate_hz` | `10.0` | Host poll rate for diagnostic fused `0x60` attitude; `0.0` disables it and no EKF consumes it. |
+| `imu_suppress_identical_snapshots` | `true` | Avoids assigning repeated accel/gyro values new ROS timestamps. |
+| `imu_response_timeout_sec` | `0.008` | Runtime serial budget; polls too close to a gait deadline are skipped. |
+| `imu_calibration_sample_count` | `10` | Changed stationary accel/gyro snapshots targeted at startup. |
+| `imu_calibration_max_reads` | `150` | Maximum serial attempts allowed for that calibration. |
+| `imu_calibration_timeout_sec` | `15.0` | Hard wall-clock cap on startup calibration. |
+| `launch_foot_odometry` | `false` | Measured-joint foot odometry is diagnostic-only while reads block gait dispatch. |
+| `foot_motor_poll_rate` | `2.0` | Conservative rate when foot diagnostics are explicitly enabled. |
 | `allow_experimental_high_rate_motor_polling` | `false` | Required explicit opt-in above 2 Hz; never enable for normal deployment with the current blocking serial service. |
 
 If a prerequisite stage is disabled, any enabled downstream stage must already
@@ -237,6 +243,7 @@ The important live sensor inputs are:
 | `/camera/depth/image_raw` | `sensor_msgs/msg/Image`, encoding `16UC1`. |
 | `/camera/depth/camera_info` | `sensor_msgs/msg/CameraInfo` matching the depth profile. |
 | `/imu/data_processed` | `sensor_msgs/msg/Imu`, frame `imu_link`; yaw rate is the active EKF field. |
+| `/imu/controller_attitude` | `muto_hexapod_interfaces_custom/msg/ControllerAttitude`; host-stamped vendor Euler degrees with frame intentionally unset. |
 
 Current Astra Pro Plus launch defaults request color at `640x480 @ 30 Hz` and
 depth at `320x240 @ 30 Hz`. The downstream depth-to-scan and SAM2 projection
@@ -262,9 +269,11 @@ The active LiDAR path is entirely `LaserScan` based:
 | EKF | `/scan_odom` plus `/imu/data_processed` | `/odometry/filtered` and `odom -> base_frame` | `30 Hz`, 2D mode. |
 
 The EKF fuses RF2O planar position and yaw. The IMU contributes yaw rate only;
-it does not provide absolute orientation or translational odometry.
+it does not provide absolute orientation or translational odometry. The
+separately recorded `/imu/controller_attitude` topic is diagnostic and does not
+enter this fusion path.
 
-The optional foot input is generated from a fixed-rate locomotion state stream.
+The optional, default-off foot input is generated from a fixed-rate locomotion state stream.
 `/cmd_vel` changes the desired command; the driver advances one trajectory phase
 per 50 Hz tick and publishes the phase after sending its motor targets. A newer
 nonzero command waits for the next complete gait boundary. The accompanying
@@ -273,7 +282,9 @@ whether a replacement is pending.
 A stale or zero command returns directly to nominal stance instead of performing
 a smooth deceleration. Motor service reads use the gait target current during
 that serial read and add no artificial settling delay. The read still holds the
-shared serial bus, so slow responses can delay the gait and IMU timers.
+shared serial bus, so slow responses can delay the gait and IMU timers. The
+2026-08-07 bag showed this for 651 of 652 motor-overlapping gait intervals;
+leave `launch_foot_odometry:=false` in normal deployment.
 
 The deadband wrapper applies its translation and yaw guards per axis when
 recent `cmd_vel` indicates that axis is stationary. Standalone
@@ -425,6 +436,7 @@ Check hardware and static TF:
 ros2 topic hz /lidar/raw_laserscan
 ros2 topic echo /camera/depth/camera_info --once
 ros2 topic hz /imu/data_processed
+ros2 topic hz /imu/controller_attitude
 ros2 run tf2_ros tf2_echo base_frame lidar_frame
 ros2 run tf2_ros tf2_echo base_frame imu_link
 ros2 run tf2_ros tf2_echo base_frame camera_depth_optical_frame
@@ -469,9 +481,10 @@ ros2 lifecycle get /velocity_smoother
 
 Check, in order:
 
-1. `/imu/data_raw` and `/imu/data_processed` are live after the bounded startup
-   calibration. A read warning distinguishes no controller bytes from bytes
-   that failed frame validation.
+1. `/imu/data_raw` and `/imu/data_processed` produce changed snapshots after
+   the bounded startup calibration. Identical controller-cached accel/gyro
+   replies are suppressed by default. A read warning distinguishes no
+   controller bytes from bytes that failed frame validation.
 2. `/lidar/raw_laserscan` is live and stamped near the ROS clock.
 3. Its `header.frame_id` is `lidar_frame` or has a valid transform to
    `base_frame`.

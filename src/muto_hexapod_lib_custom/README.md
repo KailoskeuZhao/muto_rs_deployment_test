@@ -53,8 +53,11 @@ packets, reducing a moving phase from 216 to 84 serial bytes while retaining
 the vendor's 115200-baud link and zero-runtime joint targets. The single-joint
 `0x40` writer remains available for compatibility but is not used by the gait
 loop. Continuous IK results are rounded to the nearest whole controller degree
-instead of truncated toward zero. Each six-packet phase is protected as one
-serial transaction, command
+instead of truncated toward zero. By default, all six self-delimiting leg
+frames are concatenated into one serial write followed by one 1 ms pacing
+delay. Construct `Muto(batch_gait_phase_writes=False)` or launch with
+`batch_gait_phase_writes:=false` to restore six separately paced writes. Each
+six-packet phase is protected as one serial transaction, command
 updates use the same lock, and `read_motor_with_gait_state()` holds that lock
 while pairing a gait snapshot with joint feedback. A sensor read therefore
 cannot be inserted between legs and a phase cannot change during the paired
@@ -94,6 +97,23 @@ See `docs/locomotion_calibration.md` in the deployment workspace for the
 model, provisional-profile caveats, and controlled calibration procedure.
 
 The runtime subset is intentionally narrower than the upstream distribution.
-It supports motion command/tick operations, `read_motor`, `read_IMU_Raw`,
-`buzzer`, and joint torque enable/disable because those are the operations used
-by the ROS driver.
+It supports motion command/tick operations, `read_motor`, raw IMU snapshots
+through `read_IMU_Raw`, fused controller attitude through `read_IMU`, `buzzer`,
+and joint torque enable/disable.
+
+For an exclusive, ROS-independent sweep of controller IMU polling rates, stop
+the hardware driver and run:
+
+```bash
+ros2 run muto_hexapod_lib_custom imu_serial_probe \
+  --endpoints raw,attitude \
+  --rates 2,5,10,20,50 \
+  --duration 12 \
+  --output /opt/muto_rs_ws/bags/imu_endpoint_rate_sweep.json
+```
+
+The endpoints are tested in separate trials. The report separates serial reply
+rate and latency from exact accel/gyro or fused-orientation transition rates,
+including inter-transition timing. A value-transition rate remains a lower
+bound because Yahboom's protocol contains no acquisition timestamp or sample
+sequence and a newly computed stationary value may equal its predecessor.

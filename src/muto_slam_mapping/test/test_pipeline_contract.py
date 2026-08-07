@@ -178,21 +178,31 @@ def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
 
     for defaults in (hardware_defaults, pipeline_defaults):
         assert float(defaults['locomotion_update_rate_hz']) == 50.0
+        assert defaults['batch_gait_phase_writes'] == 'true'
         assert float(defaults['cmd_vel_timeout']) == 0.5
         assert defaults['locomotion_command_mapping'] == 'calibrated'
         assert defaults['locomotion_calibration_file'].endswith(
             'muto_locomotion_provisional_20260806.yaml'
         )
-        assert int(defaults['imu_calibration_sample_count']) == 300
-        assert int(defaults['imu_calibration_max_reads']) == 600
-        assert float(defaults['imu_calibration_timeout_sec']) == 30.0
+        assert float(defaults['imu_publish_rate_hz']) == 10.0
+        assert float(defaults['imu_attitude_publish_rate_hz']) == 10.0
+        assert defaults['imu_suppress_identical_snapshots'] == 'true'
+        assert float(defaults['imu_response_timeout_sec']) == 0.008
+        assert float(defaults['imu_stale_warning_sec']) == 2.0
+        assert float(defaults['imu_locomotion_guard_sec']) == 0.003
+        assert int(defaults['imu_calibration_sample_count']) == 10
+        assert int(defaults['imu_calibration_max_reads']) == 150
+        assert float(defaults['imu_calibration_timeout_sec']) == 15.0
+        assert float(defaults['imu_calibration_read_interval']) == 0.1
         assert 'motor_validation_settle_time' not in defaults
         assert 'gait_state_publish_rate_hz' not in defaults
 
     pipeline_configurations = _launch_configuration_names(pipeline_launch)
     assert 'locomotion_command_mapping' in pipeline_configurations
     assert 'locomotion_calibration_file' in pipeline_configurations
+    assert 'imu_attitude_publish_rate_hz' in pipeline_configurations
 
+    assert pipeline_defaults['launch_foot_odometry'] == 'false'
     assert float(pipeline_defaults['foot_motor_poll_rate']) == 2.0
     assert pipeline_defaults[
         'allow_experimental_high_rate_motor_polling'
@@ -240,6 +250,7 @@ def test_ekf_sensor_ownership_keeps_foot_yaw_out_of_the_filter():
     assert localization_defaults['foot_odometry_source'] == (
         'measured_joints'
     )
+    assert localization_defaults['launch_foot_odometry'] == 'false'
     assert float(localization_defaults['foot_motor_poll_rate']) == 2.0
     assert localization_defaults[
         'allow_experimental_high_rate_motor_polling'
@@ -326,10 +337,33 @@ def test_hardware_motor_polling_above_two_hz_requires_opt_in():
         ODOMETRY_BAG_ROOT / 'launch' / 'record_odometry_bag_launch.py'
     )
 
+    assert record_defaults['record_motor_angles'] == 'false'
     assert float(record_defaults['motor_poll_rate']) == 2.0
     assert record_defaults[
         'allow_experimental_high_rate_motor_polling'
     ] == 'false'
+
+
+def test_controller_attitude_is_recorded_and_optionally_replayed_not_fused():
+    recorder = (
+        ODOMETRY_BAG_ROOT / 'src' / 'odometry_bag_recorder.cpp'
+    ).read_text(encoding='utf-8')
+    replayer = (
+        ODOMETRY_BAG_ROOT / 'src' / 'odometry_bag_replayer.cpp'
+    ).read_text(encoding='utf-8')
+    ekf = _load_yaml(
+        HARDWARE_ROOT / 'config' / 'ekf_lidar_imu.yaml'
+    )['ekf_filter_node']['ros__parameters']
+
+    for source in (recorder, replayer):
+        assert '/imu/controller_attitude' in source
+        assert (
+            'muto_hexapod_interfaces_custom/msg/ControllerAttitude'
+            in source
+        )
+    assert 'validate_optional_topic(' in replayer
+    assert ekf['imu0'] == '/imu/data_processed'
+    assert '/imu/controller_attitude' not in str(ekf)
 
 
 def test_odometry_comparison_varies_inputs_not_covariance_profile():

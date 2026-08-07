@@ -157,10 +157,11 @@ def generate_launch_description():
     )
     launch_foot_odometry_arg = DeclareLaunchArgument(
         "launch_foot_odometry",
-        default_value="true",
+        default_value="false",
         description=(
-            "Whether to launch continuity-gated measured-joint Muto foot "
-            "odometry and fuse /foot_odom planar velocity into the EKF."
+            "Opt in to continuity-gated measured-joint Muto foot odometry. "
+            "Stock blocking motor reads disrupt the 50 Hz gait, so the "
+            "production default is disabled."
         ),
     )
     foot_motor_poll_rate_arg = DeclareLaunchArgument(

@@ -24,4 +24,10 @@ setup(
         'ROS-packaged Muto serial control and commanded gait generation'
     ),
     license='MIT',
+    entry_points={
+        'console_scripts': [
+            'imu_serial_probe = '
+            'muto_hexapod_lib_custom.tools.imu_serial_probe:main',
+        ],
+    },
 )

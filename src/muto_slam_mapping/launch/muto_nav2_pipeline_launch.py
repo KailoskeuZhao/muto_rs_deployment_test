@@ -237,6 +237,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'batch_gait_phase_writes',
+            default_value='true',
+            description=(
+                'Write all six self-delimiting leg frames for one gait phase '
+                'as a contiguous serial batch. False is the rollback mode.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'cmd_vel_timeout',
             default_value='0.5',
             description=(
@@ -260,19 +268,66 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'imu_publish_rate_hz',
+            default_value='10.0',
+            description=(
+                'Host poll rate for the controller-cached IMU snapshot; '
+                'this does not change the ICM-20948 sample rate.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'imu_attitude_publish_rate_hz',
+            default_value='10.0',
+            description=(
+                'Host poll rate for the controller-fused 0x60 Euler '
+                'attitude. Set 0.0 to disable; it is recorded but not fused.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'imu_suppress_identical_snapshots',
+            default_value='true',
+            description=(
+                'Suppress consecutive identical accel/gyro snapshots '
+                'instead of assigning cached data new ROS timestamps.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'imu_response_timeout_sec',
+            default_value='0.008',
+            description='Runtime IMU serial-response budget in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'imu_stale_warning_sec',
+            default_value='2.0',
+            description='Seconds without a changed IMU snapshot before warning.',
+        ),
+        DeclareLaunchArgument(
+            'imu_locomotion_guard_sec',
+            default_value='0.003',
+            description='Time reserved before each locomotion phase deadline.',
+        ),
+        DeclareLaunchArgument(
             'imu_calibration_sample_count',
-            default_value='300',
-            description='Valid stationary IMU samples used for startup calibration.',
+            default_value='10',
+            description=(
+                'Changed stationary accel/gyro snapshots used for startup '
+                'calibration.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_calibration_max_reads',
-            default_value='600',
+            default_value='150',
             description='Maximum serial read attempts during startup IMU calibration.',
         ),
         DeclareLaunchArgument(
             'imu_calibration_timeout_sec',
-            default_value='30.0',
+            default_value='15.0',
             description='Maximum wall-clock duration of startup IMU calibration.',
+        ),
+        DeclareLaunchArgument(
+            'imu_calibration_read_interval',
+            default_value='0.1',
+            description='Seconds between startup IMU calibration polls.',
         ),
         DeclareLaunchArgument(
             'launch_sensor_tf',
@@ -286,10 +341,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'launch_foot_odometry',
-            default_value='true',
+            default_value='false',
             description=(
-                'Fuse continuity-gated measured-joint foot velocity into '
-                'the localization EKF.'
+                'Opt in to diagnostic measured-joint foot odometry. Its '
+                'blocking motor reads disrupt the 50 Hz gait on stock '
+                'controller firmware.'
             ),
         ),
         DeclareLaunchArgument(
@@ -475,6 +531,9 @@ def generate_launch_description():
                 'locomotion_update_rate_hz': LaunchConfiguration(
                     'locomotion_update_rate_hz'
                 ),
+                'batch_gait_phase_writes': LaunchConfiguration(
+                    'batch_gait_phase_writes'
+                ),
                 'cmd_vel_timeout': LaunchConfiguration(
                     'cmd_vel_timeout'
                 ),
@@ -484,6 +543,24 @@ def generate_launch_description():
                 'locomotion_calibration_file': LaunchConfiguration(
                     'locomotion_calibration_file'
                 ),
+                'imu_publish_rate_hz': LaunchConfiguration(
+                    'imu_publish_rate_hz'
+                ),
+                'imu_attitude_publish_rate_hz': LaunchConfiguration(
+                    'imu_attitude_publish_rate_hz'
+                ),
+                'imu_suppress_identical_snapshots': LaunchConfiguration(
+                    'imu_suppress_identical_snapshots'
+                ),
+                'imu_response_timeout_sec': LaunchConfiguration(
+                    'imu_response_timeout_sec'
+                ),
+                'imu_stale_warning_sec': LaunchConfiguration(
+                    'imu_stale_warning_sec'
+                ),
+                'imu_locomotion_guard_sec': LaunchConfiguration(
+                    'imu_locomotion_guard_sec'
+                ),
                 'imu_calibration_sample_count': LaunchConfiguration(
                     'imu_calibration_sample_count'
                 ),
@@ -492,6 +569,9 @@ def generate_launch_description():
                 ),
                 'imu_calibration_timeout_sec': LaunchConfiguration(
                     'imu_calibration_timeout_sec'
+                ),
+                'imu_calibration_read_interval': LaunchConfiguration(
+                    'imu_calibration_read_interval'
                 ),
             },
             condition=IfCondition(LaunchConfiguration('launch_hardware')),

@@ -20,8 +20,48 @@ def generate_launch_description():
     )
     imu_publish_rate_hz_arg = DeclareLaunchArgument(
         "imu_publish_rate_hz",
-        default_value="50.0",
-        description="Processed/raw IMU publish rate in Hz.",
+        default_value="10.0",
+        description=(
+            "Host polling rate for the controller-cached raw IMU snapshot. "
+            "This does not configure the ICM-20948 output-data rate."
+        ),
+    )
+    imu_attitude_publish_rate_hz_arg = DeclareLaunchArgument(
+        "imu_attitude_publish_rate_hz",
+        default_value="10.0",
+        description=(
+            "Host polling rate for the controller-fused 0x60 Euler attitude. "
+            "Set 0.0 to disable; this diagnostic topic is not fused by the EKF."
+        ),
+    )
+    imu_suppress_identical_snapshots_arg = DeclareLaunchArgument(
+        "imu_suppress_identical_snapshots",
+        default_value="true",
+        description=(
+            "Publish only when accel/gyro values differ from the preceding "
+            "controller snapshot. Disable only for protocol diagnostics."
+        ),
+    )
+    imu_response_timeout_sec_arg = DeclareLaunchArgument(
+        "imu_response_timeout_sec",
+        default_value="0.008",
+        description="Runtime IMU serial-response budget in seconds.",
+    )
+    imu_stale_warning_sec_arg = DeclareLaunchArgument(
+        "imu_stale_warning_sec",
+        default_value="2.0",
+        description=(
+            "Warn after this many seconds without a changed accel/gyro "
+            "snapshot; zero disables the warning."
+        ),
+    )
+    imu_locomotion_guard_sec_arg = DeclareLaunchArgument(
+        "imu_locomotion_guard_sec",
+        default_value="0.003",
+        description=(
+            "Reserve this much time before the next gait deadline instead "
+            "of beginning an IMU serial transaction."
+        ),
     )
     locomotion_update_rate_hz_arg = DeclareLaunchArgument(
         "locomotion_update_rate_hz",
@@ -29,6 +69,14 @@ def generate_launch_description():
         description=(
             "Fixed rate that advances one locomotion trajectory phase and "
             "publishes its commanded gait state."
+        ),
+    )
+    batch_gait_phase_writes_arg = DeclareLaunchArgument(
+        "batch_gait_phase_writes",
+        default_value="true",
+        description=(
+            "Send the six unchanged vendor leg frames for each phase in one "
+            "contiguous serial write. False restores per-leg writes."
         ),
     )
     cmd_vel_timeout_arg = DeclareLaunchArgument(
@@ -61,18 +109,26 @@ def generate_launch_description():
     )
     imu_calibration_sample_count_arg = DeclareLaunchArgument(
         "imu_calibration_sample_count",
-        default_value="300",
-        description="Number of valid startup IMU samples used for bias/scale calibration.",
+        default_value="10",
+        description=(
+            "Number of changed accel/gyro snapshots used for startup "
+            "bias/scale calibration."
+        ),
     )
     imu_calibration_max_reads_arg = DeclareLaunchArgument(
         "imu_calibration_max_reads",
-        default_value="600",
+        default_value="150",
         description="Maximum startup IMU read attempts while collecting calibration samples.",
     )
     imu_calibration_timeout_sec_arg = DeclareLaunchArgument(
         "imu_calibration_timeout_sec",
-        default_value="30.0",
+        default_value="15.0",
         description="Maximum wall-clock seconds spent on startup IMU calibration.",
+    )
+    imu_calibration_read_interval_arg = DeclareLaunchArgument(
+        "imu_calibration_read_interval",
+        default_value="0.1",
+        description="Seconds between startup IMU calibration polls.",
     )
     lidar_scan_topic_arg = DeclareLaunchArgument(
         "lidar_scan_topic",
@@ -190,6 +246,10 @@ def generate_launch_description():
                 LaunchConfiguration("locomotion_update_rate_hz"),
                 value_type=float,
             ),
+            "batch_gait_phase_writes": ParameterValue(
+                LaunchConfiguration("batch_gait_phase_writes"),
+                value_type=bool,
+            ),
             "cmd_vel_timeout": ParameterValue(
                 LaunchConfiguration("cmd_vel_timeout"),
                 value_type=float,
@@ -214,6 +274,26 @@ def generate_launch_description():
                 LaunchConfiguration("imu_publish_rate_hz"),
                 value_type=float,
             ),
+            "imu_attitude_publish_rate_hz": ParameterValue(
+                LaunchConfiguration("imu_attitude_publish_rate_hz"),
+                value_type=float,
+            ),
+            "imu_suppress_identical_snapshots": ParameterValue(
+                LaunchConfiguration("imu_suppress_identical_snapshots"),
+                value_type=bool,
+            ),
+            "imu_response_timeout_sec": ParameterValue(
+                LaunchConfiguration("imu_response_timeout_sec"),
+                value_type=float,
+            ),
+            "imu_stale_warning_sec": ParameterValue(
+                LaunchConfiguration("imu_stale_warning_sec"),
+                value_type=float,
+            ),
+            "imu_locomotion_guard_sec": ParameterValue(
+                LaunchConfiguration("imu_locomotion_guard_sec"),
+                value_type=float,
+            ),
             "imu_calibration_sample_count": ParameterValue(
                 LaunchConfiguration("imu_calibration_sample_count"),
                 value_type=int,
@@ -226,6 +306,10 @@ def generate_launch_description():
                 LaunchConfiguration("imu_calibration_timeout_sec"),
                 value_type=float,
             ),
+            "imu_calibration_read_interval": ParameterValue(
+                LaunchConfiguration("imu_calibration_read_interval"),
+                value_type=float,
+            ),
         }],
     )
 
@@ -233,13 +317,20 @@ def generate_launch_description():
         imu_gyro_lsb_per_dps_arg,
         imu_yaw_rate_deadband_rad_s_arg,
         imu_publish_rate_hz_arg,
+        imu_attitude_publish_rate_hz_arg,
+        imu_suppress_identical_snapshots_arg,
+        imu_response_timeout_sec_arg,
+        imu_stale_warning_sec_arg,
+        imu_locomotion_guard_sec_arg,
         locomotion_update_rate_hz_arg,
+        batch_gait_phase_writes_arg,
         cmd_vel_timeout_arg,
         locomotion_command_mapping_arg,
         locomotion_calibration_file_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,
         imu_calibration_timeout_sec_arg,
+        imu_calibration_read_interval_arg,
         lidar_scan_topic_arg,
         camera_width_arg,
         camera_height_arg,

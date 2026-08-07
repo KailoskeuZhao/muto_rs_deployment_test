@@ -31,6 +31,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "muto_hexapod_interfaces_custom/msg/commanded_gait_state.hpp"
+#include "muto_hexapod_interfaces_custom/msg/controller_attitude.hpp"
 #include "muto_hexapod_interfaces_custom/msg/motion_command_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/serialization.hpp"
@@ -54,6 +55,9 @@ constexpr char kImuTopic[] = "/imu/data_processed";
 constexpr char kImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kRawImuTopic[] = "/imu/data_raw";
 constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
+constexpr char kControllerAttitudeTopic[] = "/imu/controller_attitude";
+constexpr char kControllerAttitudeType[] =
+  "muto_hexapod_interfaces_custom/msg/ControllerAttitude";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
@@ -149,6 +153,9 @@ public:
       create_publisher<sensor_msgs::msg::Imu>(kImuTopic, reliable_qos);
     raw_imu_publisher_ =
       create_publisher<sensor_msgs::msg::Imu>(kRawImuTopic, reliable_qos);
+    controller_attitude_publisher_ = create_publisher<
+      muto_hexapod_interfaces_custom::msg::ControllerAttitude>(
+      kControllerAttitudeTopic, reliable_qos);
     gait_publisher_ =
       create_publisher<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
       kGaitTopic, gait_qos);
@@ -250,6 +257,11 @@ private:
       throw std::runtime_error(
               "replay_processed_imu is false but /imu/data_raw is absent or empty");
     }
+    validate_optional_topic(
+      topics,
+      message_counts,
+      kControllerAttitudeTopic,
+      kControllerAttitudeType);
     validate_optional_topic(topics, message_counts, kEventTopic, kEventType);
     validate_optional_topic(topics, message_counts, kMetadataTopic, kMetadataType);
     validate_optional_topic(
@@ -392,6 +404,11 @@ private:
     } else if (bag_message->topic_name == kRawImuTopic) {
       raw_imu_publisher_->publish(
         deserialize<sensor_msgs::msg::Imu>(bag_message));
+    } else if (bag_message->topic_name == kControllerAttitudeTopic) {
+      controller_attitude_publisher_->publish(
+        deserialize<
+          muto_hexapod_interfaces_custom::msg::ControllerAttitude>(
+          bag_message));
     } else if (bag_message->topic_name == kGaitTopic) {
       gait_publisher_->publish(
         deserialize<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
@@ -515,6 +532,9 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr raw_imu_publisher_;
+  rclcpp::Publisher<
+    muto_hexapod_interfaces_custom::msg::ControllerAttitude>::SharedPtr
+    controller_attitude_publisher_;
   rclcpp::Publisher<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_publisher_;

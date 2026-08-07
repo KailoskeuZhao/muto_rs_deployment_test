@@ -68,7 +68,7 @@ pipeline.
 | [`src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py`](../src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py) | Main EKF launch for LiDAR plus IMU odometry. |
 | [`src/yahboomcar_bringup/config/ekf_lidar_imu.yaml`](../src/yahboomcar_bringup/config/ekf_lidar_imu.yaml) | Default EKF fusion configuration. |
 | [`src/yahboomcar_imu/yahboomcar_imu/imu_node.py`](../src/yahboomcar_imu/yahboomcar_imu/imu_node.py) | Publishes raw and processed IMU messages. |
-| [`src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py`](../src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py) | Continuity-gated measured-joint odometry, enabled as a low-trust EKF velocity input by default. |
+| [`src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py`](../src/yahboomcar_bringup/yahboomcar_bringup/foot_odometry_node.py) | Continuity-gated measured-joint odometry, retained as a default-off diagnostic while motor reads block gait dispatch. |
 | [`src/muto_slam_mapping/config/mapper_params_online_async.yaml`](../src/muto_slam_mapping/config/mapper_params_online_async.yaml) | SLAM Toolbox frame and scan-topic settings. |
 
 ## Frames And TF Ownership
@@ -284,6 +284,7 @@ IMU topics:
 | `/imu/data_raw` | `raw_imu_link` | Raw accelerometer and gyro counts published as an IMU message for inspection. |
 | `/imu/mag_raw` | `raw_imu_link` | Raw magnetometer values. |
 | `/imu/data_processed` | `imu_link` | Scaled accelerometer and gyro data used by localization experiments. |
+| `/imu/controller_attitude` | unset pending validation | Vendor-fused `0x60` roll, pitch, and yaw in decoded degrees plus the unscaled temperature byte. |
 
 `/imu/data_processed` does not provide orientation. Its orientation covariance is
 set to `-1`, which tells consumers that orientation is unavailable.
@@ -291,11 +292,30 @@ The current angular-velocity variance is `8.5e-6 (rad/s)^2`, estimated from
 stationary raw-gyro samples in `odom_test_001`.
 
 Startup calibration is enabled by default. While the robot is still, the node
-collects raw IMU samples to estimate:
+collects ten changed accel/gyro snapshots, bounded by 150 reads and 15 s, to
+estimate:
 
 - accelerometer counts per 1 g from the norm of the accelerometer vector;
 - gyro biases for x, y, and z;
 - a yaw-rate deadband before publishing `angular_velocity.z`.
+
+The host requests the baseboard's protocol `0x61` snapshot at 10 Hz. This is a
+poll rate, not an ICM-20948 ODR setting. The 2026-08-07 bag contained responsive
+serial replies but only about 1.033 changed accel/gyro snapshots per second.
+Consecutive exact duplicates are therefore suppressed by default instead of
+being published with fresh timestamps. The protocol exposes no acquisition
+timestamp or sequence, so exact-value change is a conservative lower-bound
+heuristic. See
+[`imu_serial_pipeline_2026-08-07.md`](imu_serial_pipeline_2026-08-07.md).
+
+The driver also requests the independent fused-attitude endpoint `0x60` at a
+10 Hz host rate and publishes every successful response, including duplicates,
+on `/imu/controller_attitude`. Live testing measured roughly 5 Hz controller
+updates; requesting at 10 Hz reduces cadence aliasing and makes repeated cached
+values visible in the bag. The message timestamp is host receive time and its
+frame is deliberately unset. Controller axis signs, Euler order, wrap,
+reference, magnetic dependence, latency, temperature units, and covariance
+remain unvalidated.
 
 The EKF currently consumes only IMU yaw rate:
 
@@ -304,7 +324,8 @@ The EKF currently consumes only IMU yaw rate:
 ```
 
 It does not fuse IMU linear acceleration, roll/pitch, or absolute orientation in
-the normal configuration.
+the normal configuration. In particular, merely recording
+`/imu/controller_attitude` does not add it to the filter.
 
 ## EKF Fusion
 
@@ -443,8 +464,11 @@ reads share the same serial bus as gait writes; the custom protocol now polls
 until a complete response arrives and returns early rather than sleeping for a
 fixed 50 or 100 ms on every read. Each moving phase uses six vendor `LEG`
 packets instead of eighteen individual joint packets, reducing its serial
-traffic from 216 to 84 bytes. The motor read rate remains at the conservative
-2 Hz production default. The 2026-08-05 10 Hz hardware test measured a
+traffic from 216 to 84 bytes. Those six frames are normally emitted in one
+contiguous write with one pacing delay; `batch_gait_phase_writes:=false`
+restores the separately paced rollback. Foot odometry is now default-off. When
+explicitly enabled, its motor read rate remains at the conservative 2 Hz
+diagnostic default. The 2026-08-05 10 Hz hardware test measured a
 `25.67 ms` median motor response, about `40 ms` p95 gait and IMU intervals, and
 an IMU average of only `41.44 Hz`; 10 Hz is therefore rejected for production
 with the current blocking serial service. The localization and top-level
@@ -452,17 +476,21 @@ pipeline launches expose this as `foot_motor_poll_rate`; each successful
 `get_motor_angles` response includes `read_duration_sec` so serial response
 latency can be measured directly.
 
-Normal production startup keeps the 2 Hz limit:
+Normal production startup performs no periodic motor reads:
 
 ```bash
 ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py \
-  launch_mapping:=false launch_nav2:=false foot_motor_poll_rate:=2.0
+  launch_mapping:=false launch_nav2:=false
 
 ros2 topic hz /muto/commanded_gait_state
 ros2 topic hz /imu/data_processed
-ros2 topic hz /foot_odom
 ros2 service call /get_motor_angles std_srvs/srv/Trigger "{}"
 ```
+
+For a controlled foot-odometry diagnostic, add
+`launch_foot_odometry:=true foot_motor_poll_rate:=2.0`. The 2026-08-07 bag
+showed that 651 of 652 motor-overlapping gait intervals exceeded 30 ms even at
+2 Hz, so this is not a production setting.
 
 Any rate above 2 Hz now requires the explicit
 `allow_experimental_high_rate_motor_polling:=true` launch argument. Do not use
@@ -500,7 +528,7 @@ available and explicitly confirms another rate.
 
 The measured-joint estimator associates every snapshot pair with all
 intervening gait phases and rejects the interval unless support continuity is
-provable. At the 2 Hz production default, moving snapshots are normally
+provable. At the 2 Hz diagnostic setting, moving snapshots are normally
 separated by more than one complete 20-phase gait cycle, so motion output is
 deliberately suppressed. The 10 Hz test produced moving updates, but their
 straight and yaw displacement were severely under-scaled and the blocking
@@ -510,7 +538,8 @@ commanded rather than sensed contact, and unmeasured slip remain limitations.
 Foot-derived yaw rate is not fused; RF2O supplies yaw and the IMU supplies
 `wz`.
 
-`ekf_lidar_imu_with_foot.yaml` is loaded as an overlay on the primary
+When `launch_foot_odometry:=true`, `ekf_lidar_imu_with_foot.yaml` is loaded as
+an overlay on the primary
 `ekf_lidar_imu.yaml` configuration. `/foot_odom` contributes only planar body
 velocity (`vx`, `vy`). Pose and yaw still come from RF2O, yaw rate still comes
 from the IMU, and the foot node runs with `publish_tf:=false`.

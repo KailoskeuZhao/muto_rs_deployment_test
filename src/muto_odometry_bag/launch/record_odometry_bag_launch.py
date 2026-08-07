@@ -30,6 +30,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'record_motor_angles',
+            default_value='false',
+            description=(
+                'Poll and record get_motor_angles. Disabled by default '
+                'because each stock-controller read blocks gait dispatch.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'motor_poll_rate',
             default_value='2.0',
             description=(
@@ -52,6 +60,10 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'bag_path': LaunchConfiguration('bag_path'),
+                'record_motor_angles': ParameterValue(
+                    LaunchConfiguration('record_motor_angles'),
+                    value_type=bool,
+                ),
                 'motor_poll_rate': ParameterValue(
                     LaunchConfiguration('motor_poll_rate'),
                     value_type=float,

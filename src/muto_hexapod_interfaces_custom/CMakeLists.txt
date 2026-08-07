@@ -8,6 +8,7 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CommandedGaitState.msg"
+  "msg/ControllerAttitude.msg"
   "msg/MotionCommandState.msg"
   DEPENDENCIES geometry_msgs std_msgs
 )

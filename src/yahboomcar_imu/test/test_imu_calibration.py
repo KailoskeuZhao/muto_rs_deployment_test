@@ -18,9 +18,10 @@ from yahboomcar_imu import imu_node
 class FakeLogger:
     def __init__(self):
         self.warnings = []
+        self.infos = []
 
     def info(self, message):
-        del message
+        self.infos.append(message)
 
     def warn(self, message, **_kwargs):
         self.warnings.append(message)
@@ -44,6 +45,16 @@ class UnresponsiveMuto:
         return None
 
 
+class SequenceMuto:
+    def __init__(self, samples):
+        self.samples = iter(samples)
+        self.calls = 0
+
+    def read_IMU_Raw(self):
+        self.calls += 1
+        return next(self.samples)
+
+
 class AdvancingClock:
     def __init__(self):
         self.now = 0.0
@@ -58,9 +69,11 @@ class AdvancingClock:
 
 
 def test_calibration_defaults_are_bounded():
-    assert imu_node.DEFAULT_CALIBRATION_SAMPLE_COUNT == 300
-    assert imu_node.DEFAULT_CALIBRATION_MAX_READS == 600
-    assert imu_node.DEFAULT_CALIBRATION_TIMEOUT_SEC == 30.0
+    assert imu_node.DEFAULT_CALIBRATION_SAMPLE_COUNT == 10
+    assert imu_node.DEFAULT_CALIBRATION_MAX_READS == 150
+    assert imu_node.DEFAULT_CALIBRATION_TIMEOUT_SEC == 15.0
+    assert imu_node.DEFAULT_CALIBRATION_READ_INTERVAL_SEC == 0.1
+    assert imu_node.DEFAULT_RESPONSE_TIMEOUT_SEC == 0.008
     assert imu_node.ANGULAR_VELOCITY_COVARIANCE == 8.5e-6
 
 
@@ -82,4 +95,37 @@ def test_calibration_stops_at_wall_clock_limit(monkeypatch):
     assert any(
         'wall-clock timeout reached' in warning
         for warning in publisher.node.logger.warnings
+    )
+
+
+def test_calibration_counts_changed_motion_snapshots_not_cached_reads():
+    first = (0, 0, 8500, 1, 2, 3, 4, 5, 6)
+    second = (0, 0, 8501, 2, 3, 4, 4, 5, 6)
+    third = (0, 0, 8499, 3, 4, 5, 4, 5, 6)
+    publisher = imu_node.ImuPublisher.__new__(imu_node.ImuPublisher)
+    publisher.node = FakeNode()
+    publisher.muto = SequenceMuto(
+        (first, first, second, second, third)
+    )
+    publisher.calibration_sample_count = 3
+    publisher.calibration_max_reads = 5
+    publisher.calibration_timeout_sec = 5.0
+    publisher.calibration_read_interval = 0.0
+    publisher.calibration_gyro_stddev_limit = 80.0
+    publisher.calibration_accel_norm_stddev_limit = 250.0
+    publisher.accel_counts_per_g = imu_node.DEFAULT_ACCEL_COUNTS_PER_G
+    publisher.gyro_bias_x = 0.0
+    publisher.gyro_bias_y = 0.0
+    publisher.gyro_bias_z = 0.0
+
+    publisher.calibrate_from_startup_samples()
+
+    assert publisher.muto.calls == 5
+    assert publisher.gyro_bias_x == 2.0
+    assert publisher.gyro_bias_y == 3.0
+    assert publisher.gyro_bias_z == 4.0
+    assert any(
+        'changed_snapshots=3' in message
+        and 'cached_duplicates=2' in message
+        for message in publisher.node.logger.infos
     )

@@ -9,6 +9,7 @@
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
+  <depend>muto_hexapod_interfaces_custom</depend>
   <depend>sensor_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>

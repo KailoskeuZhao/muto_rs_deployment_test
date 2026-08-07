@@ -21,16 +21,25 @@ During replay, the existing packages still perform every calculation:
 | `/lidar/raw_laserscan` | `sensor_msgs/msg/LaserScan` | Input to the existing LiDAR filter and RF2O |
 | `/imu/data_processed` | `sensor_msgs/msg/Imu` | Existing EKF IMU input |
 | `/imu/data_raw` | `sensor_msgs/msg/Imu` | Original IMU sample for later calibration and processing changes |
+| `/imu/controller_attitude` | `muto_hexapod_interfaces_custom/msg/ControllerAttitude` | Every successful vendor-fused `0x60` roll/pitch/yaw poll plus its raw temperature byte |
 | `/muto/commanded_gait_state` | `muto_hexapod_interfaces_custom/msg/CommandedGaitState` | Backward-compatible commanded stance/swing and continuous foot targets |
 | `/muto/motion_command_state` | `muto_hexapod_interfaces_custom/msg/MotionCommandState` | Requested twist, selected and active levels, pending/projection flags, prediction, and profile |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Existing RF2O deadband gate input |
-| `/muto/measured_motor_state` | `std_msgs/msg/String` | Baggable representation of each successful `get_motor_angles` response |
+| `/muto/measured_motor_state` | `std_msgs/msg/String` | Optional representation of each successful `get_motor_angles` response when motor recording is enabled |
 | `/muto/odometry_test_event` | `std_msgs/msg/String` | Timestamped JSON start/end and measured field-pose markers |
 | `/muto/odometry_recording_metadata` | `std_msgs/msg/String` | Recorder build git revision, dirty state, and bag schema |
 | `/tf_static` | `tf2_msgs/msg/TFMessage` | Exact static sensor geometry offered during recording |
 
-The recorder polls `get_motor_angles` at the same default 2 Hz rate used by
-foot odometry. This is an additional service read while recording.
+The recorder does not poll `get_motor_angles` by default. Set
+`record_motor_angles:=true` only for a controlled joint-feedback diagnostic;
+each such service call is an additional blocking serial read while recording.
+The recorder also does not poll `0x60`: the sole-owner hardware driver creates
+`/imu/controller_attitude`, and this package only subscribes. The message uses
+host receive time, preserves the controller's degree-valued Euler fields and
+raw temperature byte, and deliberately retains identical consecutive replies
+so cache cadence remains measurable. Its frame is intentionally unset and it
+is not an EKF input while axis signs, Euler order, wrap, reference, and
+temperature units remain unvalidated.
 
 The source bag intentionally excludes `scan_odom_raw`, `scan_odom`,
 `foot_odom`, `odometry/filtered`, and dynamic `/tf`. Those are results under
@@ -51,8 +60,9 @@ support foot swung between its endpoints. Commanded stance is still not
 measured contact, so the estimator cannot detect foot slip or a foot that has
 lost contact.
 
-The conservative 2 Hz recorder rate is suitable for residual and timing
-diagnostics, but it is generally too sparse for moving foot odometry. The
+When motor recording is explicitly enabled, the conservative 2 Hz rate is
+suitable for residual and timing diagnostics, but it is generally too sparse
+for moving foot odometry. The
 estimator suppresses such intervals rather than treating a complete gait cycle
 as one planted-foot transform. The 2026-08-05 10 Hz hardware test delayed gait
 and IMU processing and still produced severely under-scaled measured foot
@@ -70,12 +80,15 @@ ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
   bag_path:=/data/bags/muto_odom_001
 ```
 
-The default `motor_poll_rate:=2.0` is the production limit. A controlled
-high-rate experiment must state both the rate and the safety override:
+The default recording above contains LiDAR, raw/processed IMU, controller
+attitude, gait, commands, events, and static TF without adding serial requests
+from the recorder. A controlled motor experiment must first opt in. A
+high-rate experiment must state the opt-in, rate, and safety override:
 
 ```bash
 ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
   bag_path:=/data/bags/muto_odom_experimental \
+  record_motor_angles:=true \
   motor_poll_rate:=10.0 \
   allow_experimental_high_rate_motor_polling:=true
 ```
@@ -92,6 +105,40 @@ Inspect the source bag:
 ```bash
 ros2 bag info /data/bags/muto_odom_001
 ```
+
+For the controller-attitude rerun on the deployed workspace, use:
+
+### Terminal 1
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
+```
+
+### Terminal 2
+
+```bash
+ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
+  bag_path:=/opt/muto_rs_ws/bags/muto_odometry_attitude_001 \
+  record_motor_angles:=false
+```
+
+### Terminal 3
+
+```bash
+ros2 topic hz /imu/controller_attitude
+```
+
+The hardware launch requests `0x60` at 10 Hz to avoid aliasing the measured
+roughly 5 Hz controller producer. Requests that cannot fit before the next gait
+deadline are skipped. Set `imu_attitude_publish_rate_hz:=0.0` on the pipeline
+launch for rollback. After stopping the recorder with `Ctrl-C`, require
+`ros2 bag info` to show a nonzero `/imu/controller_attitude` count.
+
+This rerun leaves motor polling off so the additional `0x60` traffic can be
+evaluated without the known blocking motor-read confounder. Replay it with
+`launch_foot_odometry:=false`. If measured-foot comparison is also required,
+record a separate controlled bag with `record_motor_angles:=true` at 2 Hz and
+treat its gait timing as a different experimental condition.
 
 ## Mark measured field endpoints
 
@@ -125,9 +172,11 @@ ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
 ```
 
 The replayed test-event and recording-metadata topics are available to
-analysis tools. Raw IMU is also republished when present. To test a revised IMU
-processor, launch that processor separately and suppress the previously
-processed samples so it is the only publisher of `/imu/data_processed`:
+analysis tools. Raw IMU and controller attitude are also republished when
+present. Controller attitude is optional, so older bags remain replayable. To
+test a revised IMU processor, launch that processor separately and suppress the
+previously processed samples so it is the only publisher of
+`/imu/data_processed`:
 
 ```bash
 ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \

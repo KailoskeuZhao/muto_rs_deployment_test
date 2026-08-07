@@ -1,5 +1,6 @@
 """Focused Muto serial protocol used by the ROS hardware driver."""
 
+import math
 import struct
 import threading
 import time
@@ -14,15 +15,18 @@ __version__ = '0.3.0'
 
 WRITE_COMMAND = 0x01
 READ_COMMAND = 0x02
+DATA_RETURN_COMMAND = 0x12
 DEVICE_ID = 0x00
 HEADER = 0x55
 TRAILER = (0x00, 0xAA)
+DEFAULT_IMU_RESPONSE_TIMEOUT_SEC = 0.05
 
 COMMANDS = {
     'BUZZER': 0x18,
     'TORQUE_ON': 0x26,
     'TORQUE_OFF': 0x27,
     'MOTOR_ANGLE': 0x50,
+    'ATTITUDE_ANGLE': 0x60,
     'IMU_RAW': 0x61,
 }
 
@@ -37,12 +41,17 @@ class Muto:
         speed_mapping=None,
         gait_step_callback=None,
         serial_port=None,
+        batch_gait_phase_writes=True,
     ):
         del speed_mapping  # Retained for constructor compatibility.
         self.ser = serial_port or serial.Serial(port, 115200, timeout=0.05)
         self._debug = bool(debug)
         self._serial_lock = threading.RLock()
-        self._hexapod = Hexapod(self, gait_step_callback=gait_step_callback)
+        self._hexapod = Hexapod(
+            self,
+            gait_step_callback=gait_step_callback,
+            batch_gait_phase_writes=batch_gait_phase_writes,
+        )
         self.last_read_diagnostic = 'no serial read attempted'
         self.last_response_type = None
 
@@ -55,9 +64,22 @@ class Muto:
         self._hexapod.set_gait_step_callback(callback)
 
     def write(self, data):
-        """Serialize gait and protocol writes through one serial connection."""
+        """Serialize one write and wait until its bytes leave the host queue.
+
+        A batched 84-byte gait phase occupies about 7.3 ms at 115200 baud.
+        Draining it here prevents a following timed IMU request from spending
+        most of its response budget behind gait bytes still queued by Linux.
+        """
         with self._serial_lock:
-            return self.ser.write(bytes(data))
+            packet = bytes(data)
+            result = self.ser.write(packet)
+            if result is not None and result != len(packet):
+                raise IOError(
+                    f'partial serial write: {result}/{len(packet)} bytes')
+            flush = getattr(self.ser, 'flush', None)
+            if callable(flush):
+                flush()
+            return result
 
     def close(self):
         with self._serial_lock:
@@ -92,7 +114,12 @@ class Muto:
         # six packets belonging to one phase together even if that changes.
         # ``write()`` takes the same RLock for each nested packet write.
         with self._serial_lock:
-            return self._hexapod.tick()
+            result = self._hexapod.tick(notify=False)
+        # ROS publication and other observers do not belong to the serial
+        # transaction. Keeping them outside the lock prevents future executor
+        # concurrency from extending gait bus ownership.
+        self._hexapod.notify_gait_step(result[1])
+        return result
 
     @staticmethod
     def _normalize_motion_command(x, y, z):
@@ -115,14 +142,48 @@ class Muto:
             state = self._hexapod.commanded_gait_state
             return state, self.read_motor()
 
-    def read_IMU_Raw(self):
-        payload = self._read(COMMANDS['IMU_RAW'], 18, 0.05)
+    def read_IMU_Raw(self, response_timeout=None):
+        """Read one controller-exported IMU snapshot.
+
+        ``response_timeout`` bounds how long this synchronous transaction may
+        hold the shared gait/telemetry serial bus.  The vendor-compatible
+        default remains 50 ms; the ROS driver supplies a shorter deadline-aware
+        budget while locomotion is active.
+        """
+        if response_timeout is None:
+            response_timeout = DEFAULT_IMU_RESPONSE_TIMEOUT_SEC
+        response_timeout = float(response_timeout)
+        if not math.isfinite(response_timeout) or response_timeout < 0.0:
+            raise ValueError(
+                'response_timeout must be finite and non-negative')
+        payload = self._read(
+            COMMANDS['IMU_RAW'], 18, response_timeout)
         if payload is None or len(payload) < 18:
             return None
         return [
             struct.unpack('>h', payload[index:index + 2])[0]
             for index in range(0, 18, 2)
         ]
+
+    def read_IMU(self, response_timeout=None):
+        """Read the controller's fused roll, pitch, yaw, and temperature.
+
+        This is the documented baseboard ``0x60`` endpoint. Angles are
+        returned in degrees using the controller's signed centidegree scale;
+        temperature is the unsigned byte supplied by the controller.
+        """
+        if response_timeout is None:
+            response_timeout = DEFAULT_IMU_RESPONSE_TIMEOUT_SEC
+        response_timeout = float(response_timeout)
+        if not math.isfinite(response_timeout) or response_timeout < 0.0:
+            raise ValueError(
+                'response_timeout must be finite and non-negative')
+        payload = self._read(
+            COMMANDS['ATTITUDE_ANGLE'], 7, response_timeout)
+        if payload is None or len(payload) < 7:
+            return None
+        roll, pitch, yaw = struct.unpack('>hhh', payload[:6])
+        return [roll / 100.0, pitch / 100.0, yaw / 100.0, payload[6]]
 
     def _set_servo_torque(self, command, servo_id):
         servo_id = int(servo_id)
@@ -164,7 +225,7 @@ class Muto:
                 checksum,
                 *TRAILER,
             ])
-            self.ser.write(packet)
+            self.write(packet)
             if self._debug:
                 print('read:', list(packet))
             deadline = time.monotonic() + max(0.0, response_timeout)
@@ -229,6 +290,8 @@ class Muto:
             packet = data[start:end]
             if packet[-2:] != bytes(TRAILER):
                 continue
+            if packet[3] != DATA_RETURN_COMMAND:
+                continue
             if packet[4] != expected_address:
                 continue
             expected_checksum = 255 - sum(packet[2:-3]) % 256
@@ -240,10 +303,8 @@ class Muto:
                 len(payload) != expected_payload_length
             ):
                 continue
-            # The vendor parser records the controller response type but does
-            # not require it to echo READ_COMMAND. Validate the address,
-            # payload length, checksum, and trailer instead of imposing an
-            # unverified firmware response-type convention.
+            # Muto's published baseboard protocol defines 0x12 as the data
+            # return instruction. It is distinct from the 0x02 read request.
             self.last_response_type = packet[3]
             if self._debug:
                 print('receive:', list(packet))

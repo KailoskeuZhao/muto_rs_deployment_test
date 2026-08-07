@@ -11,6 +11,7 @@ class FakeSerial:
         self.writes = []
         self.read_buffer = b''
         self.is_open = True
+        self.flush_count = 0
 
     def write(self, data):
         self.writes.append(bytes(data))
@@ -18,6 +19,9 @@ class FakeSerial:
 
     def reset_input_buffer(self):
         pass
+
+    def flush(self):
+        self.flush_count += 1
 
     def read_all(self):
         data = self.read_buffer
@@ -44,7 +48,8 @@ class RecordingRLock:
         self.depth -= 1
 
 
-def response_packet(address, payload, response_type=MutoLibCore.READ_COMMAND):
+def response_packet(
+        address, payload, response_type=MutoLibCore.DATA_RETURN_COMMAND):
     payload = bytes(payload)
     packet_length = len(payload) + 8
     checksum = 255 - (
@@ -70,6 +75,20 @@ def disable_protocol_delays(monkeypatch):
     monkeypatch.setattr(servo_module.time, 'sleep', lambda _seconds: None)
 
 
+def written_protocol_packets(serial):
+    """Split one or more contiguous serial writes into vendor frames."""
+    packets = []
+    for write in serial.writes:
+        offset = 0
+        while offset < len(write):
+            packet_length = write[offset + 2]
+            packet = write[offset:offset + packet_length]
+            assert len(packet) == packet_length
+            packets.append(packet)
+            offset += packet_length
+    return packets
+
+
 def test_move_emits_one_callback_per_vendor_gait_step(monkeypatch):
     disable_protocol_delays(monkeypatch)
     serial = FakeSerial()
@@ -78,9 +97,13 @@ def test_move_emits_one_callback_per_vendor_gait_step(monkeypatch):
 
     robot.move(10, 0, 0)
 
-    leg_packets = [packet for packet in serial.writes if packet[4] == 0x41]
+    leg_packets = [
+        packet for packet in written_protocol_packets(serial)
+        if packet[4] == 0x41
+    ]
     assert len(states) == 20
     assert len(leg_packets) == 20 * 6
+    assert len(serial.writes) == 20
     assert states[-1].phase_index == 0
     assert states[-1].cycle_complete
     assert all(packet[:2] == b'\x55\x00' for packet in leg_packets)
@@ -136,26 +159,70 @@ def test_latched_motion_advances_one_phase_per_tick(monkeypatch):
 
     robot.tick_motion()
 
-    leg_packets = [packet for packet in serial.writes if packet[4] == 0x41]
+    leg_packets = [
+        packet for packet in written_protocol_packets(serial)
+        if packet[4] == 0x41
+    ]
     assert len(states) == 1
     assert states[0].phase_index == 1
     assert len(leg_packets) == 6
+    assert len(serial.writes) == 1
+    assert serial.writes[0] == b''.join(leg_packets)
 
 
 def test_latched_phase_holds_one_outer_serial_transaction(monkeypatch):
     disable_protocol_delays(monkeypatch)
     serial = FakeSerial()
-    robot = Muto(serial_port=serial)
-    robot.set_motion_command(10, 0, 0)
     lock = RecordingRLock()
+    callback_lock_depths = []
+    robot = Muto(
+        serial_port=serial,
+        gait_step_callback=lambda _state: callback_lock_depths.append(
+            lock.depth),
+    )
+    robot.set_motion_command(10, 0, 0)
     robot._serial_lock = lock
 
     robot.tick_motion()
 
-    # One outer phase lock plus one nested re-entrant write lock per leg.
-    assert lock.enter_count == 7
+    # One outer phase lock plus one nested re-entrant write for the whole phase.
+    assert lock.enter_count == 2
     assert lock.max_depth == 2
     assert lock.depth == 0
+    assert callback_lock_depths == [0]
+
+
+def test_latched_phase_sleeps_once_after_contiguous_batch(monkeypatch):
+    serial = FakeSerial()
+    robot = Muto(serial_port=serial)
+    robot.set_motion_command(10, 0, 0)
+    sleeps = []
+    monkeypatch.setattr(servo_module.time, 'sleep', sleeps.append)
+
+    robot.tick_motion()
+
+    packets = written_protocol_packets(serial)
+    assert len(serial.writes) == 1
+    assert len(packets) == 6
+    assert [packet[5] for packet in packets] == list(range(1, 7))
+    assert serial.flush_count == 1
+    assert sleeps == [0.001]
+
+
+def test_latched_phase_rollback_uses_original_six_writes(monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    robot = Muto(
+        serial_port=serial,
+        batch_gait_phase_writes=False,
+    )
+    robot.set_motion_command(10, 0, 0)
+
+    robot.tick_motion()
+
+    assert len(serial.writes) == 6
+    assert all(len(write) == 14 for write in serial.writes)
+    assert [write[5] for write in serial.writes] == list(range(1, 7))
 
 
 def test_initial_standby_tick_commands_hardware_then_heartbeats(monkeypatch):
@@ -166,11 +233,13 @@ def test_initial_standby_tick_commands_hardware_then_heartbeats(monkeypatch):
 
     robot.set_motion_command(0, 0, 0)
     robot.tick_motion()
-    first_packet_count = len(serial.writes)
+    first_write_count = len(serial.writes)
+    first_packet_count = len(written_protocol_packets(serial))
     robot.tick_motion()
 
     assert first_packet_count == 6
-    assert len(serial.writes) == first_packet_count
+    assert first_write_count == 1
+    assert len(serial.writes) == first_write_count
     assert [state.sequence for state in states] == [1, 2]
     assert all(state.mode == 'standby' for state in states)
 
@@ -283,6 +352,40 @@ def test_leg_packet_encodes_three_signed_angles_and_runtime(monkeypatch):
     assert packet[-2:] == b'\x00\xaa'
 
 
+def test_leg_batch_validates_every_packet_before_serial_write(monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    servo = servo_module.Servo(serial)
+
+    with pytest.raises(ValueError, match='leg angles'):
+        servo.leg_batch((
+            (1, (0, 0, 0)),
+            (2, (0, 91, 0)),
+        ), runtime=0)
+
+    assert serial.writes == []
+
+
+def test_leg_batch_preserves_individual_packet_bytes_and_order(monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    commands = tuple(
+        (leg_id, (leg_id, -leg_id, leg_id * 2))
+        for leg_id in range(1, 7)
+    )
+    individual_serial = FakeSerial()
+    individual_servo = servo_module.Servo(individual_serial)
+    for leg_id, angles in commands:
+        individual_servo.leg(leg_id, angles, runtime=0)
+
+    batch_serial = FakeSerial()
+    batch_servo = servo_module.Servo(batch_serial)
+    batch_servo.leg_batch(commands, runtime=0)
+
+    assert len(individual_serial.writes) == 6
+    assert len(batch_serial.writes) == 1
+    assert batch_serial.writes[0] == b''.join(individual_serial.writes)
+
+
 def test_single_joint_packet_remains_available_for_compatibility(monkeypatch):
     disable_protocol_delays(monkeypatch)
     serial = FakeSerial()
@@ -358,14 +461,24 @@ def test_serial_read_returns_without_fixed_sleep_when_packet_is_ready(
     assert sleeps == []
 
 
-def test_response_parser_accepts_vendor_response_type_when_frame_is_valid():
+def test_imu_read_rejects_nonfinite_or_negative_timeout():
+    robot = Muto(serial_port=FakeSerial())
+
+    for invalid in (float('nan'), float('inf'), -0.001):
+        with pytest.raises(ValueError, match='response_timeout'):
+            robot.read_IMU_Raw(response_timeout=invalid)
+        with pytest.raises(ValueError, match='response_timeout'):
+            robot.read_IMU(response_timeout=invalid)
+
+
+def test_response_parser_accepts_data_return_frame_when_valid():
     robot = Muto(serial_port=FakeSerial())
     payload = [0] * 18
     packet_length = len(payload) + 8
     address = MutoLibCore.COMMANDS['MOTOR_ANGLE']
     checksum = 255 - (
         packet_length
-        + MutoLibCore.WRITE_COMMAND
+        + MutoLibCore.DATA_RETURN_COMMAND
         + address
         + sum(payload)
     ) % 256
@@ -373,7 +486,7 @@ def test_response_parser_accepts_vendor_response_type_when_frame_is_valid():
         MutoLibCore.HEADER,
         MutoLibCore.DEVICE_ID,
         packet_length,
-        MutoLibCore.WRITE_COMMAND,
+        MutoLibCore.DATA_RETURN_COMMAND,
         address,
         *payload,
         checksum,
@@ -385,14 +498,28 @@ def test_response_parser_accepts_vendor_response_type_when_frame_is_valid():
         address,
         expected_payload_length=18,
     ) == bytes(payload)
-    assert robot.last_response_type == MutoLibCore.WRITE_COMMAND
+    assert robot.last_response_type == MutoLibCore.DATA_RETURN_COMMAND
+
+
+def test_response_parser_rejects_write_or_read_request_frame_types():
+    robot = Muto(serial_port=FakeSerial())
+    address = MutoLibCore.COMMANDS['IMU_RAW']
+    for response_type in (
+            MutoLibCore.WRITE_COMMAND, MutoLibCore.READ_COMMAND):
+        packet = response_packet(
+            address, [0] * 18, response_type=response_type)
+        assert robot._extract_payload(
+            packet,
+            address,
+            expected_payload_length=18,
+        ) is None
 
 
 def test_response_parser_rejects_wrong_payload_length():
     robot = Muto(serial_port=FakeSerial())
     packet = response_packet(
         MutoLibCore.COMMANDS['IMU_RAW'], [0],
-        response_type=MutoLibCore.WRITE_COMMAND,
+        response_type=MutoLibCore.DATA_RETURN_COMMAND,
     )
 
     assert robot._extract_payload(
@@ -425,6 +552,22 @@ def test_read_imu_raw_decodes_big_endian_words(monkeypatch):
     )
 
     assert robot.read_IMU_Raw() == list(expected)
+
+
+def test_read_fused_imu_decodes_documented_attitude_endpoint(monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    robot = Muto(serial_port=serial)
+    payload = struct.pack('>hhhB', -1234, 25, 17999, 42)
+    serial.read_buffer = response_packet(
+        MutoLibCore.COMMANDS['ATTITUDE_ANGLE'],
+        payload,
+    )
+
+    assert robot.read_IMU() == [-12.34, 0.25, 179.99, 42]
+    assert serial.writes == [bytes([
+        0x55, 0x00, 0x09, 0x02, 0x60, 0x07, 0x8D, 0x00, 0xAA,
+    ])]
 
 
 def test_buzzer_and_torque_packets_retain_vendor_addresses(monkeypatch):

@@ -132,21 +132,31 @@ class RealLeg:
         return (angle0, angle1, angle2)
 
     def move_tip(self, target_world):
+        servo_angles = self._prepare_tip_move(target_world)
+        if servo_angles is None:
+            return
+        self._servo.set_leg_angles(self._leg_index, servo_angles)
+        self._commit_tip_move(target_world)
+
+    def _prepare_tip_move(self, target_world):
+        """Calculate a target without changing hardware or cached position."""
         if (
                 self._tip_position is not None
                 and target_world == self._tip_position):
-            return
+            return None
         target_local = self.translate_to_local(target_world)
         angles = self.inverse_kinematics(target_local)
         # The controller accepts whole logical degrees.  Nearest-degree
         # quantization avoids the systematic toward-zero stride loss caused by
         # int() truncation while retaining the firmware's integer interface.
-        servo_angles = (
+        return (
             int(round(angles[0])),
             int(round(-angles[1])),
             int(round(angles[2])),
         )
-        self._servo.set_leg_angles(self._leg_index, servo_angles)
+
+    def _commit_tip_move(self, target_world):
+        """Record a target after its serial command has been accepted."""
         self._tip_position = target_world
 
     @staticmethod

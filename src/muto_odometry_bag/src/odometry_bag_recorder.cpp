@@ -28,6 +28,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "muto_hexapod_interfaces_custom/msg/commanded_gait_state.hpp"
+#include "muto_hexapod_interfaces_custom/msg/controller_attitude.hpp"
 #include "muto_hexapod_interfaces_custom/msg/motion_command_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rmw/rmw.h"
@@ -50,6 +51,9 @@ constexpr char kImuTopic[] = "/imu/data_processed";
 constexpr char kImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kRawImuTopic[] = "/imu/data_raw";
 constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
+constexpr char kControllerAttitudeTopic[] = "/imu/controller_attitude";
+constexpr char kControllerAttitudeType[] =
+  "muto_hexapod_interfaces_custom/msg/ControllerAttitude";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
@@ -91,6 +95,7 @@ public:
     auto bag_path = declare_parameter<std::string>("bag_path", "");
     motor_service_name_ =
       declare_parameter<std::string>("motor_service_name", "get_motor_angles");
+    record_motor_angles_ = declare_parameter<bool>("record_motor_angles", false);
     motor_poll_rate_ = declare_parameter<double>("motor_poll_rate", 2.0);
     const bool allow_experimental_high_rate = declare_parameter<bool>(
       "allow_experimental_high_rate_motor_polling", false);
@@ -98,13 +103,15 @@ public:
     if (bag_path.empty()) {
       bag_path = timestamped_bag_name();
     }
-    if (motor_service_name_.empty()) {
+    if (record_motor_angles_ && motor_service_name_.empty()) {
       throw std::invalid_argument("motor_service_name must not be empty");
     }
-    if (!std::isfinite(motor_poll_rate_) || motor_poll_rate_ <= 0.0) {
+    if (record_motor_angles_ &&
+      (!std::isfinite(motor_poll_rate_) || motor_poll_rate_ <= 0.0))
+    {
       throw std::invalid_argument("motor_poll_rate must be finite and positive");
     }
-    if (motor_poll_rate_ > kProductionMotorPollRateHz &&
+    if (record_motor_angles_ && motor_poll_rate_ > kProductionMotorPollRateHz &&
       !allow_experimental_high_rate)
     {
       throw std::invalid_argument(
@@ -112,7 +119,7 @@ public:
               "allow_experimental_high_rate_motor_polling:=true only for a "
               "controlled hardware benchmark");
     }
-    if (motor_poll_rate_ > kProductionMotorPollRateHz) {
+    if (record_motor_angles_ && motor_poll_rate_ > kProductionMotorPollRateHz) {
       RCLCPP_WARN(
         get_logger(),
         "Experimental %.1f Hz motor recording exceeds the %.1f Hz production "
@@ -135,6 +142,7 @@ public:
     register_topic(kScanTopic, kScanType);
     register_topic(kImuTopic, kImuType);
     register_topic(kRawImuTopic, kRawImuType);
+    register_topic(kControllerAttitudeTopic, kControllerAttitudeType);
     register_topic(kGaitTopic, kGaitType);
     register_topic(kMotionCommandTopic, kMotionCommandType);
     register_topic(kCmdVelTopic, kCmdVelType);
@@ -182,6 +190,30 @@ public:
       [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
         write_serialized(std::move(message), kRawImuTopic, kRawImuType);
       });
+    controller_attitude_subscription_ = create_subscription<
+      muto_hexapod_interfaces_custom::msg::ControllerAttitude>(
+      kControllerAttitudeTopic,
+      reliable_qos,
+      [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        ++controller_attitude_count_;
+        write_serialized(
+          std::move(message),
+          kControllerAttitudeTopic,
+          kControllerAttitudeType);
+      });
+    controller_attitude_watchdog_timer_ = create_wall_timer(
+      std::chrono::seconds(5),
+      [this]() {
+        if (controller_attitude_count_ == 0) {
+          RCLCPP_WARN(
+            get_logger(),
+            "No %s samples received yet; confirm the rebuilt Muto driver "
+            "has 0x60 polling enabled",
+            kControllerAttitudeTopic);
+          return;
+        }
+        controller_attitude_watchdog_timer_->cancel();
+      });
     gait_subscription_ =
       create_subscription<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
       kGaitTopic,
@@ -210,15 +242,17 @@ public:
         write_serialized(std::move(message), kEventTopic, kEventType);
       });
 
-    motor_publisher_ =
-      create_publisher<std_msgs::msg::String>(kMotorTopic, motor_qos);
     metadata_publisher_ =
       create_publisher<std_msgs::msg::String>(kMetadataTopic, static_tf_qos);
-    motor_client_ =
-      create_client<std_srvs::srv::Trigger>(motor_service_name_);
-    motor_timer_ = create_wall_timer(
-      std::chrono::duration<double>(1.0 / motor_poll_rate_),
-      std::bind(&OdometryBagRecorder::poll_motor_service, this));
+    if (record_motor_angles_) {
+      motor_publisher_ =
+        create_publisher<std_msgs::msg::String>(kMotorTopic, motor_qos);
+      motor_client_ =
+        create_client<std_srvs::srv::Trigger>(motor_service_name_);
+      motor_timer_ = create_wall_timer(
+        std::chrono::duration<double>(1.0 / motor_poll_rate_),
+        std::bind(&OdometryBagRecorder::poll_motor_service, this));
+    }
 
     record_build_metadata();
 
@@ -226,14 +260,27 @@ public:
       get_logger(),
       "Recording Muto odometry source data to %s",
       absolute_path.c_str());
-    RCLCPP_INFO(
-      get_logger(),
-      "Motor snapshots: %s -> %s at %.2f Hz",
-      motor_service_name_.c_str(), kMotorTopic, motor_poll_rate_);
+    if (record_motor_angles_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Motor snapshot recording is enabled: %s -> %s at %.2f Hz. "
+        "Each stock-controller read blocks gait dispatch",
+        motor_service_name_.c_str(), kMotorTopic, motor_poll_rate_);
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "Motor snapshot recording disabled; gait timing remains unperturbed");
+    }
   }
 
   ~OdometryBagRecorder() override
   {
+    if (controller_attitude_count_ == 0) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Closing bag with zero %s samples",
+        kControllerAttitudeTopic);
+    }
     if (writer_) {
       try {
         writer_->close();
@@ -271,11 +318,18 @@ private:
   {
     std_msgs::msg::String metadata;
     std::ostringstream json;
-    json << "{\"schema_version\":1,\"git_revision\":\""
+    json << "{\"schema_version\":2,\"git_revision\":\""
          << muto_odometry_bag_build::kGitRevision
          << "\",\"git_dirty\":"
          << (muto_odometry_bag_build::kGitDirty ? "true" : "false")
-         << ",\"tf_static_capture_enabled\":true}";
+         << ",\"tf_static_capture_enabled\":true"
+         << ",\"controller_attitude_capture_enabled\":true"
+         << ",\"controller_attitude_topic\":\""
+         << kControllerAttitudeTopic << "\""
+         << ",\"record_motor_angles\":"
+         << (record_motor_angles_ ? "true" : "false")
+         << ",\"motor_poll_rate_hz\":" << motor_poll_rate_
+         << "}";
     metadata.data = json.str();
     const auto stamp = now();
     writer_->write(metadata, kMetadataTopic, stamp);
@@ -338,12 +392,17 @@ private:
   std::unique_ptr<rosbag2_cpp::Writer> writer_;
   std::atomic<bool> motor_request_pending_{false};
   std::atomic<std::uint64_t> message_count_{0};
+  std::atomic<std::uint64_t> controller_attitude_count_{0};
   std::string motor_service_name_;
+  bool record_motor_angles_{false};
   double motor_poll_rate_{2.0};
 
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr raw_imu_subscription_;
+  rclcpp::Subscription<
+    muto_hexapod_interfaces_custom::msg::ControllerAttitude>::SharedPtr
+    controller_attitude_subscription_;
   rclcpp::Subscription<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_subscription_;
@@ -359,6 +418,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr metadata_publisher_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr motor_client_;
   rclcpp::TimerBase::SharedPtr motor_timer_;
+  rclcpp::TimerBase::SharedPtr controller_attitude_watchdog_timer_;
 };
 
 int main(int argc, char ** argv)

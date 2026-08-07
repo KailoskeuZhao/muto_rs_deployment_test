@@ -33,6 +33,7 @@ inline std::vector<std::string> default_nav2_topics()
     "/foot_odom",
     "/imu/data_processed",
     "/muto/commanded_gait_state",
+    "/muto/motion_command_state",
 
     // Navigation observations (already reduced to LaserScan).
     "/lidar/filtered_laserscan",

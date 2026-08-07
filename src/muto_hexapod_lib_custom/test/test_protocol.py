@@ -92,6 +92,36 @@ def test_move_emits_one_callback_per_vendor_gait_step(monkeypatch):
         ] == list(range(1, 7))
 
 
+def test_blocking_move_finishes_queued_command_when_called_mid_cycle(
+        monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    states = []
+    robot = Muto(serial_port=serial, gait_step_callback=states.append)
+    robot.set_motion_command(10, 0, 0)
+    for _ in range(5):
+        robot.tick_motion()
+    call_start = len(states)
+
+    result = robot.move(20, 0, 15)
+
+    emitted = states[call_start:]
+    assert len(emitted) == 15 + 20
+    assert all(state.mode == 'move_x' for state in emitted[:15])
+    assert all(state.x_level == 10 for state in emitted[:15])
+    assert all(state.replacement_pending for state in emitted[:15])
+    assert all(state.mode == 'move_xz' for state in emitted[15:])
+    assert all(
+        (state.x_level, state.y_level, state.z_level) == (20, 0, 15)
+        for state in emitted[15:]
+    )
+    assert not any(
+        state.replacement_pending for state in emitted[15:])
+    assert result is emitted[-1]
+    assert result.cycle_complete
+    assert result.phase_index == 0
+
+
 def test_latched_motion_advances_one_phase_per_tick(monkeypatch):
     disable_protocol_delays(monkeypatch)
     serial = FakeSerial()
@@ -145,7 +175,7 @@ def test_initial_standby_tick_commands_hardware_then_heartbeats(monkeypatch):
     assert all(state.mode == 'standby' for state in states)
 
 
-def test_nonzero_command_updates_do_not_restart_the_gait(monkeypatch):
+def test_nonzero_command_update_waits_for_completed_cycle(monkeypatch):
     disable_protocol_delays(monkeypatch)
     serial = FakeSerial()
     states = []
@@ -153,11 +183,89 @@ def test_nonzero_command_updates_do_not_restart_the_gait(monkeypatch):
 
     robot.set_motion_command(10, 0, 0)
     robot.tick_motion()
-    robot.set_motion_command(20, 0, 0)
+    assert robot.set_motion_command(20, 0, 15)
+    queued_state = robot.commanded_gait_state
+    assert (queued_state.x_level, queued_state.z_level) == (10, 0)
+    assert queued_state.replacement_pending
+
+    for _ in range(19):
+        robot.tick_motion()
+
+    assert [state.phase_index for state in states] == list(range(1, 20)) + [0]
+    assert all(state.mode == 'move_x' for state in states)
+    assert all(state.x_level == 10 for state in states)
+    assert not states[0].replacement_pending
+    assert all(state.replacement_pending for state in states[1:])
+    assert states[-1].cycle_complete
+
     robot.tick_motion()
 
-    assert [state.phase_index for state in states] == [1, 2]
-    assert [state.sequence for state in states] == [1, 2]
+    assert states[-1].mode == 'move_xz'
+    assert (states[-1].x_level, states[-1].z_level) == (20, 15)
+    assert not states[-1].replacement_pending
+    assert states[-1].phase_index == 1
+    assert states[-1].sequence == 21
+
+
+def test_latest_queued_nonzero_command_wins(monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    robot = Muto(serial_port=serial)
+
+    robot.set_motion_command(10, 0, 0)
+    robot.tick_motion()
+    assert robot.set_motion_command(20, 0, 0)
+    assert robot.set_motion_command(30, 0, 0)
+
+    for _ in range(20):
+        robot.tick_motion()
+
+    assert robot._hexapod._command_key == ('move_x', 30)
+    assert robot.commanded_gait_state.mode == 'move_x'
+    assert robot.commanded_gait_state.phase_index == 1
+
+
+def test_return_to_active_command_cancels_queued_change(monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    states = []
+    robot = Muto(serial_port=serial, gait_step_callback=states.append)
+
+    robot.set_motion_command(10, 0, 0)
+    robot.tick_motion()
+    assert robot.set_motion_command(20, 0, 15)
+    assert robot.set_motion_command(10, 0, 0)
+
+    for _ in range(20):
+        robot.tick_motion()
+
+    assert all(state.mode == 'move_x' for state in states)
+    assert robot._hexapod._command_key == ('move_x', 10)
+
+
+def test_standby_transition_is_immediate_and_clears_pending_command(
+        monkeypatch):
+    disable_protocol_delays(monkeypatch)
+    serial = FakeSerial()
+    states = []
+    robot = Muto(serial_port=serial, gait_step_callback=states.append)
+
+    robot.set_motion_command(10, 0, 0)
+    robot.tick_motion()
+    robot.set_motion_command(20, 0, 15)
+    assert robot.set_motion_command(0, 0, 0)
+
+    robot.tick_motion()
+
+    assert states[-1].mode == 'standby'
+    assert (
+        states[-1].x_level,
+        states[-1].y_level,
+        states[-1].z_level,
+    ) == (0, 0, 0)
+    assert not states[-1].replacement_pending
+    assert states[-1].phase_index == 0
+    assert robot._hexapod._pending_command is None
 
 
 def test_leg_packet_encodes_three_signed_angles_and_runtime(monkeypatch):

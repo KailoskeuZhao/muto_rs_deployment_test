@@ -39,6 +39,26 @@ def generate_launch_description():
             "returns to standby. Set 0.0 to disable timeout handling."
         ),
     )
+    locomotion_command_mapping_arg = DeclareLaunchArgument(
+        "locomotion_command_mapping",
+        default_value="calibrated",
+        description=(
+            "cmd_vel conversion mode. 'calibrated' uses the explicit Muto "
+            "physical-speed profile; 'legacy_100' is rollback-only."
+        ),
+    )
+    locomotion_calibration_file_arg = DeclareLaunchArgument(
+        "locomotion_calibration_file",
+        default_value=PathJoinSubstitution([
+            FindPackageShare("yahboomcar_bringup"),
+            "config",
+            "muto_locomotion_provisional_20260806.yaml",
+        ]),
+        description=(
+            "Velocity-to-gait calibration profile. The provisional profile "
+            "must be replaced after controlled level trials."
+        ),
+    )
     imu_calibration_sample_count_arg = DeclareLaunchArgument(
         "imu_calibration_sample_count",
         default_value="300",
@@ -174,6 +194,14 @@ def generate_launch_description():
                 LaunchConfiguration("cmd_vel_timeout"),
                 value_type=float,
             ),
+            "locomotion_command_mapping": ParameterValue(
+                LaunchConfiguration("locomotion_command_mapping"),
+                value_type=str,
+            ),
+            "locomotion_calibration_file": ParameterValue(
+                LaunchConfiguration("locomotion_calibration_file"),
+                value_type=str,
+            ),
             "imu_gyro_lsb_per_dps": ParameterValue(
                 LaunchConfiguration("imu_gyro_lsb_per_dps"),
                 value_type=float,
@@ -207,6 +235,8 @@ def generate_launch_description():
         imu_publish_rate_hz_arg,
         locomotion_update_rate_hz_arg,
         cmd_vel_timeout_arg,
+        locomotion_command_mapping_arg,
+        locomotion_calibration_file_arg,
         imu_calibration_sample_count_arg,
         imu_calibration_max_reads_arg,
         imu_calibration_timeout_sec_arg,

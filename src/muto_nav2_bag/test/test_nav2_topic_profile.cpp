@@ -41,6 +41,7 @@ TEST(Nav2TopicProfile, KeepsRecorderAndNavigationEvidence)
   EXPECT_TRUE(contains(topics, "/tf"));
   EXPECT_TRUE(contains(topics, "/odometry/filtered"));
   EXPECT_TRUE(contains(topics, "/muto/commanded_gait_state"));
+  EXPECT_TRUE(contains(topics, "/muto/motion_command_state"));
   EXPECT_TRUE(contains(topics, "/plan"));
   EXPECT_TRUE(contains(topics, "/cmd_vel_nav"));
   EXPECT_TRUE(contains(topics, "/cmd_vel"));

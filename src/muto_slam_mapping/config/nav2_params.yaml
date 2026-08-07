@@ -65,9 +65,10 @@ controller_server:
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      # Navigation command cap. The driver maps this into the vendor gait's
-      # independent angular-level range and saturates that range at level 20.
-      rotate_to_heading_angular_vel: 0.3
+      # The inherited turn path reached about 0.19 rad/s at level 20 in the
+      # 2026-08-06 bag. Use 0.18 as a provisional request-side cap while the
+      # corrected exact-turn path awaits a marked-field calibration.
+      rotate_to_heading_angular_vel: 0.18
       transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.1
@@ -181,8 +182,8 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.3]
-    min_velocity: [-0.15, 0.0, -0.3]
+    max_velocity: [0.25, 0.0, 0.18]
+    min_velocity: [-0.15, 0.0, -0.18]
     max_accel: [0.25, 0.0, 0.4]
     max_decel: [-0.3, 0.0, -0.5]
     odom_topic: /odometry/filtered
@@ -207,7 +208,7 @@ behavior_server:
     robot_base_frame: base_frame
     transform_tolerance: 0.1
     simulate_ahead_time: 1.5
-    max_rotational_vel: 0.3
+    max_rotational_vel: 0.18
     min_rotational_vel: 0.1
     rotational_acc_lim: 0.4
 

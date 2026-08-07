@@ -140,8 +140,9 @@ class CommandedStanceOdometry:
         if abs(dyaw) / dt > self.max_angular_speed_radps:
             return None
 
-        # The generated pure-turn gait has millimetre-scale centroid drift
-        # from rounded path rotations. It is not commanded body translation.
+        # The exact pure-turn body transform commands zero translation.  Any
+        # fitted centroid motion comes from target/joint quantization and is
+        # not commanded body translation.
         if observation.mode == 'turn_z':
             dx = 0.0
             dy = 0.0

@@ -138,7 +138,14 @@ class RealLeg:
             return
         target_local = self.translate_to_local(target_world)
         angles = self.inverse_kinematics(target_local)
-        servo_angles = (int(angles[0]), -int(angles[1]), int(angles[2]))
+        # The controller accepts whole logical degrees.  Nearest-degree
+        # quantization avoids the systematic toward-zero stride loss caused by
+        # int() truncation while retaining the firmware's integer interface.
+        servo_angles = (
+            int(round(angles[0])),
+            int(round(-angles[1])),
+            int(round(angles[2])),
+        )
         self._servo.set_leg_angles(self._leg_index, servo_angles)
         self._tip_position = target_world
 

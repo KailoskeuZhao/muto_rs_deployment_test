@@ -128,7 +128,14 @@ The driver consumes `/cmd_vel` as a desired command rather than executing a
 whole gait inside the subscription callback. Defaults are a 50 Hz trajectory
 phase loop and a 0.5 s command timeout. These are exposed as
 `locomotion_update_rate_hz` and `cmd_vel_timeout` by both the hardware and
-one-shot launches. Motor feedback never sleeps to settle inside the driver,
+one-shot launches. `locomotion_command_mapping:=calibrated` loads
+`locomotion_calibration_file` and publishes each requested/projected twist and
+selected raw levels on `/muto/motion_command_state`; `legacy_100` is an
+explicit rollback only. Nonzero level changes wait for the next complete gait
+boundary; selected and active levels plus pending state are carried separately
+by `/muto/motion_command_state`. Stop and timeout directly command nominal
+stance and are abrupt rather than a smooth deceleration. Motor feedback never
+sleeps to settle inside the driver,
 because that process also owns the gait and IMU timers.
 Startup IMU calibration targets 300 valid samples, permits at most 600 serial
 attempts, and has a 30 s wall-clock limit; the same defaults are exposed by the

@@ -21,7 +21,8 @@ During replay, the existing packages still perform every calculation:
 | `/lidar/raw_laserscan` | `sensor_msgs/msg/LaserScan` | Input to the existing LiDAR filter and RF2O |
 | `/imu/data_processed` | `sensor_msgs/msg/Imu` | Existing EKF IMU input |
 | `/imu/data_raw` | `sensor_msgs/msg/Imu` | Original IMU sample for later calibration and processing changes |
-| `/muto/commanded_gait_state` | `muto_hexapod_interfaces_custom/msg/CommandedGaitState` | Commanded stance/swing and foot targets |
+| `/muto/commanded_gait_state` | `muto_hexapod_interfaces_custom/msg/CommandedGaitState` | Backward-compatible commanded stance/swing and continuous foot targets |
+| `/muto/motion_command_state` | `muto_hexapod_interfaces_custom/msg/MotionCommandState` | Requested twist, selected and active levels, pending/projection flags, prediction, and profile |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Existing RF2O deadband gate input |
 | `/muto/measured_motor_state` | `std_msgs/msg/String` | Baggable representation of each successful `get_motor_angles` response |
 | `/muto/odometry_test_event` | `std_msgs/msg/String` | Timestamped JSON start/end and measured field-pose markers |

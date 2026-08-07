@@ -135,6 +135,8 @@ Useful top-level switches include:
 | `camera_scan_max_publish_rate` | `7.0` | Caps camera depth-to-scan processing. |
 | `locomotion_update_rate_hz` | `50.0` | Advances one custom-library gait phase per driver tick. |
 | `cmd_vel_timeout` | `0.5` | Returns the gait to standby when velocity commands stop. |
+| `locomotion_command_mapping` | `calibrated` | Uses an explicit physical velocity profile; `legacy_100` is rollback-only. |
+| `locomotion_calibration_file` | `muto_locomotion_provisional_20260806.yaml` | Provisional gait-level mapping; replace after marked-field trials. |
 | `imu_calibration_sample_count` | `300` | Valid stationary IMU samples targeted at startup. |
 | `imu_calibration_max_reads` | `600` | Maximum serial attempts allowed for that calibration. |
 | `imu_calibration_timeout_sec` | `30.0` | Hard wall-clock cap on startup calibration. |
@@ -263,10 +265,13 @@ The EKF fuses RF2O planar position and yaw. The IMU contributes yaw rate only;
 it does not provide absolute orientation or translational odometry.
 
 The optional foot input is generated from a fixed-rate locomotion state stream.
-`/cmd_vel` only changes the desired command; the driver advances one trajectory
-phase per 50 Hz tick and publishes the phase after sending its motor targets.
-Nonzero command changes preserve the current phase, while a stale or zero
-command selects standby. Motor service reads use the gait target current during
+`/cmd_vel` changes the desired command; the driver advances one trajectory phase
+per 50 Hz tick and publishes the phase after sending its motor targets. A newer
+nonzero command waits for the next complete gait boundary. The accompanying
+motion-command state reports selected and active raw levels separately and
+whether a replacement is pending.
+A stale or zero command returns directly to nominal stance instead of performing
+a smooth deceleration. Motor service reads use the gait target current during
 that serial read and add no artificial settling delay. The read still holds the
 shared serial bus, so slow responses can delay the gait and IMU timers.
 
@@ -384,8 +389,10 @@ docking, or a full saved-map localization workflow.
 The Humble behavior trees explicitly compute a Navfn path, collision-check a
 Simple Smoother result, and feed that `smoothed_path` to Regulated Pure
 Pursuit. They replan at 1 Hz. The controller reads `/odometry/filtered`, uses a
-fixed 0.25 m lookahead, and is limited to 0.2 m/s linear and 0.2 rad/s angular
-commands. Its output is remapped to `/cmd_vel_nav`; the lifecycle-managed
+fixed 0.25 m lookahead, requests up to 0.25 m/s linear motion, and is capped at
+0.18 rad/s angular motion by the provisional yaw envelope transferred from the
+2026-08-06 pure-turn observation. Its
+output is remapped to `/cmd_vel_nav`; the lifecycle-managed
 velocity smoother publishes the normal follow-path `/cmd_vel` at 20 Hz.
 Recovery behaviors currently publish directly to `/cmd_vel` and therefore
 bypass the smoother, while retaining the behavior server's conservative
@@ -406,7 +413,8 @@ rotation limits and the BT's bounded backup speed.
 | `/map` and `map -> odom` | SLAM Toolbox | Nav2 global planning and TF. |
 | `/cmd_vel_nav` | Nav2 controller | Nav2 velocity smoother. |
 | `/cmd_vel` | Nav2 velocity smoother or recovery behavior server | Muto driver and RF2O command-aware guard. |
-| `/muto/commanded_gait_state` | Fixed-rate Muto locomotion loop | Foot odometry estimator and motor-validation snapshot. |
+| `/muto/commanded_gait_state` | Fixed-rate Muto locomotion loop | Backward-compatible stance/swing and continuous foot targets for foot odometry and motor validation. |
+| `/muto/motion_command_state` | Muto driver | Requested twist, selected/active levels, pending and projection flags, profile, and feed-forward prediction. |
 | `/foot_odom` | Commanded-stance estimator with motor FK validation | EKF planar velocity overlay. |
 
 ## Runtime Checks

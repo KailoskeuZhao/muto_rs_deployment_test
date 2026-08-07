@@ -11,6 +11,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     bag_share = get_package_share_directory('muto_nav2_bag')
     mapping_share = get_package_share_directory('muto_slam_mapping')
+    bringup_share = get_package_share_directory('yahboomcar_bringup')
 
     default_params = os.path.join(bag_share, 'config', 'nav2_bag.yaml')
     default_nav2_params = os.path.join(
@@ -23,6 +24,11 @@ def generate_launch_description():
         mapping_share, 'behavior_trees', 'muto_nav_to_pose.xml')
     default_nav_through_poses_bt = os.path.join(
         mapping_share, 'behavior_trees', 'muto_nav_through_poses.xml')
+    default_locomotion_calibration = os.path.join(
+        bringup_share,
+        'config',
+        'muto_locomotion_provisional_20260806.yaml',
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -75,6 +81,11 @@ def generate_launch_description():
                 'NavigateThroughPoses behavior tree copied into the bag.'
             ),
         ),
+        DeclareLaunchArgument(
+            'locomotion_calibration_file',
+            default_value=default_locomotion_calibration,
+            description='Active Muto velocity profile copied into the bag.',
+        ),
         Node(
             package='muto_nav2_bag',
             executable='nav2_bag_recorder',
@@ -117,6 +128,10 @@ def generate_launch_description():
                     ),
                     'nav_through_poses_bt_file': ParameterValue(
                         LaunchConfiguration('nav_through_poses_bt_file'),
+                        value_type=str,
+                    ),
+                    'locomotion_calibration_file': ParameterValue(
+                        LaunchConfiguration('locomotion_calibration_file'),
                         value_type=str,
                     ),
                 },

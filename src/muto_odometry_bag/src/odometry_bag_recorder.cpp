@@ -28,6 +28,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "muto_hexapod_interfaces_custom/msg/commanded_gait_state.hpp"
+#include "muto_hexapod_interfaces_custom/msg/motion_command_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rmw/rmw.h"
 #include "rosbag2_cpp/writer.hpp"
@@ -52,6 +53,9 @@ constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
+constexpr char kMotionCommandTopic[] = "/muto/motion_command_state";
+constexpr char kMotionCommandType[] =
+  "muto_hexapod_interfaces_custom/msg/MotionCommandState";
 constexpr char kCmdVelTopic[] = "/cmd_vel";
 constexpr char kCmdVelType[] = "geometry_msgs/msg/Twist";
 constexpr char kMotorTopic[] = "/muto/measured_motor_state";
@@ -132,6 +136,7 @@ public:
     register_topic(kImuTopic, kImuType);
     register_topic(kRawImuTopic, kRawImuType);
     register_topic(kGaitTopic, kGaitType);
+    register_topic(kMotionCommandTopic, kMotionCommandType);
     register_topic(kCmdVelTopic, kCmdVelType);
     register_topic(kMotorTopic, kMotorType);
     register_topic(kEventTopic, kEventType);
@@ -183,6 +188,14 @@ public:
       gait_qos,
       [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
         write_serialized(std::move(message), kGaitTopic, kGaitType);
+      });
+    motion_command_subscription_ =
+      create_subscription<muto_hexapod_interfaces_custom::msg::MotionCommandState>(
+      kMotionCommandTopic,
+      gait_qos,
+      [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        write_serialized(
+          std::move(message), kMotionCommandTopic, kMotionCommandType);
       });
     cmd_vel_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
       kCmdVelTopic,
@@ -334,6 +347,9 @@ private:
   rclcpp::Subscription<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_subscription_;
+  rclcpp::Subscription<
+    muto_hexapod_interfaces_custom::msg::MotionCommandState>::SharedPtr
+    motion_command_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
     cmd_vel_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr event_subscription_;

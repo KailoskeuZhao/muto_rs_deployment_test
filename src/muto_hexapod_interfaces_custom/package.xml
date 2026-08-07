@@ -2,14 +2,15 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>muto_hexapod_interfaces_custom</name>
-  <version>0.1.0</version>
-  <description>Typed interfaces for Muto commanded gait state.</description>
+  <version>0.2.0</version>
+  <description>Typed interfaces for Muto gait and physical command state.</description>
   <maintainer email="nx-ros2@todo.todo">nx-ros2</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <build_depend>rosidl_default_generators</build_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
+  <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
 
   <member_of_group>rosidl_interface_packages</member_of_group>

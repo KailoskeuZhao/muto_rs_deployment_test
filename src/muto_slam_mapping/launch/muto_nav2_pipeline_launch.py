@@ -124,6 +124,11 @@ def generate_launch_description():
         'config',
         'nav2_params.yaml',
     )
+    default_locomotion_calibration_file = os.path.join(
+        get_package_share_directory('yahboomcar_bringup'),
+        'config',
+        'muto_locomotion_provisional_20260806.yaml',
+    )
 
     localization_actions = readiness_gated_include(
         'localization',
@@ -237,6 +242,21 @@ def generate_launch_description():
             description=(
                 'Seconds without cmd_vel before locomotion returns to '
                 'standby.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_command_mapping',
+            default_value='calibrated',
+            description=(
+                'Map physical cmd_vel through the configured Muto velocity '
+                'profile. Use legacy_100 only as an explicit rollback.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_calibration_file',
+            default_value=default_locomotion_calibration_file,
+            description=(
+                'Muto physical velocity-to-gait calibration profile.'
             ),
         ),
         DeclareLaunchArgument(
@@ -457,6 +477,12 @@ def generate_launch_description():
                 ),
                 'cmd_vel_timeout': LaunchConfiguration(
                     'cmd_vel_timeout'
+                ),
+                'locomotion_command_mapping': LaunchConfiguration(
+                    'locomotion_command_mapping'
+                ),
+                'locomotion_calibration_file': LaunchConfiguration(
+                    'locomotion_calibration_file'
                 ),
                 'imu_calibration_sample_count': LaunchConfiguration(
                     'imu_calibration_sample_count'

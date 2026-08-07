@@ -1,6 +1,7 @@
-# Commanded gait phase from the host-side Muto trajectory generator.
-# This is not measured foot contact. A STANCE value means the commanded foot
-# target is on the nominal ground plane; it does not prove contact or no slip.
+# Gait phase from the host-side Muto trajectory generator. Foot values are the
+# continuous IK targets before nearest-degree controller quantization. This is
+# not measured foot contact. A STANCE value means the trajectory target is on
+# the nominal ground plane; it does not prove contact or no slip.
 
 uint8 SWING=0
 uint8 STANCE=1

@@ -354,12 +354,16 @@ ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=fal
 `foot_odometry_node` is measured-joint kinematic odometry, but it is not
 contact-sensed odometry. The custom driver latches `/cmd_vel` and advances
 exactly one trajectory phase per 50 Hz locomotion tick. It publishes gait state
-only after sending that phase's motor targets; changing a nonzero command
-preserves phase instead of restarting the 20-step cycle. A command older than
-0.5 seconds actively returns the gait to standby. The node:
+only after sending that phase's motor targets; changing a nonzero command is
+queued until the next 20-step boundary instead of changing a path mid-cycle. A
+stop or command older than 0.5 seconds actively returns the gait to standby
+without waiting for that boundary; this is an abrupt nominal-stance command,
+not a smooth stop. The node:
 
-- retains `/muto/commanded_gait_state` as a 50 Hz history of which feet were
-  commanded in stance or swing;
+- retains `/muto/commanded_gait_state` as a backward-compatible 50 Hz history
+  of which feet were commanded in stance or swing, while
+  `/muto/motion_command_state` records selected and active levels plus pending
+  state;
 - polls `get_motor_angles`, whose response pairs all 18 motor values with the
   gait target and stance mask that were current during that serial read;
 - samples without an artificial settle sleep; the serial read itself still

@@ -35,12 +35,14 @@ ros2 topic echo --once --qos-durability transient_local \
 ```
 
 The bag also contains a manifest plus snapshots of the active Nav2, frontier,
-and SLAM parameter files and both Muto behavior trees. If the active pipeline
-used an override file, pass that same path to this launch, for example:
+SLAM, and Muto locomotion-calibration files and both behavior trees. If the
+active pipeline used an override file, pass that same path to this launch, for
+example:
 
 ```bash
 ros2 launch muto_nav2_bag record_nav2_bag_launch.py \
-  nav2_params_file:=/absolute/path/to/active_nav2_params.yaml
+  nav2_params_file:=/absolute/path/to/active_nav2_params.yaml \
+  locomotion_calibration_file:=/absolute/path/to/active_muto_profile.yaml
 ```
 
 ## Add a manual event
@@ -75,10 +77,16 @@ ros2 bag info /opt/muto_rs_ws/bags/muto_nav2_<timestamp>_<session-id>
 
 The complete allowlist is in `config/nav2_bag.yaml`. Two command topics are
 kept intentionally: `/cmd_vel_nav` is the controller output and `/cmd_vel` is
-the final command after velocity smoothing. Both translated occupancy-grid
-costmaps and exact Nav2 raw costmaps are retained; their duplicate grid data
-compresses efficiently. If the exploration mission recorder is also active,
-its transient status and bag path are retained to cross-link both recordings.
+the final command after velocity smoothing. `/muto/motion_command_state`
+records how that SI command was projected into integer gait levels, the
+feed-forward achievable twist, projection flags, and the profile ID. It is
+republished with every motor phase so selected and active levels plus the
+pending flag remain time-aligned. `/muto/commanded_gait_state` retains its
+backward-compatible stance/swing and continuous-foot-target schema. Both
+translated occupancy-grid costmaps
+and exact Nav2 raw costmaps are retained; their duplicate grid data compresses
+efficiently. If the exploration mission recorder is also active, its transient
+status and bag path are retained to cross-link both recordings.
 
 On the deployed ROS 2 Humble system, ordinary action goal/result requests are
 services and are not recordable unless service introspection is enabled. Nav2

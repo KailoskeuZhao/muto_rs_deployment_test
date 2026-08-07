@@ -42,6 +42,7 @@ nav2_bag_recorder:
       - /foot_odom
       - /imu/data_processed
       - /muto/commanded_gait_state
+      - /muto/motion_command_state
       - /lidar/filtered_laserscan
       - /lidar/filtered_laserscan_no_downsample
       - /camera/filtered_laserscan

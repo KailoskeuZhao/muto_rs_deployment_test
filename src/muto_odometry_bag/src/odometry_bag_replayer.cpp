@@ -31,6 +31,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "muto_hexapod_interfaces_custom/msg/commanded_gait_state.hpp"
+#include "muto_hexapod_interfaces_custom/msg/motion_command_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/serialization.hpp"
 #include "rosbag2_cpp/reader.hpp"
@@ -56,6 +57,9 @@ constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
+constexpr char kMotionCommandTopic[] = "/muto/motion_command_state";
+constexpr char kMotionCommandType[] =
+  "muto_hexapod_interfaces_custom/msg/MotionCommandState";
 constexpr char kCmdVelTopic[] = "/cmd_vel";
 constexpr char kCmdVelType[] = "geometry_msgs/msg/Twist";
 constexpr char kMotorTopic[] = "/muto/measured_motor_state";
@@ -148,6 +152,9 @@ public:
     gait_publisher_ =
       create_publisher<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
       kGaitTopic, gait_qos);
+    motion_command_publisher_ =
+      create_publisher<muto_hexapod_interfaces_custom::msg::MotionCommandState>(
+      kMotionCommandTopic, gait_qos);
     cmd_vel_publisher_ =
       create_publisher<geometry_msgs::msg::Twist>(kCmdVelTopic, reliable_qos);
     motor_publisher_ =
@@ -245,6 +252,8 @@ private:
     }
     validate_optional_topic(topics, message_counts, kEventTopic, kEventType);
     validate_optional_topic(topics, message_counts, kMetadataTopic, kMetadataType);
+    validate_optional_topic(
+      topics, message_counts, kMotionCommandTopic, kMotionCommandType);
     const bool have_recorded_tf = validate_optional_topic(
       topics, message_counts, kTfStaticTopic, kTfStaticType);
     if (replay_recorded_tf_static_ && !have_recorded_tf) {
@@ -387,6 +396,10 @@ private:
       gait_publisher_->publish(
         deserialize<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
           bag_message));
+    } else if (bag_message->topic_name == kMotionCommandTopic) {
+      motion_command_publisher_->publish(
+        deserialize<muto_hexapod_interfaces_custom::msg::MotionCommandState>(
+          bag_message));
     } else if (bag_message->topic_name == kCmdVelTopic) {
       cmd_vel_publisher_->publish(
         deserialize<geometry_msgs::msg::Twist>(bag_message));
@@ -505,6 +518,9 @@ private:
   rclcpp::Publisher<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_publisher_;
+  rclcpp::Publisher<
+    muto_hexapod_interfaces_custom::msg::MotionCommandState>::SharedPtr
+    motion_command_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr motor_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr event_publisher_;

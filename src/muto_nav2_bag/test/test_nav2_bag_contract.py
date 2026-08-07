@@ -32,6 +32,7 @@ def test_topic_profile_is_explicit_unique_and_navigation_scoped():
         '/received_global_plan',
         '/cmd_vel_nav',
         '/cmd_vel',
+        '/muto/motion_command_state',
         '/global_costmap/costmap',
         '/global_costmap/costmap_raw',
         '/local_costmap/costmap',
@@ -110,6 +111,7 @@ def test_launch_exposes_output_and_reproducibility_inputs():
         'slam_params_file',
         'nav_to_pose_bt_file',
         'nav_through_poses_bt_file',
+        'locomotion_calibration_file',
     ):
         assert f"'{argument}'" in launch_text
 

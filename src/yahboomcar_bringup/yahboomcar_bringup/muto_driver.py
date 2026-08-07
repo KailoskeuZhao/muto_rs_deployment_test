@@ -1,19 +1,114 @@
 #!/usr/bin/env python3
 """ROS hardware driver for the Muto base, IMU, and locomotion state."""
 
+from collections import deque
 import json
+import math
+import os
 import time
 
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
-from muto_hexapod_interfaces_custom.msg import CommandedGaitState
+from muto_hexapod_interfaces_custom.msg import (
+    CommandedGaitState,
+    MotionCommandState,
+)
 from muto_hexapod_lib_custom.core.config import STANDBY_SERVO_ANGLES_DEG
 from muto_hexapod_lib_custom.core.MutoLibCore import Muto
+from muto_hexapod_lib_custom.movement.velocity_calibration import (
+    MotionLevels,
+    PlanarVelocity,
+    SaturationFlags,
+    VelocityCalibrationMapper,
+    VelocityCalibrationProfile,
+    VelocitySelection,
+)
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 from yahboomcar_imu.imu_node import ImuPublisher
+import yaml
+
+
+CALIBRATED_MAPPING = 'calibrated'
+LEGACY_MAPPING = 'legacy_100'
+
+
+def _default_calibration_file():
+    return os.path.join(
+        get_package_share_directory('yahboomcar_bringup'),
+        'config',
+        'muto_locomotion_provisional_20260806.yaml',
+    )
+
+
+def load_velocity_calibration(path, phase_rate_hz):
+    """Load and validate one explicit physical velocity profile."""
+    if not path:
+        raise ValueError('locomotion_calibration_file must not be empty')
+    with open(path, encoding='utf-8') as stream:
+        data = yaml.safe_load(stream)
+    profile = VelocityCalibrationProfile.from_mapping(data)
+    return VelocityCalibrationMapper(profile, phase_rate_hz=phase_rate_hz)
+
+
+def legacy_velocity_selection(vx, vy, wz, phase_rate_hz):
+    """Reproduce the former hidden ``cmd_vel * 100`` mapping for rollback."""
+    requested = PlanarVelocity(vx, vy, wz)
+    x_level = int(max(-30.0, min(30.0, vx * 100.0)))
+    y_level = int(max(-30.0, min(30.0, vy * 100.0)))
+    raw_z_level = max(-20.0, min(20.0, wz * 100.0))
+    if 0.0 < abs(raw_z_level) < 10.0:
+        z_level = 10 if raw_z_level > 0.0 else -10
+    else:
+        z_level = int(raw_z_level)
+    levels = MotionLevels(x_level, y_level, z_level)
+    unsupported = bool(y_level and (x_level or z_level))
+    if y_level:
+        mode = 'move_y' if not unsupported else 'standby'
+    elif x_level and z_level:
+        mode = 'move_xz'
+    elif x_level:
+        mode = 'move_x'
+    elif z_level:
+        mode = 'turn_z'
+    else:
+        mode = 'standby'
+    if unsupported:
+        levels = MotionLevels()
+    detail = (
+        'legacy_100 rollback mapping; simultaneous lateral motion is '
+        'unsupported'
+        if unsupported else
+        'legacy_100 rollback mapping; predicted twist is not calibrated'
+    )
+    return VelocitySelection(
+        requested=requested,
+        predicted=(
+            PlanarVelocity(0.0, 0.0, 0.0)
+            if unsupported else
+            PlanarVelocity(
+                levels.x_level / 100.0,
+                levels.y_level / 100.0,
+                levels.z_level / 100.0,
+            )
+        ),
+        levels=levels,
+        mode=mode,
+        saturation=SaturationFlags(
+            x=abs(vx) > 0.30,
+            y=abs(vy) > 0.30 or unsupported,
+            yaw=abs(wz) > 0.20,
+            unsupported_combination=unsupported,
+        ),
+        profile_id=LEGACY_MAPPING,
+        phase_rate_hz=phase_rate_hz,
+        detail=detail,
+        supported=not unsupported,
+        unsupported_reason=(detail if unsupported else None),
+    )
 
 
 class yahboomcar_driver(Node):
@@ -37,14 +132,38 @@ class yahboomcar_driver(Node):
             'gait_state_frame_id', 'base_frame').value
         self.locomotion_update_rate_hz = float(self.declare_parameter(
             'locomotion_update_rate_hz', 50.0).value)
-        if self.locomotion_update_rate_hz <= 0.0:
+        if (not math.isfinite(self.locomotion_update_rate_hz)
+                or self.locomotion_update_rate_hz <= 0.0):
             self.get_logger().warn(
                 'locomotion_update_rate_hz must be positive; using 50.0')
             self.locomotion_update_rate_hz = 50.0
-        self.cmd_vel_timeout = max(
-            0.0,
-            float(self.declare_parameter('cmd_vel_timeout', 0.5).value),
-        )
+        self.cmd_vel_timeout = float(self.declare_parameter(
+            'cmd_vel_timeout', 0.5).value)
+        if not math.isfinite(self.cmd_vel_timeout) or self.cmd_vel_timeout < 0.0:
+            self.get_logger().warn(
+                'cmd_vel_timeout must be finite and non-negative; using 0.5')
+            self.cmd_vel_timeout = 0.5
+        self.locomotion_command_mapping = str(self.declare_parameter(
+            'locomotion_command_mapping', CALIBRATED_MAPPING).value)
+        default_calibration_file = _default_calibration_file()
+        self.locomotion_calibration_file = str(self.declare_parameter(
+            'locomotion_calibration_file', default_calibration_file).value)
+        if self.locomotion_command_mapping == CALIBRATED_MAPPING:
+            self.velocity_mapper = load_velocity_calibration(
+                self.locomotion_calibration_file,
+                self.locomotion_update_rate_hz,
+            )
+            calibration_description = (
+                self.velocity_mapper.profile.profile_id
+                + ' from ' + self.locomotion_calibration_file
+            )
+        elif self.locomotion_command_mapping == LEGACY_MAPPING:
+            self.velocity_mapper = None
+            calibration_description = LEGACY_MAPPING + ' rollback'
+        else:
+            raise ValueError(
+                'locomotion_command_mapping must be calibrated or '
+                'legacy_100')
 
         gait_state_qos = QoSProfile(
             depth=100,
@@ -56,20 +175,33 @@ class yahboomcar_driver(Node):
             self.gait_state_topic,
             gait_state_qos,
         )
+        self.motion_command_state_topic = self.declare_parameter(
+            'motion_command_state_topic',
+            '/muto/motion_command_state',
+        ).value
+        self.motion_command_state_pub = self.create_publisher(
+            MotionCommandState,
+            self.motion_command_state_topic,
+            gait_state_qos,
+        )
 
         self.vel_x = 0.0
         self.vel_y = 0.0
         self.angular_z = 0.0
-        self.speed_scale = 100.0
-        self.desired_motion_levels = (0.0, 0.0, 0.0)
+        self.desired_motion_levels = (0, 0, 0)
+        self.last_velocity_selection = None
         self.last_cmd_vel_monotonic = None
         self.last_gait_command_monotonic = None
         self.last_locomotion_tick_monotonic = None
+        self.gait_phase_monotonic_times = deque(maxlen=100)
+        self.observed_phase_rate_hz = 0.0
         self.cmd_vel_timed_out = False
         self.motors_released = False
 
         self.muto = Muto(gait_step_callback=self.publish_commanded_gait_state)
         self.muto.set_motion_command(0.0, 0.0, 0.0)
+        self.last_velocity_selection = self._standby_selection(
+            'startup standby')
 
         self.declare_parameter('imu_link', 'imu_link')
         imu_link = self.get_parameter(
@@ -100,6 +232,8 @@ class yahboomcar_driver(Node):
             'Locomotion phase loop set to '
             f'{self.locomotion_update_rate_hz:.1f} Hz with '
             f'{self.cmd_vel_timeout:.2f} s cmd_vel timeout')
+        self.get_logger().info(
+            'Locomotion cmd_vel mapping: ' + calibration_description)
 
     def update_locomotion(self):
         """Advance one gait phase from the most recent velocity command."""
@@ -127,13 +261,16 @@ class yahboomcar_driver(Node):
             )
         )
         levels = (
-            (0.0, 0.0, 0.0)
+            (0, 0, 0)
             if command_stale else self.desired_motion_levels
         )
         if command_stale and not self.cmd_vel_timed_out:
             if self.last_cmd_vel_monotonic is not None:
                 self.get_logger().warn(
                     'cmd_vel timed out; returning locomotion to standby')
+                self.publish_motion_command_state(
+                    self._standby_selection('cmd_vel timeout'),
+                )
             self.cmd_vel_timed_out = True
         elif not command_stale:
             self.cmd_vel_timed_out = False
@@ -170,10 +307,41 @@ class yahboomcar_driver(Node):
         msg.foot_y_mm = [-point[0] for point in state.foot_positions_mm]
         msg.foot_z_mm = [point[2] for point in state.foot_positions_mm]
         self.last_gait_command_monotonic = time.monotonic()
+        self.gait_phase_monotonic_times.append(
+            self.last_gait_command_monotonic)
+        if len(self.gait_phase_monotonic_times) >= 2:
+            elapsed = (
+                self.gait_phase_monotonic_times[-1]
+                - self.gait_phase_monotonic_times[0]
+            )
+            if elapsed > 0.0:
+                self.observed_phase_rate_hz = (
+                    (len(self.gait_phase_monotonic_times) - 1) / elapsed
+                )
+                relative_rate_error = abs(
+                    self.observed_phase_rate_hz
+                    - self.locomotion_update_rate_hz
+                ) / self.locomotion_update_rate_hz
+                if (len(self.gait_phase_monotonic_times)
+                        == self.gait_phase_monotonic_times.maxlen
+                        and relative_rate_error > 0.10):
+                    self.get_logger().warn(
+                        'Observed gait phase rate '
+                        f'{self.observed_phase_rate_hz:.1f} Hz differs from '
+                        f'configured calibration condition '
+                        f'{self.locomotion_update_rate_hz:.1f} Hz by more '
+                        'than 10%; physical velocity prediction is degraded',
+                        throttle_duration_sec=5.0,
+                    )
         self.gait_state_pub.publish(msg)
+        if getattr(self, 'last_velocity_selection', None) is not None:
+            self.publish_motion_command_state(
+                self.last_velocity_selection,
+                active_state=state,
+            )
 
     def cmd_vel_callback(self, msg):
-        """Latch desired levels; the locomotion timer performs all actuation."""
+        """Map one physical Twist and latch discrete calibrated gait levels."""
         if not isinstance(msg, Twist):
             return
         if self.motors_released:
@@ -183,19 +351,127 @@ class yahboomcar_driver(Node):
             )
             return
 
-        self.vel_x = max(-30, min(30, msg.linear.x * self.speed_scale))
-        self.vel_y = max(-30, min(30, msg.linear.y * self.speed_scale))
-        # The vendor gait accepts angular levels only in [-20, 20]. Clamp at
-        # the ROS boundary as well so the reported/latching value is the value
-        # the library actually executes instead of relying on hidden clipping.
-        self.angular_z = max(
-            -20, min(20, msg.angular.z * self.speed_scale))
-        if 0.0 < abs(self.angular_z) < 10.0:
-            self.angular_z = 10 if self.angular_z > 0.0 else -10
+        try:
+            if self.locomotion_command_mapping == CALIBRATED_MAPPING:
+                selection = self.velocity_mapper.select(
+                    msg.linear.x,
+                    msg.linear.y,
+                    msg.angular.z,
+                )
+            else:
+                selection = legacy_velocity_selection(
+                    msg.linear.x,
+                    msg.linear.y,
+                    msg.angular.z,
+                    self.locomotion_update_rate_hz,
+                )
+        except ValueError as exc:
+            # A malformed Twist must stop the robot instead of leaving the
+            # previous valid command latched.
+            safe_requested = tuple(
+                value if math.isfinite(value) else 0.0
+                for value in (msg.linear.x, msg.linear.y, msg.angular.z)
+            )
+            selection = self._standby_selection(
+                'invalid cmd_vel: %s' % exc,
+                requested=safe_requested,
+                supported=False,
+            )
 
+        self.vel_x = selection.levels.x_level
+        self.vel_y = selection.levels.y_level
+        self.angular_z = selection.levels.z_level
         self.desired_motion_levels = (
             self.vel_x, self.vel_y, self.angular_z)
+        self.last_velocity_selection = selection
         self.last_cmd_vel_monotonic = time.monotonic()
+        self.publish_motion_command_state(selection)
+
+        if not selection.supported:
+            self.get_logger().warn(
+                'Rejected unsupported cmd_vel: ' + selection.detail,
+                throttle_duration_sec=5.0,
+            )
+        elif selection.saturated:
+            self.get_logger().warn(
+                'cmd_vel projected onto calibrated gait envelope: '
+                + selection.detail,
+                throttle_duration_sec=5.0,
+            )
+        elif selection.projection.any_to_zero:
+            self.get_logger().warn(
+                'cmd_vel is below the minimum executable gait level: '
+                + selection.detail,
+                throttle_duration_sec=5.0,
+            )
+
+    def _standby_selection(
+            self, detail, requested=(0.0, 0.0, 0.0), supported=True):
+        profile_id = (
+            self.velocity_mapper.profile.profile_id
+            if self.velocity_mapper is not None else LEGACY_MAPPING
+        )
+        return VelocitySelection(
+            requested=PlanarVelocity(*requested),
+            predicted=PlanarVelocity(0.0, 0.0, 0.0),
+            levels=MotionLevels(),
+            mode='standby',
+            saturation=SaturationFlags(
+                x=not supported and requested[0] != 0.0,
+                y=not supported and requested[1] != 0.0,
+                yaw=not supported and requested[2] != 0.0,
+                unsupported_combination=not supported,
+            ),
+            profile_id=profile_id,
+            phase_rate_hz=self.locomotion_update_rate_hz,
+            detail=detail,
+            supported=supported,
+            unsupported_reason=(None if supported else detail),
+        )
+
+    def publish_motion_command_state(self, selection, active_state=None):
+        """Publish selected and actually active gait-command state."""
+        if active_state is None:
+            active_state = self.muto.commanded_gait_state
+        msg = MotionCommandState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.gait_state_frame_id
+        msg.requested_twist.linear.x = selection.requested.linear_x_m_s
+        msg.requested_twist.linear.y = selection.requested.linear_y_m_s
+        msg.requested_twist.angular.z = selection.requested.angular_z_rad_s
+        msg.predicted_twist.linear.x = selection.predicted.linear_x_m_s
+        msg.predicted_twist.linear.y = selection.predicted.linear_y_m_s
+        msg.predicted_twist.angular.z = selection.predicted.angular_z_rad_s
+        msg.x_level = selection.levels.x_level
+        msg.y_level = selection.levels.y_level
+        msg.z_level = selection.levels.z_level
+        msg.mode = selection.mode
+        msg.active_x_level = active_state.x_level
+        msg.active_y_level = active_state.y_level
+        msg.active_z_level = active_state.z_level
+        msg.active_mode = active_state.mode
+        msg.replacement_pending = active_state.replacement_pending
+        msg.saturated = selection.saturated
+        msg.x_saturated = selection.saturation.x
+        msg.y_saturated = selection.saturation.y
+        msg.yaw_saturated = selection.saturation.yaw
+        msg.projected = selection.projected
+        msg.quantized = selection.quantized
+        msg.x_projected = selection.projection.x
+        msg.y_projected = selection.projection.y
+        msg.yaw_projected = selection.projection.yaw
+        msg.x_projected_to_zero = selection.projection.x_to_zero
+        msg.y_projected_to_zero = selection.projection.y_to_zero
+        msg.yaw_projected_to_zero = selection.projection.yaw_to_zero
+        msg.unsupported = not selection.supported
+        msg.unsupported_combination = (
+            selection.saturation.unsupported_combination)
+        msg.detail = selection.detail
+        msg.calibration_profile = selection.profile_id
+        msg.calibration_phase_rate_hz = selection.phase_rate_hz
+        msg.configured_phase_rate_hz = self.locomotion_update_rate_hz
+        msg.observed_phase_rate_hz = self.observed_phase_rate_hz
+        self.motion_command_state_pub.publish(msg)
 
     def get_motor_angles_callback(self, request, response):
         """Return motor angles with the gait target active during the read."""
@@ -263,6 +539,10 @@ class yahboomcar_driver(Node):
                 'frame_id': self.gait_state_frame_id,
                 'sequence': state.sequence,
                 'mode': state.mode,
+                'x_level': state.x_level,
+                'y_level': state.y_level,
+                'z_level': state.z_level,
+                'replacement_pending': state.replacement_pending,
                 'phase_index': state.phase_index,
                 'cycle_length': state.cycle_length,
                 'leg_state': leg_state,
@@ -287,10 +567,10 @@ class yahboomcar_driver(Node):
         """Disable all joint torque and stop the locomotion timer's output."""
         del request
         self.motors_released = True
-        self.vel_x = 0.0
-        self.vel_y = 0.0
-        self.angular_z = 0.0
-        self.desired_motion_levels = (0.0, 0.0, 0.0)
+        self.vel_x = 0
+        self.vel_y = 0
+        self.angular_z = 0
+        self.desired_motion_levels = (0, 0, 0)
         self.last_cmd_vel_monotonic = None
         try:
             for servo_id in range(1, 19):
@@ -303,6 +583,9 @@ class yahboomcar_driver(Node):
             })
             return response
 
+        selection = self._standby_selection('motor torque released')
+        self.last_velocity_selection = selection
+        self.publish_motion_command_state(selection)
         response.success = True
         response.message = json.dumps({
             'released': True,

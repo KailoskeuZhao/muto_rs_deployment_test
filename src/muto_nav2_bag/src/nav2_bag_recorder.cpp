@@ -179,6 +179,8 @@ public:
       declare_parameter<std::string>("nav_to_pose_bt_file", "");
     nav_through_poses_bt_file_ =
       declare_parameter<std::string>("nav_through_poses_bt_file", "");
+    locomotion_calibration_file_ =
+      declare_parameter<std::string>("locomotion_calibration_file", "");
     get_parameter("use_sim_time", use_sim_time_);
 
     resolve_and_validate_parameters();
@@ -367,6 +369,9 @@ private:
     snapshot_config(
       "navigate_through_poses_behavior_tree", nav_through_poses_bt_file_,
       "muto_nav_through_poses.snapshot.xml");
+    snapshot_config(
+      "locomotion_calibration", locomotion_calibration_file_,
+      "muto_locomotion_calibration.snapshot.yaml");
   }
 
   void snapshot_config(
@@ -650,6 +655,7 @@ private:
   std::string slam_params_file_;
   std::string nav_to_pose_bt_file_;
   std::string nav_through_poses_bt_file_;
+  std::string locomotion_calibration_file_;
   std::string ros_distro_;
   std::string rmw_implementation_;
   std::vector<ConfigSnapshot> snapshots_;

@@ -116,9 +116,15 @@ def test_both_nav2_costmaps_use_independent_sensor_sources():
 def test_nav2_does_not_request_unsupported_lateral_turning():
     config = _load_yaml(PACKAGE_ROOT / 'config' / 'nav2_params.yaml')
     smoother = config['velocity_smoother']['ros__parameters']
+    controller = config['controller_server']['ros__parameters']['FollowPath']
+    behavior = config['behavior_server']['ros__parameters']
 
     assert smoother['max_velocity'][1] == 0.0
     assert smoother['min_velocity'][1] == 0.0
+    assert smoother['max_velocity'][2] == 0.18
+    assert smoother['min_velocity'][2] == -0.18
+    assert controller['rotate_to_heading_angular_vel'] == 0.18
+    assert behavior['max_rotational_vel'] == 0.18
 
 
 def test_camera_launch_is_camera_only_and_matches_declared_fov():
@@ -173,11 +179,19 @@ def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
     for defaults in (hardware_defaults, pipeline_defaults):
         assert float(defaults['locomotion_update_rate_hz']) == 50.0
         assert float(defaults['cmd_vel_timeout']) == 0.5
+        assert defaults['locomotion_command_mapping'] == 'calibrated'
+        assert defaults['locomotion_calibration_file'].endswith(
+            'muto_locomotion_provisional_20260806.yaml'
+        )
         assert int(defaults['imu_calibration_sample_count']) == 300
         assert int(defaults['imu_calibration_max_reads']) == 600
         assert float(defaults['imu_calibration_timeout_sec']) == 30.0
         assert 'motor_validation_settle_time' not in defaults
         assert 'gait_state_publish_rate_hz' not in defaults
+
+    pipeline_configurations = _launch_configuration_names(pipeline_launch)
+    assert 'locomotion_command_mapping' in pipeline_configurations
+    assert 'locomotion_calibration_file' in pipeline_configurations
 
     assert float(pipeline_defaults['foot_motor_poll_rate']) == 2.0
     assert pipeline_defaults[

@@ -18,7 +18,9 @@ ICM-20948
   -> STM32 USART1 at 115200 baud
   -> synchronous Muto Python read on the shared serial lock
   -> /imu/data_raw, /imu/mag_raw, /imu/data_processed
-  -> /imu/controller_attitude (diagnostic; not fused by the EKF)
+  -> /imu/controller_attitude (recorded raw source)
+  -> stationary stability gate
+  -> /imu/controller_attitude_imu (default sparse stop-only EKF input)
 ```
 
 Yahboom's published protocol defines `0x02` as a read request and `0x12` as a
@@ -81,10 +83,9 @@ The fused transition count is a stationary lower bound because its 0.01-degree
 quantization can legitimately repeat. Its approximately 200 ms transition
 cadence nevertheless shows a separate roughly 5 Hz controller update loop.
 Thus `0x60` bypasses the 1.033 Hz raw cache, but it is not a hidden 50 Hz IMU
-stream. It may be evaluated later as a low-rate absolute attitude correction;
-it should not yet replace a high-rate yaw-rate source. Known-angle rotation,
-wrap, frame-sign, dynamic-lag, magnetic-disturbance, and covariance tests are
-required before estimator fusion.
+stream. It is used only as a guarded stop-time heading check, not as a
+high-rate yaw-rate source. Measured-angle, power-cycle, magnetic-disturbance,
+and systematic covariance tests remain required.
 
 ## First marked attitude bag and scheduling fault
 
@@ -109,15 +110,62 @@ missing gait sequence.
 
 The workspace correction replaces both sensor timers with one gait-slotted
 scheduler. Every 20 ms control slot sends the gait phase first and services at
-most one due telemetry endpoint. Runtime raw polling remains 10 Hz for a clean
-A/B comparison with its prior timestamp-observation window, attitude polling
+most one due telemetry endpoint. Runtime raw polling remains 10 Hz for rollback
+diagnostics with its prior timestamp-observation window, while attitude polling
 also runs at 10 Hz, and the first raw deadline is
 phased 50 ms after attitude. A controller read attempt advances its deadline
 without catch-up bursts; a pre-I/O gait-deadline skip retries next slot. The
 deadline guard remains intact. `/muto/imu_telemetry_status` publishes cumulative
 selection, deferral, attempt, success, failure, duplicate, and skip counters
-and is included in schema-3 odometry bags. This correction is code-tested but
-requires a second marked moving bag before any estimator fusion decision.
+and is included in schema-4 odometry bags.
+
+## Second marked attitude bag
+
+`muto_odometry_attitude_002` recorded 331.03 seconds after the scheduler fix.
+It contained 3,285 controller-attitude messages and 329 scheduler-status
+messages. During 110.88 seconds of active gait, 1,110 attitude replies arrived
+at 10.01 Hz and contained 575 changed snapshots. The longest active poll gap
+was 0.104 seconds. Gait sequence 961 through 17387 was continuous at 49.99 Hz;
+active p95 and p99 intervals were 20.70 and 22.24 ms. The scheduler therefore
+removed the moving-gait starvation without degrading active gait cadence.
+
+Changed Euler snapshots arrived at about 5.04 Hz overall. Positive yaw matched
+counter-clockwise ROS rotation, negative yaw matched clockwise rotation, and
+the -180/+180 wrap was continuous. A 2x offline replay retained 99.73% of RF2O
+scans. After removing the arbitrary startup offset, controller yaw and RF2O
+differed by 1.14 degrees RMS and had 0.988 turn-rate correlation. During the
+initial standby interval, RF2O drifted -3.18 degrees while controller yaw
+changed only +0.08 degrees. This supports testing `0x60` as a slow relative
+heading correction, but the approximate field labels do not prove it more
+accurate than RF2O.
+
+The default path now suppresses cached packets and evaluates all changed 5 Hz
+samples, but publishes only a startup anchor and one stable circular-mean
+correction per stop. A correction needs fresh selected-and-active standby, a
+two-second dwell, at least three distinct samples in a one-second window, and
+at most one degree of circular yaw span. `robot_localization` receives yaw-only
+`/imu/controller_attitude_imu` with `imu0_relative: true`,
+`imu0_differential: false`, `(4 deg)^2` variance, and a `1.0` innovation guard.
+No controller-yaw message is published while moving, and Euler angles are
+never differentiated into angular velocity.
+
+The normalized `_002` replay admitted ten messages total and rejected all 575
+changed moving snapshots. Repeating corrections every one or two seconds did
+not improve the initial RF2O stationary drift and added more transients, so the
+default remains one correction per stationary episode. The field markers were
+approximate and were not treated as accuracy ground truth.
+
+Normal on-robot launch:
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py \
+  fuse_controller_attitude_yaw:=true
+```
+
+Do not expect `/imu/controller_attitude_imu` at 5 Hz: it is intentionally
+sparse. Inspect `/muto/controller_attitude_yaw_status` for the full-rate input
+and gate counters, then record the schema-4 odometry bag. Roll back by setting
+`fuse_controller_attitude_yaw:=false`.
 
 The exact reports and tested source were preserved on `new-spider` at:
 
@@ -152,7 +200,8 @@ without changing a gait level.
 - The custom library can read the controller's fused roll, pitch, yaw, and
   temperature endpoint at address `0x60` without the vendor's fixed 50 ms
   post-request sleep.
-- The normal runtime raw-IMU host poll rate remains 10 Hz for this A/B test.
+- The normal runtime raw-IMU host poll rate remains 10 Hz for rollback and
+  diagnostics.
   This avoids worsening the host-observed transition timestamp of its measured
   1.033 Hz cache and biasing the comparison toward `0x60`. Startup calibration
   keeps its independent 10 Hz attempt loop. Neither parameter configures ODR.
@@ -165,8 +214,9 @@ without changing a gait level.
 - `/muto/imu_telemetry_status` exposes scheduler and controller-read counters
   and is recorded and optionally replayed by `muto_odometry_bag`.
 - `ControllerAttitude` preserves the controller's degree-valued roll, pitch,
-  yaw, and raw temperature byte with host receive time. Its frame remains
-  intentionally empty and no EKF configuration consumes it.
+  yaw, and raw temperature byte with host receive time. Its diagnostic frame
+  remains intentionally empty. A separate stationary-gated adapter maps only
+  stable yaw into `imu_link` and publishes gate counters at 1 Hz.
 - Runtime IMU reads have an 8 ms response budget and are skipped when they
   cannot fit before the next gait deadline.
 - Consecutive identical accel/gyro snapshots are suppressed by default, so a
@@ -243,8 +293,8 @@ After rebuilding and deploying, record another marked-field bag and require:
 - gait mean between 49 and 51 Hz;
 - gait p95 interval at or below 22 ms and p99 at or below 25 ms;
 - no regular 40–52 ms gaps associated with motor reads;
-- nonzero `/imu/controller_attitude` and `/muto/imu_telemetry_status` bag
-  counts;
+- nonzero `/imu/controller_attitude`, `/muto/imu_telemetry_status`, and
+  `/muto/controller_attitude_yaw_status` bag counts;
 - close to 10 Hz successful attitude polls during both standby and active gait,
   with distinct-value transitions reported against the prior roughly 4-5 Hz
   stationary lower bound rather than treated as a hard 5 Hz requirement;

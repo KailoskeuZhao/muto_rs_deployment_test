@@ -1,0 +1,21 @@
+ekf_filter_node:
+  ros__parameters:
+    # Stop-only overlay for the controller-fused 0x60 yaw channel. The adapter
+    # publishes a startup anchor and then one stable correction per stationary
+    # episode; it emits nothing while the robot is commanded to move.
+    imu0: /imu/controller_attitude_imu
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false]
+    imu0_queue_size: 20
+    imu0_nodelay: true
+    imu0_differential: false
+    # The baseboard yaw has an arbitrary absolute startup heading. Subtract
+    # the first accepted observation so the EKF and RF2O both start at zero.
+    imu0_relative: true
+    imu0_remove_gravitational_acceleration: false
+    # A stable magnetic disturbance can pass the adapter's sample-window
+    # check, so retain an independent, conservative EKF innovation guard.
+    imu0_pose_rejection_threshold: 1.0

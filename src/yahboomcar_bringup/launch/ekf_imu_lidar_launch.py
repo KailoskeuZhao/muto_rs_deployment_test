@@ -25,6 +25,11 @@ def generate_launch_description():
         "config",
         "ekf_lidar_imu_with_foot.yaml"
     )
+    ekf_controller_attitude_config = os.path.join(
+        get_package_share_directory("yahboomcar_bringup"),
+        "config",
+        "ekf_controller_attitude_yaw.yaml"
+    )
     lidar_odometry_launch = os.path.join(
         get_package_share_directory("lidar_pointcloud_filter"),
         "launch",
@@ -202,6 +207,67 @@ def generate_launch_description():
         default_value="false",
         description="Run an IMU-only EKF test using /imu/data_processed and no LiDAR or foot odometry.",
     )
+    fuse_controller_attitude_yaw_arg = DeclareLaunchArgument(
+        "fuse_controller_attitude_yaw",
+        default_value="true",
+        description=(
+            "Use stable, stop-only relative yaw corrections from the "
+            "controller-fused 0x60 attitude channel instead of the "
+            "firmware-limited raw gyro. Ignored by imu_only mode."
+        ),
+    )
+    controller_attitude_yaw_variance_arg = DeclareLaunchArgument(
+        "controller_attitude_yaw_variance",
+        default_value="0.004873878716587337",
+        description=(
+            "Yaw variance in rad^2 for accepted controller-attitude "
+            "corrections; default is (4 deg)^2."
+        ),
+    )
+    controller_attitude_stationary_gate_arg = DeclareLaunchArgument(
+        "controller_attitude_stationary_gate",
+        default_value="true",
+        description=(
+            "Only admit stable controller yaw after a confirmed stationary "
+            "period. False retains continuous relative-yaw test behavior."
+        ),
+    )
+    controller_attitude_stationary_settle_sec_arg = DeclareLaunchArgument(
+        "controller_attitude_stationary_settle_sec",
+        default_value="2.0",
+        description="Required stationary dwell before a yaw correction.",
+    )
+    controller_attitude_motion_state_timeout_sec_arg = DeclareLaunchArgument(
+        "controller_attitude_motion_state_timeout_sec",
+        default_value="0.25",
+        description=(
+            "Maximum age in seconds of /muto/motion_command_state used by "
+            "the fail-closed stationary gate."
+        ),
+    )
+    controller_attitude_stability_window_sec_arg = DeclareLaunchArgument(
+        "controller_attitude_stability_window_sec",
+        default_value="1.0",
+        description="Window of changed 0x60 samples checked for stability.",
+    )
+    controller_attitude_minimum_snapshots_arg = DeclareLaunchArgument(
+        "controller_attitude_minimum_snapshots",
+        default_value="3",
+        description="Minimum changed snapshots in the stability window.",
+    )
+    controller_attitude_max_yaw_span_rad_arg = DeclareLaunchArgument(
+        "controller_attitude_max_yaw_span_rad",
+        default_value="0.017453292519943295",
+        description="Maximum circular yaw span in one stable window (1 deg).",
+    )
+    controller_attitude_republish_interval_sec_arg = DeclareLaunchArgument(
+        "controller_attitude_republish_interval_sec",
+        default_value="0.0",
+        description=(
+            "Seconds between corrections in one stationary episode; zero "
+            "allows only one correction per stop."
+        ),
+    )
 
     use_lidar_odometry = PythonExpression([
         "'", LaunchConfiguration("launch_lidar_odometry"), "' == 'true' and '",
@@ -213,11 +279,31 @@ def generate_launch_description():
     ])
     use_lidar_imu_ekf = PythonExpression([
         "'", LaunchConfiguration("launch_foot_odometry"), "' == 'false' and '",
-        LaunchConfiguration("imu_only"), "' == 'false'",
+        LaunchConfiguration("imu_only"), "' == 'false' and '",
+        LaunchConfiguration("fuse_controller_attitude_yaw"), "' == 'false'",
+    ])
+    use_lidar_controller_attitude_ekf = PythonExpression([
+        "'", LaunchConfiguration("launch_foot_odometry"), "' == 'false' and '",
+        LaunchConfiguration("imu_only"), "' == 'false' and '",
+        LaunchConfiguration("fuse_controller_attitude_yaw"), "' == 'true'",
     ])
     use_foot_ekf = PythonExpression([
         "'", LaunchConfiguration("launch_foot_odometry"), "' == 'true' and '",
-        LaunchConfiguration("imu_only"), "' == 'false'",
+        LaunchConfiguration("imu_only"), "' == 'false' and '",
+        LaunchConfiguration("fuse_controller_attitude_yaw"), "' == 'false'",
+    ])
+    use_foot_controller_attitude_ekf = PythonExpression([
+        "'", LaunchConfiguration("launch_foot_odometry"), "' == 'true' and '",
+        LaunchConfiguration("imu_only"), "' == 'false' and '",
+        LaunchConfiguration("fuse_controller_attitude_yaw"), "' == 'true'",
+    ])
+    use_raw_imu_only = PythonExpression([
+        "'", LaunchConfiguration("imu_only"), "' == 'true'",
+    ])
+    use_controller_attitude_only = PythonExpression(["False"])
+    use_controller_attitude_adapter = PythonExpression([
+        "'", LaunchConfiguration("imu_only"), "' == 'false' and '",
+        LaunchConfiguration("fuse_controller_attitude_yaw"), "' == 'true'",
     ])
 
     return LaunchDescription([
@@ -246,6 +332,15 @@ def generate_launch_description():
         foot_odometry_source_arg,
         foot_max_motor_sequence_gap_arg,
         imu_only_arg,
+        fuse_controller_attitude_yaw_arg,
+        controller_attitude_yaw_variance_arg,
+        controller_attitude_stationary_gate_arg,
+        controller_attitude_stationary_settle_sec_arg,
+        controller_attitude_motion_state_timeout_sec_arg,
+        controller_attitude_stability_window_sec_arg,
+        controller_attitude_minimum_snapshots_arg,
+        controller_attitude_max_yaw_span_rad_arg,
+        controller_attitude_republish_interval_sec_arg,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(lidar_odometry_launch),
             condition=IfCondition(use_lidar_odometry),
@@ -327,6 +422,72 @@ def generate_launch_description():
             }],
         ),
         Node(
+            package='yahboomcar_imu',
+            executable='controller_attitude_yaw_adapter',
+            name='controller_attitude_yaw_adapter',
+            output='screen',
+            condition=IfCondition(use_controller_attitude_adapter),
+            parameters=[{
+                'input_topic': '/imu/controller_attitude',
+                'output_topic': '/imu/controller_attitude_imu',
+                'frame_id': 'imu_link',
+                'yaw_variance_rad2': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_yaw_variance'
+                    ),
+                    value_type=float,
+                ),
+                'suppress_identical_snapshots': True,
+                'stationary_gate_enabled': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_stationary_gate'
+                    ),
+                    value_type=bool,
+                ),
+                'motion_state_topic': '/muto/motion_command_state',
+                'stationary_settle_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_stationary_settle_sec'
+                    ),
+                    value_type=float,
+                ),
+                'motion_state_timeout_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_motion_state_timeout_sec'
+                    ),
+                    value_type=float,
+                ),
+                'stability_window_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_stability_window_sec'
+                    ),
+                    value_type=float,
+                ),
+                'minimum_distinct_snapshots': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_minimum_snapshots'
+                    ),
+                    value_type=int,
+                ),
+                'max_stationary_yaw_span_rad': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_max_yaw_span_rad'
+                    ),
+                    value_type=float,
+                ),
+                'stationary_republish_interval_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_republish_interval_sec'
+                    ),
+                    value_type=float,
+                ),
+                'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'),
+                    value_type=bool,
+                ),
+            }],
+        ),
+        Node(
             package='robot_localization',
             executable='ekf_node',
             name='ekf_filter_node',
@@ -334,6 +495,23 @@ def generate_launch_description():
             condition=IfCondition(use_lidar_imu_ekf),
             parameters=[
                 ekf_config,
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    )
+                },
+            ],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node',
+            output='screen',
+            condition=IfCondition(use_lidar_controller_attitude_ekf),
+            parameters=[
+                ekf_config,
+                ekf_controller_attitude_config,
                 {
                     'use_sim_time': ParameterValue(
                         LaunchConfiguration("use_sim_time"),
@@ -364,9 +542,44 @@ def generate_launch_description():
             executable='ekf_node',
             name='ekf_filter_node',
             output='screen',
-            condition=IfCondition(LaunchConfiguration("imu_only")),
+            condition=IfCondition(use_foot_controller_attitude_ekf),
+            parameters=[
+                ekf_config,
+                ekf_with_foot_config,
+                ekf_controller_attitude_config,
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    )
+                },
+            ],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node',
+            output='screen',
+            condition=IfCondition(use_raw_imu_only),
             parameters=[
                 ekf_imu_only_config,
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    )
+                },
+            ],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node',
+            output='screen',
+            condition=IfCondition(use_controller_attitude_only),
+            parameters=[
+                ekf_imu_only_config,
+                ekf_controller_attitude_config,
                 {
                     'use_sim_time': ParameterValue(
                         LaunchConfiguration("use_sim_time"),

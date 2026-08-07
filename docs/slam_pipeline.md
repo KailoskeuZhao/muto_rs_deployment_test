@@ -139,7 +139,7 @@ Useful top-level switches include:
 | `locomotion_command_mapping` | `calibrated` | Uses an explicit physical velocity profile; `legacy_100` is rollback-only. |
 | `locomotion_calibration_file` | `muto_locomotion_provisional_20260806.yaml` | Provisional gait-level mapping; replace after marked-field trials. |
 | `imu_publish_rate_hz` | `10.0` | Runtime host poll rate for the roughly 1.033 Hz controller-cached raw snapshot; retaining 10 Hz preserves its prior transition-time observation window for the `0x60` comparison. |
-| `imu_attitude_publish_rate_hz` | `10.0` | Host poll rate for diagnostic fused `0x60` attitude; the gait-slotted scheduler gives it dedicated opportunities intended to observe its roughly 5 Hz updates without aligned-timer contention. `0.0` disables it and no EKF consumes it. |
+| `imu_attitude_publish_rate_hz` | `10.0` | Host poll rate for fused `0x60` attitude; the gait-slotted scheduler observes roughly 5 Hz changed snapshots without starving during motion. `0.0` disables it. |
 | `imu_suppress_identical_snapshots` | `true` | Avoids assigning repeated accel/gyro values new ROS timestamps. |
 | `imu_response_timeout_sec` | `0.008` | Runtime serial budget; polls too close to a gait deadline are skipped. |
 | `imu_calibration_sample_count` | `10` | Changed stationary accel/gyro snapshots targeted at startup. |
@@ -148,6 +148,10 @@ Useful top-level switches include:
 | `launch_foot_odometry` | `false` | Measured-joint foot odometry is diagnostic-only while reads block gait dispatch. |
 | `foot_motor_poll_rate` | `2.0` | Conservative rate when foot diagnostics are explicitly enabled. |
 | `allow_experimental_high_rate_motor_polling` | `false` | Required explicit opt-in above 2 Hz; never enable for normal deployment with the current blocking serial service. |
+| `fuse_controller_attitude_yaw` | `true` | Replace the sparse raw gyro with a startup anchor and stable stop-only relative `0x60` yaw corrections. Set `false` for rollback. |
+| `controller_attitude_yaw_variance` | `0.0048738787` | `(4 deg)^2` variance for accepted stop corrections. |
+| `controller_attitude_stationary_settle_sec` | `2.0` | Required strict-standby dwell before correction. |
+| `controller_attitude_republish_interval_sec` | `0.0` | One averaged correction per stationary episode. |
 
 If a prerequisite stage is disabled, any enabled downstream stage must already
 have equivalent topics and TF supplied externally.
@@ -242,9 +246,11 @@ The important live sensor inputs are:
 | `/lidar/raw_laserscan` | `sensor_msgs/msg/LaserScan`, normally `lidar_frame`. |
 | `/camera/depth/image_raw` | `sensor_msgs/msg/Image`, encoding `16UC1`. |
 | `/camera/depth/camera_info` | `sensor_msgs/msg/CameraInfo` matching the depth profile. |
-| `/imu/data_processed` | `sensor_msgs/msg/Imu`, frame `imu_link`; yaw rate is the active EKF field. |
+| `/imu/data_processed` | `sensor_msgs/msg/Imu`, frame `imu_link`; yaw rate is retained for rollback and `imu_only` tests. |
 | `/imu/controller_attitude` | `muto_hexapod_interfaces_custom/msg/ControllerAttitude`; host-stamped vendor Euler degrees with frame intentionally unset. |
+| `/imu/controller_attitude_imu` | Sparse default yaw-only `sensor_msgs/msg/Imu` in `imu_link`; startup anchor plus one stable correction per stop. |
 | `/muto/imu_telemetry_status` | `std_msgs/msg/String`; one-second cumulative raw/attitude scheduler, attempt, success, failure, duplicate, deferral, and gait-deadline-skip counters. |
+| `/muto/controller_attitude_yaw_status` | `std_msgs/msg/String`; one-second gate mode, acceptance/rejection counters, and startup-anchor state. |
 
 Current Astra Pro Plus launch defaults request color at `640x480 @ 30 Hz` and
 depth at `320x240 @ 30 Hz`. The downstream depth-to-scan and SAM2 projection
@@ -267,12 +273,15 @@ The active LiDAR path is entirely `LaserScan` based:
 | Full-resolution filter output | Same raw scan | `/lidar/filtered_laserscan_no_downsample` | Range up to `15.0 m`; used directly by SLAM Toolbox. |
 | RF2O | `/lidar/filtered_laserscan` | `/scan_odom_raw` | `16 Hz`, frames `odom` and `base_frame`, internal TF output disabled. |
 | Deadband/jump wrapper | `/scan_odom_raw` | `/scan_odom` | Suppresses stationary drift and implausible jumps. |
-| EKF | `/scan_odom` plus `/imu/data_processed` | `/odometry/filtered` and `odom -> base_frame` | `30 Hz`, 2D mode. |
+| EKF | `/scan_odom` plus one selected IMU input | `/odometry/filtered` and `odom -> base_frame` | `30 Hz`, 2D mode; RF2O while moving plus sparse stop-only relative `0x60` yaw checks. |
 
-The EKF fuses RF2O planar position and yaw. The IMU contributes yaw rate only;
-it does not provide absolute orientation or translational odometry. The
-separately recorded `/imu/controller_attitude` topic is diagnostic and does not
-enter this fusion path.
+The EKF fuses RF2O planar position and yaw. The default yaw adapter observes
+all changed controller samples but publishes only a startup reference and one
+stable circular-mean correction after each two-second stop. Selected and
+active locomotion state must both be standby, and it publishes nothing while
+moving. RF2O therefore remains the moving-yaw source. The raw controller topic
+is never fused directly. Set `fuse_controller_attitude_yaw:=false` to restore
+the sparse raw-yaw-rate branch.
 
 The optional, default-off foot input is generated from a fixed-rate locomotion state stream.
 `/cmd_vel` changes the desired command; the driver advances one trajectory phase
@@ -447,10 +456,16 @@ ros2 topic hz /imu/data_processed
 ros2 topic hz /imu/controller_attitude
 ros2 topic echo /muto/imu_telemetry_status --once \
   --qos-durability transient_local
+ros2 topic echo /muto/controller_attitude_yaw_status --once \
+  --qos-durability transient_local
 ros2 run tf2_ros tf2_echo base_frame lidar_frame
 ros2 run tf2_ros tf2_echo base_frame imu_link
 ros2 run tf2_ros tf2_echo base_frame camera_depth_optical_frame
 ```
+
+`/imu/controller_attitude_imu` is intentionally sparse: one startup anchor and
+one accepted correction per stationary episode. Use the yaw-status topic above
+instead of `ros2 topic hz` to inspect its 5 Hz source cadence and gate counts.
 
 Check LiDAR odometry and EKF:
 
@@ -590,7 +605,9 @@ Those changes increase CPU, memory, or both.
   objects can produce transient scan geometry and map artifacts.
 - RF2O can drift or jump in feature-poor geometry; the wrapper reduces but
   cannot eliminate failed scan matches.
-- The IMU supplies yaw rate only, not absolute heading.
+- The default `0x60` branch supplies sparse stop-time relative heading checks
+  with an arbitrary startup zero. It is not a globally referenced heading;
+  power-cycle and magnetic-disturbance tests remain required.
 - Camera depth augments Nav2 costmaps but is not a SLAM or EKF odometry source.
 - SLAM and LiDAR costmap coverage continue when camera data is unavailable.
 - Online mapping does not provide a saved-map localization workflow.

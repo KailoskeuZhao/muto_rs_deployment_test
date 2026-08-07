@@ -14,7 +14,7 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -55,7 +55,7 @@ def readiness_gated_include(
     stage,
     delay_arg,
     timeout_arg,
-    enabled_arg,
+    enabled_condition,
     topics,
     transforms,
     package_name,
@@ -102,7 +102,7 @@ def readiness_gated_include(
         TimerAction(
             period=LaunchConfiguration(delay_arg),
             actions=[gate],
-            condition=IfCondition(LaunchConfiguration(enabled_arg)),
+            condition=IfCondition(enabled_condition),
         ),
         RegisterEventHandler(
             OnProcessExit(
@@ -129,12 +129,77 @@ def generate_launch_description():
         'config',
         'muto_locomotion_provisional_20260806.yaml',
     )
+    localization_launch_arguments = {
+        'use_sim_time': LaunchConfiguration('use_sim_time'),
+        'launch_lidar_odometry': 'true',
+        'launch_foot_odometry': LaunchConfiguration(
+            'launch_foot_odometry'
+        ),
+        'foot_motor_poll_rate': LaunchConfiguration(
+            'foot_motor_poll_rate'
+        ),
+        'allow_experimental_high_rate_motor_polling': LaunchConfiguration(
+            'allow_experimental_high_rate_motor_polling'
+        ),
+        'foot_odometry_source': LaunchConfiguration(
+            'foot_odometry_source'
+        ),
+        'foot_max_motor_sequence_gap': LaunchConfiguration(
+            'foot_max_motor_sequence_gap'
+        ),
+        'fuse_controller_attitude_yaw': LaunchConfiguration(
+            'fuse_controller_attitude_yaw'
+        ),
+        'controller_attitude_yaw_variance': LaunchConfiguration(
+            'controller_attitude_yaw_variance'
+        ),
+        'controller_attitude_stationary_gate': LaunchConfiguration(
+            'controller_attitude_stationary_gate'
+        ),
+        'controller_attitude_stationary_settle_sec': LaunchConfiguration(
+            'controller_attitude_stationary_settle_sec'
+        ),
+        'controller_attitude_motion_state_timeout_sec': LaunchConfiguration(
+            'controller_attitude_motion_state_timeout_sec'
+        ),
+        'controller_attitude_stability_window_sec': LaunchConfiguration(
+            'controller_attitude_stability_window_sec'
+        ),
+        'controller_attitude_minimum_snapshots': LaunchConfiguration(
+            'controller_attitude_minimum_snapshots'
+        ),
+        'controller_attitude_max_yaw_span_rad': LaunchConfiguration(
+            'controller_attitude_max_yaw_span_rad'
+        ),
+        'controller_attitude_republish_interval_sec': LaunchConfiguration(
+            'controller_attitude_republish_interval_sec'
+        ),
+        'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
+        'rf2o_covariance_profile': LaunchConfiguration(
+            'rf2o_covariance_profile'
+        ),
+        'rf2o_translation_deadband': LaunchConfiguration(
+            'rf2o_translation_deadband'
+        ),
+        'rf2o_yaw_deadband': LaunchConfiguration(
+            'rf2o_yaw_deadband'
+        ),
+    }
 
-    localization_actions = readiness_gated_include(
-        'localization',
+    localization_raw_imu_enabled = PythonExpression([
+        "'", LaunchConfiguration('launch_localization'), "' == 'true' and '",
+        LaunchConfiguration('fuse_controller_attitude_yaw'), "' == 'false'",
+    ])
+    localization_controller_attitude_enabled = PythonExpression([
+        "'", LaunchConfiguration('launch_localization'), "' == 'true' and '",
+        LaunchConfiguration('fuse_controller_attitude_yaw'), "' == 'true'",
+    ])
+
+    localization_raw_imu_actions = readiness_gated_include(
+        'localization_raw_imu',
         'localization_delay',
         'localization_readiness_timeout',
-        'launch_localization',
+        localization_raw_imu_enabled,
         [
             ('/lidar/raw_laserscan', 'sensor_msgs/msg/LaserScan'),
             ('/imu/data_processed', 'sensor_msgs/msg/Imu'),
@@ -142,43 +207,37 @@ def generate_launch_description():
         [('base_frame', 'lidar_frame'), ('base_frame', 'imu_link')],
         'yahboomcar_bringup',
         'ekf_imu_lidar_launch.py',
+        localization_launch_arguments,
+    )
+    localization_controller_attitude_actions = readiness_gated_include(
+        'localization_controller_attitude',
+        'localization_delay',
+        'localization_readiness_timeout',
+        localization_controller_attitude_enabled,
+        [
+            ('/lidar/raw_laserscan', 'sensor_msgs/msg/LaserScan'),
+            (
+                '/imu/controller_attitude',
+                'muto_hexapod_interfaces_custom/msg/ControllerAttitude',
+            ),
+            (
+                '/muto/motion_command_state',
+                'muto_hexapod_interfaces_custom/msg/MotionCommandState',
+            ),
+        ],
+        [('base_frame', 'lidar_frame'), ('base_frame', 'imu_link')],
+        'yahboomcar_bringup',
+        'ekf_imu_lidar_launch.py',
         {
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'launch_lidar_odometry': 'true',
-            'launch_foot_odometry': LaunchConfiguration(
-                'launch_foot_odometry'
-            ),
-            'foot_motor_poll_rate': LaunchConfiguration(
-                'foot_motor_poll_rate'
-            ),
-            'allow_experimental_high_rate_motor_polling': (
-                LaunchConfiguration(
-                    'allow_experimental_high_rate_motor_polling'
-                )
-            ),
-            'foot_odometry_source': LaunchConfiguration(
-                'foot_odometry_source'
-            ),
-            'foot_max_motor_sequence_gap': LaunchConfiguration(
-                'foot_max_motor_sequence_gap'
-            ),
-            'rf2o_log_level': LaunchConfiguration('rf2o_log_level'),
-            'rf2o_covariance_profile': LaunchConfiguration(
-                'rf2o_covariance_profile'
-            ),
-            'rf2o_translation_deadband': LaunchConfiguration(
-                'rf2o_translation_deadband'
-            ),
-            'rf2o_yaw_deadband': LaunchConfiguration(
-                'rf2o_yaw_deadband'
-            ),
+            **localization_launch_arguments,
+            'fuse_controller_attitude_yaw': 'true',
         },
     )
     mapping_actions = readiness_gated_include(
         'mapping',
         'mapping_delay',
         'mapping_readiness_timeout',
-        'launch_mapping',
+        LaunchConfiguration('launch_mapping'),
         [
             ('/odometry/filtered', 'nav_msgs/msg/Odometry'),
             (
@@ -198,7 +257,7 @@ def generate_launch_description():
         'nav2',
         'nav2_delay',
         'nav2_readiness_timeout',
-        'launch_nav2',
+        LaunchConfiguration('launch_nav2'),
         [
             ('/map', 'nav_msgs/msg/OccupancyGrid'),
             ('/lidar/filtered_laserscan', 'sensor_msgs/msg/LaserScan'),
@@ -282,7 +341,8 @@ def generate_launch_description():
             description=(
                 'Host poll rate for the controller-fused 0x60 Euler '
                 'attitude. It receives separate coordinated gait slots from '
-                'raw 0x61. Set 0.0 to disable; it is recorded but not fused.'
+                'raw 0x61. Set 0.0 to disable. It is recorded by default and '
+                'fused only with fuse_controller_attitude_yaw:=true.'
             ),
         ),
         DeclareLaunchArgument(
@@ -381,6 +441,63 @@ def generate_launch_description():
             description=(
                 'Maximum gait-phase gap between measured joint snapshots '
                 'used by foot odometry.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'fuse_controller_attitude_yaw',
+            default_value='true',
+            description=(
+                'Replace the sparse raw-gyro EKF input with stable, stop-only '
+                'relative controller-fused 0x60 yaw corrections.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_yaw_variance',
+            default_value='0.004873878716587337',
+            description=(
+                'Yaw variance in rad^2 for accepted 0x60 corrections; the '
+                'default is (4 deg)^2.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stationary_gate',
+            default_value='true',
+            description=(
+                'Only admit stable controller yaw while both selected and '
+                'active locomotion states are stationary.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stationary_settle_sec',
+            default_value='2.0',
+            description='Required stationary dwell before correction.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_motion_state_timeout_sec',
+            default_value='0.25',
+            description='Maximum accepted motion-command-state age.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stability_window_sec',
+            default_value='1.0',
+            description='Changed-attitude stability window in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_minimum_snapshots',
+            default_value='3',
+            description='Minimum changed snapshots in the stable window.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_max_yaw_span_rad',
+            default_value='0.017453292519943295',
+            description='Maximum stable-window yaw span (1 degree).',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_republish_interval_sec',
+            default_value='0.0',
+            description=(
+                'Correction interval within one stop; zero means one '
+                'correction per stationary episode.'
             ),
         ),
         DeclareLaunchArgument(
@@ -578,7 +695,8 @@ def generate_launch_description():
             },
             condition=IfCondition(LaunchConfiguration('launch_hardware')),
         ),
-        *localization_actions,
+        *localization_raw_imu_actions,
+        *localization_controller_attitude_actions,
         *mapping_actions,
         *nav2_actions,
     ])

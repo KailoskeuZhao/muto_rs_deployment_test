@@ -18,7 +18,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import UnlessCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -61,6 +61,17 @@ def generate_launch_description():
         'use_sim_time': True,
     })
     lidar_only_parameters = without_sensor(lidar_imu_parameters, 'imu0')
+    lidar_controller_attitude_parameters = copy.deepcopy(
+        lidar_imu_parameters
+    )
+    lidar_controller_attitude_parameters.update(load_node_parameters(
+        os.path.join(
+            bringup_share,
+            'config',
+            'ekf_controller_attitude_yaw.yaml',
+        ),
+        'ekf_filter_node',
+    ))
     raw_lidar_imu_parameters = copy.deepcopy(lidar_imu_parameters)
     raw_lidar_imu_parameters['odom0'] = '/scan_odom_raw_profiled'
 
@@ -80,7 +91,12 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': 'true',
             'launch_lidar_odometry': 'true',
-            'launch_foot_odometry': 'true',
+            # Keep the normal comparison baseline on the sparse raw gyro even
+            # though live bringup now defaults to stop-only controller yaw.
+            'fuse_controller_attitude_yaw': 'false',
+            'launch_foot_odometry': LaunchConfiguration(
+                'launch_foot_odometry'
+            ),
             'foot_odometry_source': LaunchConfiguration(
                 'foot_odometry_source'
             ),
@@ -151,6 +167,14 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'launch_foot_odometry',
+            default_value='false',
+            description=(
+                'Launch and compare measured-joint foot odometry. Leave '
+                'false for source bags without motor-angle snapshots.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'foot_motor_poll_rate',
             default_value='2.0',
             description=(
@@ -215,8 +239,132 @@ def generate_launch_description():
             default_value='/odometry/raw_lidar_imu',
             description='Output from the raw RF2O plus IMU comparison EKF.',
         ),
+        DeclareLaunchArgument(
+            'compare_controller_attitude',
+            default_value='false',
+            description=(
+                'Add a comparison EKF that replaces the sparse raw gyro '
+                'with relative controller-fused 0x60 yaw.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'lidar_controller_attitude_output_topic',
+            default_value='/odometry/lidar_controller_attitude',
+            description=(
+                'Output from the filtered-LiDAR plus relative controller '
+                '0x60 yaw comparison EKF.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_yaw_variance',
+            default_value='0.004873878716587337',
+            description=(
+                'Yaw variance in rad^2 for the controller-attitude '
+                'comparison; default is (4 deg)^2.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stationary_gate',
+            default_value='true',
+            description='Enable the stop-only stability gate.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stationary_settle_sec',
+            default_value='2.0',
+            description='Required stationary dwell before correction.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_motion_state_timeout_sec',
+            default_value='0.25',
+            description='Maximum accepted motion-command-state age.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stability_window_sec',
+            default_value='1.0',
+            description='Changed-attitude stability window in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_minimum_snapshots',
+            default_value='3',
+            description='Minimum changed snapshots in the stable window.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_max_yaw_span_rad',
+            default_value='0.017453292519943295',
+            description='Maximum stable-window yaw span (1 degree).',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_republish_interval_sec',
+            default_value='0.0',
+            description='Zero allows one correction per stationary episode.',
+        ),
         sensor_tf,
         original_fused_odometry,
+        Node(
+            package='yahboomcar_imu',
+            executable='controller_attitude_yaw_adapter',
+            name='controller_attitude_yaw_adapter_comparison',
+            output='screen',
+            condition=IfCondition(
+                LaunchConfiguration('compare_controller_attitude')
+            ),
+            parameters=[{
+                'input_topic': '/imu/controller_attitude',
+                'output_topic': '/imu/controller_attitude_imu',
+                'frame_id': 'imu_link',
+                'yaw_variance_rad2': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_yaw_variance'
+                    ),
+                    value_type=float,
+                ),
+                'suppress_identical_snapshots': True,
+                'stationary_gate_enabled': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_stationary_gate'
+                    ),
+                    value_type=bool,
+                ),
+                'motion_state_topic': '/muto/motion_command_state',
+                'stationary_settle_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_stationary_settle_sec'
+                    ),
+                    value_type=float,
+                ),
+                'motion_state_timeout_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_motion_state_timeout_sec'
+                    ),
+                    value_type=float,
+                ),
+                'stability_window_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_stability_window_sec'
+                    ),
+                    value_type=float,
+                ),
+                'minimum_distinct_snapshots': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_minimum_snapshots'
+                    ),
+                    value_type=int,
+                ),
+                'max_stationary_yaw_span_rad': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_max_yaw_span_rad'
+                    ),
+                    value_type=float,
+                ),
+                'stationary_republish_interval_sec': ParameterValue(
+                    LaunchConfiguration(
+                        'controller_attitude_republish_interval_sec'
+                    ),
+                    value_type=float,
+                ),
+                'use_sim_time': True,
+            }],
+        ),
         Node(
             package='robot_localization',
             executable='ekf_node',
@@ -226,6 +374,24 @@ def generate_launch_description():
             remappings=[
                 ('odometry/filtered',
                  LaunchConfiguration('lidar_only_output_topic')),
+            ],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_lidar_controller_attitude_comparison',
+            output='screen',
+            condition=IfCondition(
+                LaunchConfiguration('compare_controller_attitude')
+            ),
+            parameters=[lidar_controller_attitude_parameters],
+            remappings=[
+                (
+                    'odometry/filtered',
+                    LaunchConfiguration(
+                        'lidar_controller_attitude_output_topic'
+                    ),
+                ),
             ],
         ),
         Node(
@@ -269,7 +435,29 @@ def generate_launch_description():
                     LaunchConfiguration('readiness_timeout_sec'),
                     value_type=float,
                 ),
-                'require_foot_inputs': True,
+                'require_foot_inputs': ParameterValue(
+                    LaunchConfiguration('launch_foot_odometry'),
+                    value_type=bool,
+                ),
+                # Baseline comparison EKFs always consume the standard IMU,
+                # even when the controller-attitude branch is also enabled.
+                'require_standard_imu_input': True,
+                'require_controller_attitude_input': ParameterValue(
+                    LaunchConfiguration('compare_controller_attitude'),
+                    value_type=bool,
+                ),
+                'require_motion_command_state_input': ParameterValue(
+                    PythonExpression([
+                        "'",
+                        LaunchConfiguration('compare_controller_attitude'),
+                        "' == 'true' and '",
+                        LaunchConfiguration(
+                            'controller_attitude_stationary_gate'
+                        ),
+                        "' == 'true'",
+                    ]),
+                    value_type=bool,
+                ),
                 'replay_processed_imu': ParameterValue(
                     LaunchConfiguration('replay_processed_imu'),
                     value_type=bool,

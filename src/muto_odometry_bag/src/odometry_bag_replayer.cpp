@@ -28,6 +28,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "muto_hexapod_interfaces_custom/msg/commanded_gait_state.hpp"
@@ -58,6 +59,8 @@ constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kControllerAttitudeTopic[] = "/imu/controller_attitude";
 constexpr char kControllerAttitudeType[] =
   "muto_hexapod_interfaces_custom/msg/ControllerAttitude";
+constexpr char kControllerAttitudeImuTopic[] =
+  "/imu/controller_attitude_imu";
 constexpr char kImuTelemetryStatusTopic[] = "/muto/imu_telemetry_status";
 constexpr char kImuTelemetryStatusType[] = "std_msgs/msg/String";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
@@ -112,6 +115,12 @@ public:
       declare_parameter<double>("readiness_timeout_sec", 30.0);
     require_foot_inputs_ =
       declare_parameter<bool>("require_foot_inputs", true);
+    require_standard_imu_input_ =
+      declare_parameter<bool>("require_standard_imu_input", true);
+    require_controller_attitude_input_ =
+      declare_parameter<bool>("require_controller_attitude_input", false);
+    require_motion_command_state_input_ =
+      declare_parameter<bool>("require_motion_command_state_input", false);
     replay_processed_imu_ =
       declare_parameter<bool>("replay_processed_imu", true);
     replay_recorded_tf_static_ =
@@ -209,6 +218,9 @@ public:
     bootstrap_timestamp_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
       reader_->get_metadata().starting_time.time_since_epoch()).count();
     validate_bag_topics();
+    if (replay_recorded_tf_static_) {
+      cache_recorded_static_transforms(storage_options);
+    }
 
     RCLCPP_INFO(
       get_logger(), "Loaded odometry source bag %s at %.2fx",
@@ -264,11 +276,16 @@ private:
       throw std::runtime_error(
               "replay_processed_imu is false but /imu/data_raw is absent or empty");
     }
-    validate_optional_topic(
+    const bool have_controller_attitude = validate_optional_topic(
       topics,
       message_counts,
       kControllerAttitudeTopic,
       kControllerAttitudeType);
+    if (require_controller_attitude_input_ && !have_controller_attitude) {
+      throw std::runtime_error(
+              "controller-attitude replay was requested but "
+              "/imu/controller_attitude is absent or empty");
+    }
     validate_optional_topic(
       topics,
       message_counts,
@@ -276,8 +293,13 @@ private:
       kImuTelemetryStatusType);
     validate_optional_topic(topics, message_counts, kEventTopic, kEventType);
     validate_optional_topic(topics, message_counts, kMetadataTopic, kMetadataType);
-    validate_optional_topic(
+    const bool have_motion_command_state = validate_optional_topic(
       topics, message_counts, kMotionCommandTopic, kMotionCommandType);
+    if (require_motion_command_state_input_ && !have_motion_command_state) {
+      throw std::runtime_error(
+              "stationary controller-attitude replay was requested but "
+              "/muto/motion_command_state is absent or empty");
+    }
     const bool have_recorded_tf = validate_optional_topic(
       topics, message_counts, kTfStaticTopic, kTfStaticType);
     if (replay_recorded_tf_static_ && !have_recorded_tf) {
@@ -326,12 +348,22 @@ private:
 
   bool subscribers_ready() const
   {
-    const bool imu_ready = replay_processed_imu_ ?
+    const bool standard_imu_ready = !require_standard_imu_input_ ||
+      (replay_processed_imu_ ?
       imu_publisher_->get_subscription_count() > 0 :
-      raw_imu_publisher_->get_subscription_count() > 0;
+      raw_imu_publisher_->get_subscription_count() > 0);
+    const bool controller_attitude_ready =
+      !require_controller_attitude_input_ ||
+      (controller_attitude_publisher_->get_subscription_count() > 0 &&
+      count_subscribers(kControllerAttitudeImuTopic) > 0);
+    const bool motion_command_state_ready =
+      !require_motion_command_state_input_ ||
+      motion_command_publisher_->get_subscription_count() > 0;
     const bool base_ready =
       scan_publisher_->get_subscription_count() > 0 &&
-      imu_ready &&
+      standard_imu_ready &&
+      controller_attitude_ready &&
+      motion_command_state_ready &&
       cmd_vel_publisher_->get_subscription_count() > 0;
     return base_ready &&
            (!require_foot_inputs_ ||
@@ -356,8 +388,12 @@ private:
       if (now >= minimum_ready_time && subscribers_ready()) {
         RCLCPP_INFO(
           get_logger(),
-          "Original LiDAR, IMU, command%s consumers are ready",
-          require_foot_inputs_ ? ", and foot" : "");
+          "Original LiDAR, command%s%s%s%s consumers are ready",
+          require_standard_imu_input_ ? ", IMU" : "",
+          require_foot_inputs_ ? ", foot" : "",
+          require_controller_attitude_input_ ?
+          ", controller-attitude adapter and yaw EKF" : "",
+          require_motion_command_state_input_ ? ", motion-state gate" : "");
         return true;
       }
       if (now >= deadline) {
@@ -382,6 +418,45 @@ private:
     MessageT message;
     serialization.deserialize_message(&serialized, &message);
     return message;
+  }
+
+  void cache_recorded_static_transforms(
+    const rosbag2_storage::StorageOptions & storage_options)
+  {
+    auto static_tf_reader =
+      rosbag2_transport::ReaderWriterFactory::make_reader(storage_options);
+    static_tf_reader->open(storage_options);
+    while (static_tf_reader->has_next()) {
+      auto bag_message = static_tf_reader->read_next();
+      if (bag_message->topic_name == kTfStaticTopic) {
+        recorded_static_transforms_.push_back(
+          deserialize<tf2_msgs::msg::TFMessage>(bag_message));
+      }
+    }
+    if (recorded_static_transforms_.empty()) {
+      throw std::runtime_error(
+              "recorded /tf_static was validated but could not be cached");
+    }
+  }
+
+  void publish_cached_static_transforms()
+  {
+    if (!replay_recorded_tf_static_) {
+      return;
+    }
+    publish_clock(bootstrap_timestamp_);
+    for (const auto & message : recorded_static_transforms_) {
+      tf_static_publisher_->publish(message);
+    }
+    // Give RF2O's TransformListener one delivery window before the first
+    // scan. In source bags, transient /tf_static may have been captured only
+    // after scans were already being recorded; chronological replay must not
+    // reproduce that startup race.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    RCLCPP_INFO(
+      get_logger(),
+      "Pre-published %zu recorded /tf_static messages before sensor replay",
+      recorded_static_transforms_.size());
   }
 
   void publish_clock(rcutils_time_point_value_t timestamp)
@@ -463,12 +538,12 @@ private:
     if (!wait_for_original_nodes()) {
       return;
     }
+    publish_cached_static_transforms();
 
     bool have_first_timestamp = false;
     rcutils_time_point_value_t first_timestamp = 0;
     auto wall_start = std::chrono::steady_clock::now();
     std::uint64_t published_count = 0;
-    bool recorded_tf_delivery_wait_done = false;
 
     try {
       while (!stop_requested_ && reader_->has_next()) {
@@ -506,15 +581,6 @@ private:
         if (bag_message->topic_name != kMotorTopic) {
           publish_source_message(bag_message);
         }
-        if (
-          bag_message->topic_name == kTfStaticTopic &&
-          replay_recorded_tf_static_ && !recorded_tf_delivery_wait_done)
-        {
-          const auto delivery_delay = std::chrono::milliseconds(50);
-          std::this_thread::sleep_for(delivery_delay);
-          wall_start += delivery_delay;
-          recorded_tf_delivery_wait_done = true;
-        }
         ++published_count;
       }
     } catch (const std::exception & error) {
@@ -531,6 +597,9 @@ private:
   double minimum_start_delay_sec_{0.5};
   double readiness_timeout_sec_{30.0};
   bool require_foot_inputs_{true};
+  bool require_standard_imu_input_{true};
+  bool require_controller_attitude_input_{false};
+  bool require_motion_command_state_input_{false};
   bool replay_processed_imu_{true};
   bool replay_recorded_tf_static_{false};
   std::string motor_service_name_;
@@ -543,6 +612,7 @@ private:
   std::mutex wait_mutex_;
   std::mutex motor_mutex_;
   std::string latest_motor_payload_;
+  std::vector<tf2_msgs::msg::TFMessage> recorded_static_transforms_;
 
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;

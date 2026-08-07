@@ -56,6 +56,9 @@ constexpr char kControllerAttitudeType[] =
   "muto_hexapod_interfaces_custom/msg/ControllerAttitude";
 constexpr char kImuTelemetryStatusTopic[] = "/muto/imu_telemetry_status";
 constexpr char kImuTelemetryStatusType[] = "std_msgs/msg/String";
+constexpr char kControllerYawStatusTopic[] =
+  "/muto/controller_attitude_yaw_status";
+constexpr char kControllerYawStatusType[] = "std_msgs/msg/String";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
@@ -146,6 +149,7 @@ public:
     register_topic(kRawImuTopic, kRawImuType);
     register_topic(kControllerAttitudeTopic, kControllerAttitudeType);
     register_topic(kImuTelemetryStatusTopic, kImuTelemetryStatusType);
+    register_topic(kControllerYawStatusTopic, kControllerYawStatusType);
     register_topic(kGaitTopic, kGaitType);
     register_topic(kMotionCommandTopic, kMotionCommandType);
     register_topic(kCmdVelTopic, kCmdVelType);
@@ -230,6 +234,17 @@ public:
           kImuTelemetryStatusTopic,
           kImuTelemetryStatusType);
       });
+    controller_yaw_status_subscription_ =
+      create_subscription<std_msgs::msg::String>(
+      kControllerYawStatusTopic,
+      telemetry_status_qos,
+      [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+        ++controller_yaw_status_count_;
+        write_serialized(
+          std::move(message),
+          kControllerYawStatusTopic,
+          kControllerYawStatusType);
+      });
     gait_subscription_ =
       create_subscription<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
       kGaitTopic,
@@ -303,6 +318,12 @@ public:
         "Closing bag with zero %s samples; scheduler counters are unavailable",
         kImuTelemetryStatusTopic);
     }
+    if (controller_yaw_status_count_ == 0) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Closing bag with zero %s samples; stationary-gate decisions are unavailable",
+        kControllerYawStatusTopic);
+    }
     if (writer_) {
       try {
         writer_->close();
@@ -340,7 +361,7 @@ private:
   {
     std_msgs::msg::String metadata;
     std::ostringstream json;
-    json << "{\"schema_version\":3,\"git_revision\":\""
+    json << "{\"schema_version\":4,\"git_revision\":\""
          << muto_odometry_bag_build::kGitRevision
          << "\",\"git_dirty\":"
          << (muto_odometry_bag_build::kGitDirty ? "true" : "false")
@@ -351,6 +372,9 @@ private:
          << ",\"imu_telemetry_status_capture_enabled\":true"
          << ",\"imu_telemetry_status_topic\":\""
          << kImuTelemetryStatusTopic << "\""
+         << ",\"controller_yaw_status_capture_enabled\":true"
+         << ",\"controller_yaw_status_topic\":\""
+         << kControllerYawStatusTopic << "\""
          << ",\"record_motor_angles\":"
          << (record_motor_angles_ ? "true" : "false")
          << ",\"motor_poll_rate_hz\":" << motor_poll_rate_
@@ -419,6 +443,7 @@ private:
   std::atomic<std::uint64_t> message_count_{0};
   std::atomic<std::uint64_t> controller_attitude_count_{0};
   std::atomic<std::uint64_t> imu_telemetry_status_count_{0};
+  std::atomic<std::uint64_t> controller_yaw_status_count_{0};
   std::string motor_service_name_;
   bool record_motor_angles_{false};
   double motor_poll_rate_{2.0};
@@ -431,6 +456,8 @@ private:
     controller_attitude_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     imu_telemetry_status_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    controller_yaw_status_subscription_;
   rclcpp::Subscription<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_subscription_;

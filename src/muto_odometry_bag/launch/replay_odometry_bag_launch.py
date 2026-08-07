@@ -75,6 +75,33 @@ def generate_launch_description():
             'rf2o_yaw_deadband': LaunchConfiguration(
                 'rf2o_yaw_deadband'
             ),
+            'fuse_controller_attitude_yaw': LaunchConfiguration(
+                'fuse_controller_attitude_yaw'
+            ),
+            'controller_attitude_yaw_variance': LaunchConfiguration(
+                'controller_attitude_yaw_variance'
+            ),
+            'controller_attitude_stationary_gate': LaunchConfiguration(
+                'controller_attitude_stationary_gate'
+            ),
+            'controller_attitude_stationary_settle_sec': LaunchConfiguration(
+                'controller_attitude_stationary_settle_sec'
+            ),
+            'controller_attitude_motion_state_timeout_sec': LaunchConfiguration(
+                'controller_attitude_motion_state_timeout_sec'
+            ),
+            'controller_attitude_stability_window_sec': LaunchConfiguration(
+                'controller_attitude_stability_window_sec'
+            ),
+            'controller_attitude_minimum_snapshots': LaunchConfiguration(
+                'controller_attitude_minimum_snapshots'
+            ),
+            'controller_attitude_max_yaw_span_rad': LaunchConfiguration(
+                'controller_attitude_max_yaw_span_rad'
+            ),
+            'controller_attitude_republish_interval_sec': LaunchConfiguration(
+                'controller_attitude_republish_interval_sec'
+            ),
         }.items(),
     )
 
@@ -175,6 +202,57 @@ def generate_launch_description():
                 'launching the current static sensor TF publishers.'
             ),
         ),
+        DeclareLaunchArgument(
+            'fuse_controller_attitude_yaw',
+            default_value='true',
+            description=(
+                'Replace the sparse raw-gyro EKF input with stable, stop-only '
+                'relative yaw adapted from recorded controller attitude.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_yaw_variance',
+            default_value='0.004873878716587337',
+            description=(
+                'Yaw variance in rad^2 for accepted 0x60 corrections; the '
+                'default is (4 deg)^2.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stationary_gate',
+            default_value='true',
+            description='Enable the stop-only stability gate.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stationary_settle_sec',
+            default_value='2.0',
+            description='Required stationary dwell before correction.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_motion_state_timeout_sec',
+            default_value='0.25',
+            description='Maximum accepted motion-command-state age.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_stability_window_sec',
+            default_value='1.0',
+            description='Changed-attitude stability window in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_minimum_snapshots',
+            default_value='3',
+            description='Minimum changed snapshots in the stable window.',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_max_yaw_span_rad',
+            default_value='0.017453292519943295',
+            description='Maximum stable-window yaw span (1 degree).',
+        ),
+        DeclareLaunchArgument(
+            'controller_attitude_republish_interval_sec',
+            default_value='0.0',
+            description='Zero allows one correction per stationary episode.',
+        ),
         sensor_tf,
         original_odometry,
         Node(
@@ -198,6 +276,32 @@ def generate_launch_description():
                 ),
                 'require_foot_inputs': ParameterValue(
                     LaunchConfiguration('launch_foot_odometry'),
+                    value_type=bool,
+                ),
+                'require_standard_imu_input': ParameterValue(
+                    PythonExpression([
+                        "'",
+                        LaunchConfiguration(
+                            'fuse_controller_attitude_yaw'
+                        ),
+                        "' != 'true'",
+                    ]),
+                    value_type=bool,
+                ),
+                'require_controller_attitude_input': ParameterValue(
+                    LaunchConfiguration('fuse_controller_attitude_yaw'),
+                    value_type=bool,
+                ),
+                'require_motion_command_state_input': ParameterValue(
+                    PythonExpression([
+                        "'",
+                        LaunchConfiguration('fuse_controller_attitude_yaw'),
+                        "' == 'true' and '",
+                        LaunchConfiguration(
+                            'controller_attitude_stationary_gate'
+                        ),
+                        "' == 'true'",
+                    ]),
                     value_type=bool,
                 ),
                 'replay_processed_imu': ParameterValue(

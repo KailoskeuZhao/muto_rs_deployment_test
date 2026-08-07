@@ -4,6 +4,10 @@ import argparse
 import sys
 import time
 
+from muto_hexapod_interfaces_custom.msg import (
+    ControllerAttitude,
+    MotionCommandState,
+)
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.duration import Duration
@@ -16,6 +20,12 @@ from tf2_ros import Buffer, TransformListener
 
 
 MESSAGE_TYPES = {
+    'muto_hexapod_interfaces_custom/msg/ControllerAttitude': (
+        ControllerAttitude
+    ),
+    'muto_hexapod_interfaces_custom/msg/MotionCommandState': (
+        MotionCommandState
+    ),
     'nav_msgs/msg/OccupancyGrid': OccupancyGrid,
     'nav_msgs/msg/Odometry': Odometry,
     'sensor_msgs/msg/Imu': Imu,

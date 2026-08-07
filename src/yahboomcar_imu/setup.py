@@ -22,6 +22,8 @@ setup(
         'console_scripts': [
             'yahboomcar_imu = yahboomcar_imu.imu_node:main',
             'gyro_orientation_test_node = yahboomcar_imu.gyro_orientation_test_node:main',
+            'controller_attitude_yaw_adapter = '
+            'yahboomcar_imu.controller_attitude_yaw_adapter:main',
         ],
     },
 )

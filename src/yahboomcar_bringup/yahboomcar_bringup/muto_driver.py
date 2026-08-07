@@ -407,7 +407,8 @@ class yahboomcar_driver(Node):
             self.get_logger().info(
                 'Controller-fused 0x60 attitude polling enabled at '
                 f'{imu_attitude_publish_rate_hz:.1f} Hz on '
-                '/imu/controller_attitude; diagnostic only, not fused')
+                '/imu/controller_attitude; localization decides whether to '
+                'use the guarded yaw adapter')
         else:
             self.get_logger().info(
                 'Controller-fused 0x60 attitude polling disabled')

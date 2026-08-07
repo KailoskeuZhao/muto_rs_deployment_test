@@ -35,8 +35,8 @@ def generate_launch_description():
         description=(
             "Host polling rate for the controller-fused 0x60 Euler attitude. "
             "The coordinated gait-slot scheduler gives it a separate serial "
-            "opportunity from raw 0x61. Set 0.0 to disable; this diagnostic "
-            "topic is not fused by the EKF."
+            "opportunity from raw 0x61. Set 0.0 to disable. The localization "
+            "launch normally consumes it through the guarded yaw adapter."
         ),
     )
     imu_suppress_identical_snapshots_arg = DeclareLaunchArgument(

@@ -7,6 +7,7 @@ from launch import LaunchContext
 from launch.actions import DeclareLaunchArgument
 from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
+import pytest
 import yaml
 
 sys.dont_write_bytecode = True
@@ -258,6 +259,16 @@ def test_ekf_sensor_ownership_keeps_foot_yaw_out_of_the_filter():
     assert int(
         localization_defaults['foot_max_motor_sequence_gap']
     ) == 10
+    assert localization_defaults['fuse_controller_attitude_yaw'] == 'true'
+    assert float(
+        localization_defaults['controller_attitude_yaw_variance']
+    ) == pytest.approx(0.004873878716587337)
+    assert localization_defaults[
+        'controller_attitude_stationary_gate'
+    ] == 'true'
+    assert float(localization_defaults[
+        'controller_attitude_stationary_settle_sec'
+    ]) == 2.0
 
 
 def test_measured_rf2o_covariance_profile_is_the_replayable_default():
@@ -344,7 +355,7 @@ def test_hardware_motor_polling_above_two_hz_requires_opt_in():
     ] == 'false'
 
 
-def test_controller_attitude_is_recorded_and_optionally_replayed_not_fused():
+def test_controller_attitude_has_a_stationary_relative_yaw_fusion_path():
     recorder = (
         ODOMETRY_BAG_ROOT / 'src' / 'odometry_bag_recorder.cpp'
     ).read_text(encoding='utf-8')
@@ -354,6 +365,13 @@ def test_controller_attitude_is_recorded_and_optionally_replayed_not_fused():
     ekf = _load_yaml(
         HARDWARE_ROOT / 'config' / 'ekf_lidar_imu.yaml'
     )['ekf_filter_node']['ros__parameters']
+    attitude_ekf = _load_yaml(
+        HARDWARE_ROOT / 'config' / 'ekf_controller_attitude_yaw.yaml'
+    )['ekf_filter_node']['ros__parameters']
+    adapter = (
+        SOURCE_ROOT / 'yahboomcar_imu' / 'yahboomcar_imu' /
+        'controller_attitude_yaw_adapter.py'
+    ).read_text(encoding='utf-8')
 
     for source in (recorder, replayer):
         assert '/imu/controller_attitude' in source
@@ -362,13 +380,104 @@ def test_controller_attitude_is_recorded_and_optionally_replayed_not_fused():
             'muto_hexapod_interfaces_custom/msg/ControllerAttitude'
             in source
         )
-    assert r'\"schema_version\":3' in recorder
+    assert r'\"schema_version\":4' in recorder
     assert 'imu_telemetry_status_capture_enabled' in recorder
+    assert 'controller_yaw_status_capture_enabled' in recorder
     assert 'kImuTelemetryStatusType' in replayer
     assert 'kImuTelemetryStatusTopic,' in replayer
     assert 'validate_optional_topic(' in replayer
     assert ekf['imu0'] == '/imu/data_processed'
     assert '/imu/controller_attitude' not in str(ekf)
+    assert attitude_ekf['imu0'] == '/imu/controller_attitude_imu'
+    assert attitude_ekf['imu0_config'] == [
+        False, False, False,
+        False, False, True,
+        False, False, False,
+        False, False, False,
+        False, False, False,
+    ]
+    assert attitude_ekf['imu0_relative'] is True
+    assert attitude_ekf['imu0_differential'] is False
+    assert float(attitude_ekf['imu0_pose_rejection_threshold']) == 1.0
+    assert 'suppress_identical_snapshots' in adapter
+    assert 'StationaryAttitudeGate' in adapter
+    assert 'motion_state_is_stationary' in adapter
+    assert '/muto/controller_attitude_yaw_status' in adapter
+    assert 'angular_velocity_covariance[0] = -1.0' in adapter
+    assert 'durability=DurabilityPolicy.VOLATILE' in adapter
+
+    localization_defaults, _ = _launch_defaults(
+        HARDWARE_ROOT / 'launch' / 'ekf_imu_lidar_launch.py'
+    )
+    pipeline_defaults, _ = _launch_defaults(
+        PACKAGE_ROOT / 'launch' / 'muto_nav2_pipeline_launch.py'
+    )
+    replay_defaults, _ = _launch_defaults(
+        ODOMETRY_BAG_ROOT / 'launch' / 'replay_odometry_bag_launch.py'
+    )
+    comparison_defaults, _ = _launch_defaults(
+        ODOMETRY_BAG_ROOT / 'launch' /
+        'replay_odometry_comparison_launch.py'
+    )
+    for defaults in (
+        localization_defaults,
+        pipeline_defaults,
+        replay_defaults,
+    ):
+        assert defaults['fuse_controller_attitude_yaw'] == 'true'
+        assert float(
+            defaults['controller_attitude_yaw_variance']
+        ) == pytest.approx(0.004873878716587337)
+        assert defaults['controller_attitude_stationary_gate'] == 'true'
+        assert float(
+            defaults['controller_attitude_stationary_settle_sec']
+        ) == 2.0
+        assert float(
+            defaults['controller_attitude_motion_state_timeout_sec']
+        ) == 0.25
+        assert float(
+            defaults['controller_attitude_stability_window_sec']
+        ) == 1.0
+        assert int(
+            defaults['controller_attitude_minimum_snapshots']
+        ) == 3
+        assert float(
+            defaults['controller_attitude_max_yaw_span_rad']
+        ) == pytest.approx(0.017453292519943295)
+        assert float(
+            defaults['controller_attitude_republish_interval_sec']
+        ) == 0.0
+    assert comparison_defaults['compare_controller_attitude'] == 'false'
+    assert comparison_defaults[
+        'lidar_controller_attitude_output_topic'
+    ] == '/odometry/lidar_controller_attitude'
+    pipeline = (
+        PACKAGE_ROOT / 'launch' / 'muto_nav2_pipeline_launch.py'
+    ).read_text(encoding='utf-8')
+    readiness_gate = (
+        PACKAGE_ROOT / 'scripts' / 'pipeline_readiness_gate'
+    ).read_text(encoding='utf-8')
+    assert '/imu/controller_attitude' in pipeline
+    assert '/muto/motion_command_state' in pipeline
+    assert 'localization_controller_attitude_enabled' in pipeline
+    assert 'localization_raw_imu_enabled' in pipeline
+    assert 'MotionCommandState' in readiness_gate
+    assert (
+        'muto_hexapod_interfaces_custom/msg/MotionCommandState'
+        in readiness_gate
+    )
+    assert 'require_standard_imu_input' in replayer
+    assert 'require_controller_attitude_input' in replayer
+    assert 'require_motion_command_state_input' in replayer
+    assert 'motion_command_publisher_->get_subscription_count() > 0' in (
+        replayer
+    )
+    assert 'count_subscribers(kControllerAttitudeImuTopic) > 0' in replayer
+    assert 'cache_recorded_static_transforms' in replayer
+    assert 'publish_cached_static_transforms();' in replayer
+    assert replayer.index('publish_cached_static_transforms();') < (
+        replayer.index('while (!stop_requested_ && reader_->has_next())')
+    )
 
 
 def test_driver_uses_one_gait_slotted_telemetry_scheduler():
@@ -393,12 +502,16 @@ def test_odometry_comparison_varies_inputs_not_covariance_profile():
     assert defaults['rf2o_covariance_profile'] == 'measured'
     assert float(defaults['minimum_start_delay_sec']) == 2.0
     assert defaults['foot_odometry_source'] == 'measured_joints'
+    assert defaults['launch_foot_odometry'] == 'false'
     assert float(defaults['foot_motor_poll_rate']) == 2.0
     assert int(defaults['foot_max_motor_sequence_gap']) == 10
     assert defaults['lidar_only_output_topic'] == '/odometry/lidar_only'
     assert defaults['lidar_imu_output_topic'] == '/odometry/lidar_imu'
     assert defaults['raw_lidar_imu_output_topic'] == (
         '/odometry/raw_lidar_imu'
+    )
+    assert defaults['lidar_controller_attitude_output_topic'] == (
+        '/odometry/lidar_controller_attitude'
     )
 
     spec = importlib.util.spec_from_file_location(

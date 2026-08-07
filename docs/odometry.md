@@ -285,6 +285,8 @@ IMU topics:
 | `/imu/mag_raw` | `raw_imu_link` | Raw magnetometer values. |
 | `/imu/data_processed` | `imu_link` | Scaled accelerometer and gyro data used by localization experiments. |
 | `/imu/controller_attitude` | unset pending validation | Vendor-fused `0x60` roll, pitch, and yaw in decoded degrees plus the unscaled temperature byte. |
+| `/imu/controller_attitude_imu` | `imu_link` | Sparse yaw-only startup anchor and stable stop corrections used by the default EKF branch. |
+| `/muto/controller_attitude_yaw_status` | n/a | One-second stationary-gate state and acceptance/rejection counters. |
 
 `/imu/data_processed` does not provide orientation. Its orientation covariance is
 set to `-1`, which tells consumers that orientation is unavailable.
@@ -320,22 +322,44 @@ values visible in the bag. The 50 Hz gait callback services at most one due
 telemetry endpoint after each gait phase, with raw polls phased between
 attitude polls. This replaces the aligned timers that the first attitude bag
 showed were starving `0x60` during motion. Scheduler and transport counters are
-published on `/muto/imu_telemetry_status`. This new scheduling change is
-code-tested but still requires the next moving hardware bag. The attitude
-message timestamp is host receive time and its
-frame is deliberately unset. Controller axis signs, Euler order, wrap,
-reference, magnetic dependence, latency, temperature units, and covariance
-remain unvalidated.
+published on `/muto/imu_telemetry_status`.
 
-The EKF currently consumes only IMU yaw rate:
+`muto_odometry_attitude_002` validated this scheduler during 110.88 s of active
+gait: 1,110 attitude replies arrived at 10.01 Hz, containing 575 changed
+snapshots, with no active-motion poll gap above 0.104 s. Changed snapshots
+arrived at about 5.04 Hz overall. Positive yaw matched counter-clockwise ROS
+rotation, negative yaw matched clockwise rotation, and the +/-180-degree wrap
+was clean. The attitude timestamp remains host receive time and the diagnostic
+message frame remains deliberately unset. Power-cycle reference, magnetic
+disturbance, acquisition latency, temperature units, and systematic covariance
+are still unvalidated.
+
+The normal EKF now uses the controller attitude only at confirmed stops:
 
 ```text
-/imu/data_processed angular_velocity.z
+/imu/controller_attitude_imu orientation.z
 ```
 
-It does not fuse IMU linear acceleration, roll/pitch, or absolute orientation in
-the normal configuration. In particular, merely recording
-`/imu/controller_attitude` does not add it to the filter.
+It does not fuse IMU linear acceleration or roll/pitch. The adapter observes
+every changed controller snapshot, but publishes only a startup reference and
+one circular-mean yaw correction per stationary episode. A correction requires
+fresh `/muto/motion_command_state`, selected and active standby, a two-second
+dwell, at least three changed samples in a one-second window, and a window span
+no greater than one degree. Motion immediately closes the gate.
+
+The EKF overlay replaces the 1.033 Hz raw gyro, uses `imu0_relative: true` so
+the arbitrary startup heading becomes zero, and assigns accepted corrections
+`(4 deg)^2 = 0.0048738787 rad^2` variance with a `1.0` pose-innovation guard.
+It never differentiates Euler angles into angular velocity. Set
+`fuse_controller_attitude_yaw:=false` to restore the sparse raw-yaw-rate path.
+
+The normalized `_002` replay admitted ten messages: the startup anchor plus
+one correction for each qualifying stop, and zero during all 575 changed
+moving snapshots. Repeating corrections every one or two seconds did not
+reduce the initial RF2O stationary drift and produced more transient
+corrections, so the default remains one per stop. Approximate field markers
+were not used as accuracy ground truth. Power-cycle and magnetic-disturbance
+behavior remains unvalidated.
 
 ## EKF Fusion
 
@@ -376,10 +400,11 @@ The EKF publishes the filtered odometry topic and the authoritative
 
 ## Measured-Joint Foot Odometry
 
-Foot/gait odometry is enabled by default. It can be disabled with:
+Foot/gait odometry is disabled by default because its blocking motor reads
+disturb gait timing. Enable it only for a controlled diagnostic run:
 
 ```bash
-ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=false
+ros2 launch yahboomcar_bringup ekf_imu_lidar_launch.py launch_foot_odometry:=true
 ```
 
 `foot_odometry_node` is measured-joint kinematic odometry, but it is not
@@ -545,21 +570,23 @@ straight and yaw displacement were severely under-scaled and the blocking
 reads delayed the gait and IMU loops. Moving foot velocity is therefore not
 validated for production. Joint quantization, uncertain feedback semantics,
 commanded rather than sensed contact, and unmeasured slip remain limitations.
-Foot-derived yaw rate is not fused; RF2O supplies yaw and the IMU supplies
-`wz`.
+Foot-derived yaw rate is not fused. RF2O supplies moving yaw; the default
+controller-attitude branch adds only sparse stop-time relative-yaw checks.
 
 When `launch_foot_odometry:=true`, `ekf_lidar_imu_with_foot.yaml` is loaded as
 an overlay on the primary
 `ekf_lidar_imu.yaml` configuration. `/foot_odom` contributes only planar body
-velocity (`vx`, `vy`). Pose and yaw still come from RF2O, yaw rate still comes
-from the IMU, and the foot node runs with `publish_tf:=false`.
+velocity (`vx`, `vy`). Pose and moving yaw still come from RF2O. The default
+branch receives guarded controller yaw only while stopped; the raw-gyro
+rollback is selected with `fuse_controller_attitude_yaw:=false`. The foot node
+runs with `publish_tf:=false` in both cases.
 
 ## IMU-Only EKF Test
 
-`ekf_imu_lidar_launch.py imu_only:=true` starts an EKF with
-`ekf_imu_only.yaml`. That configuration only fuses IMU yaw rate. It is useful as
-a wiring test for `/imu/data_processed`, but it is not a complete mobile-base
-odometry source because it has no translational input and no absolute yaw input.
+`ekf_imu_lidar_launch.py imu_only:=true` always starts the raw-IMU wiring test
+from `ekf_imu_only.yaml`; the controller-attitude launch switch is ignored in
+this mode. It fuses only `/imu/data_processed` yaw rate and is not a complete
+mobile-base odometry source because it has no translational input.
 
 ## Removed Legacy LiDAR Paths
 
@@ -661,8 +688,10 @@ time/TF problem.
 - RF2O yaw can still jump if scan matching fails badly; the deadband wrapper now
   rejects sudden large translation and yaw updates using threshold plus rate
   checks.
-- The IMU is not providing absolute orientation; it only helps as a yaw-rate
-  source.
+- The default `0x60` branch supplies sparse, relative stop-time yaw checks. It
+  is not magnetic-north ground truth and still needs power-cycle and magnetic-
+  disturbance validation. Use the raw-gyro rollback if the startup anchor or
+  gate status is unhealthy.
 - Foot odometry uses measured joint FK but still lacks contact and slip sensing;
   it should remain low trust, and moving output is unavailable at 2 Hz.
 - Depth camera information adds forward obstacle observations to Nav2, but it is

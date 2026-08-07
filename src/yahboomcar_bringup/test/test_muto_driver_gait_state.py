@@ -11,7 +11,12 @@ from muto_hexapod_lib_custom.movement.velocity_calibration import (
     VelocityCalibrationProfile,
 )
 from yahboomcar_bringup import muto_driver as muto_driver_module
-from yahboomcar_bringup.muto_driver import yahboomcar_driver
+from yahboomcar_bringup.muto_driver import (
+    ATTITUDE_TELEMETRY,
+    RAW_TELEMETRY,
+    TelemetryScheduler,
+    yahboomcar_driver,
+)
 
 
 class FakeStamp:
@@ -203,6 +208,8 @@ def timer_driver(last_cmd_vel_monotonic):
     driver.warnings = []
     driver.get_logger = lambda: SimpleNamespace(
         warn=lambda message, **_kwargs: driver.warnings.append(message))
+    driver.service_imu_telemetry = lambda: False
+    driver.maybe_publish_imu_telemetry_status = lambda: False
     return driver
 
 
@@ -234,11 +241,17 @@ def test_locomotion_timer_does_not_recommand_released_motors(monkeypatch):
     monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.0)
     driver = timer_driver(last_cmd_vel_monotonic=9.8)
     driver.motors_released = True
+    calls = []
+    driver.service_imu_telemetry = lambda: calls.append('telemetry')
+    driver.maybe_publish_imu_telemetry_status = (
+        lambda: calls.append('status'))
 
     yahboomcar_driver.update_locomotion(driver)
 
     assert driver.muto.commands == []
     assert driver.muto.tick_count == 0
+    assert driver.last_locomotion_tick_monotonic == 10.0
+    assert calls == ['telemetry', 'status']
 
 
 def test_locomotion_timer_reports_a_missed_tick_deadline(monkeypatch):
@@ -266,30 +279,311 @@ class FakeImuPublisher:
         self.attitude_skipped = 0
         self.timeouts = []
         self.attitude_timeouts = []
+        self.raw_result = True
+        self.attitude_result = True
+        self.poll_count = 0
+        self.successful_read_count = 0
+        self.failed_read_count = 0
+        self.changed_snapshot_count = 0
+        self.duplicate_sample_count = 0
+        self.skipped_for_locomotion_count = 0
+        self.attitude_poll_count = 0
+        self.successful_attitude_read_count = 0
+        self.failed_attitude_read_count = 0
+        self.attitude_skipped_for_locomotion_count = 0
 
     def note_poll_skipped_for_locomotion(self):
         self.skipped += 1
+        self.skipped_for_locomotion_count += 1
 
     def publish_imu_data(self, response_timeout_sec=None):
         self.timeouts.append(response_timeout_sec)
-        return True
+        self.poll_count += 1
+        if self.raw_result:
+            self.successful_read_count += 1
+            self.changed_snapshot_count += 1
+        else:
+            self.failed_read_count += 1
+        return self.raw_result
 
     def note_attitude_poll_skipped_for_locomotion(self):
         self.attitude_skipped += 1
+        self.attitude_skipped_for_locomotion_count += 1
 
     def publish_controller_attitude(self, response_timeout_sec=None):
         self.attitude_timeouts.append(response_timeout_sec)
-        return True
+        self.attitude_poll_count += 1
+        if self.attitude_result:
+            self.successful_attitude_read_count += 1
+        else:
+            self.failed_attitude_read_count += 1
+        return self.attitude_result
+
+
+def telemetry_driver(start_monotonic=0.0, raw_rate_hz=10.0,
+                     attitude_rate_hz=10.0):
+    driver = SimpleNamespace(
+        imu=FakeImuPublisher(),
+        last_locomotion_tick_monotonic=-0.010,
+        locomotion_update_rate_hz=50.0,
+        imu_locomotion_guard_sec=0.003,
+        telemetry_scheduler=TelemetryScheduler(
+            raw_rate_hz,
+            attitude_rate_hz,
+            start_monotonic,
+        ),
+        telemetry_control_slot_count=0,
+        telemetry_idle_slot_count=0,
+        raw_telemetry_selected_count=0,
+        attitude_telemetry_selected_count=0,
+        raw_telemetry_deferred_count=0,
+        attitude_telemetry_deferred_count=0,
+        last_selected_telemetry_endpoint='',
+    )
+    driver._poll_imu_outcome = lambda: (
+        yahboomcar_driver._poll_imu_outcome(driver))
+    driver._poll_controller_attitude_outcome = lambda: (
+        yahboomcar_driver._poll_controller_attitude_outcome(driver))
+    return driver
+
+
+def service_telemetry(driver, now_monotonic):
+    driver.last_locomotion_tick_monotonic = now_monotonic - 0.010
+    return yahboomcar_driver.service_imu_telemetry(
+        driver,
+        now_monotonic=now_monotonic,
+    )
+
+
+def test_control_slot_dispatches_gait_before_telemetry(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.0)
+    driver = timer_driver(last_cmd_vel_monotonic=9.8)
+    order = []
+    driver.muto.tick_motion = lambda: order.append('gait')
+    driver.service_imu_telemetry = lambda: order.append('telemetry')
+
+    yahboomcar_driver.update_locomotion(driver)
+
+    assert order == ['gait', 'telemetry']
+
+
+def test_scheduler_produces_ten_hz_attitude_and_raw(monkeypatch):
+    current = [0.0]
+    monkeypatch.setattr(
+        muto_driver_module.time,
+        'monotonic',
+        lambda: current[0],
+    )
+    driver = telemetry_driver()
+
+    attitude_times = []
+    raw_times = []
+    for slot in range(50):
+        current[0] = round(slot * 0.020, 9)
+        before_attitude = len(driver.imu.attitude_timeouts)
+        before_raw = len(driver.imu.timeouts)
+        service_telemetry(driver, current[0])
+        attitude_delta = (
+            len(driver.imu.attitude_timeouts) - before_attitude)
+        raw_delta = len(driver.imu.timeouts) - before_raw
+        assert attitude_delta + raw_delta <= 1
+        if attitude_delta:
+            attitude_times.append(current[0])
+        if raw_delta:
+            raw_times.append(current[0])
+
+    assert len(driver.imu.attitude_timeouts) == 10
+    assert len(driver.imu.timeouts) == 10
+    assert driver.attitude_telemetry_selected_count == 10
+    assert driver.raw_telemetry_selected_count == 10
+    assert driver.telemetry_control_slot_count == 50
+    assert all(
+        0.080 <= later - earlier <= 0.120
+        for earlier, later in zip(attitude_times, attitude_times[1:])
+    )
+    assert all(
+        0.080 <= later - earlier <= 0.120
+        for earlier, later in zip(raw_times, raw_times[1:])
+    )
+
+
+def test_simultaneous_due_attitude_wins_then_raw_runs_next_slot(monkeypatch):
+    current = [1.0]
+    monkeypatch.setattr(
+        muto_driver_module.time,
+        'monotonic',
+        lambda: current[0],
+    )
+    driver = telemetry_driver(start_monotonic=1.0)
+    driver.telemetry_scheduler.next_raw_monotonic = 1.0
+    driver.telemetry_scheduler.next_attitude_monotonic = 1.0
+
+    service_telemetry(driver, 1.0)
+
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert driver.imu.timeouts == []
+    assert driver.last_selected_telemetry_endpoint == ATTITUDE_TELEMETRY
+    assert driver.raw_telemetry_deferred_count == 1
+    assert driver.telemetry_scheduler.next_raw_monotonic == 1.0
+
+    current[0] = 1.020
+    service_telemetry(driver, 1.020)
+
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert len(driver.imu.timeouts) == 1
+
+
+def test_attitude_priority_over_older_overdue_raw(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 1.0)
+    driver = telemetry_driver(start_monotonic=1.0)
+    driver.telemetry_scheduler.next_raw_monotonic = 0.8
+    driver.telemetry_scheduler.next_attitude_monotonic = 1.0
+
+    service_telemetry(driver, 1.0)
+
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert driver.imu.timeouts == []
+    assert driver.telemetry_scheduler.next_raw_monotonic == 0.8
+
+
+def test_failed_attitude_does_not_fall_through_to_raw(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 1.0)
+    driver = telemetry_driver(start_monotonic=1.0)
+    driver.telemetry_scheduler.next_raw_monotonic = 1.0
+    driver.telemetry_scheduler.next_attitude_monotonic = 1.0
+    driver.imu.attitude_result = False
+
+    assert service_telemetry(driver, 1.0) is False
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert driver.imu.timeouts == []
+    assert driver.telemetry_scheduler.next_attitude_monotonic == 1.1
+
+
+def test_deadline_skip_retries_selected_endpoint_next_slot(monkeypatch):
+    current = [1.018]
+    monkeypatch.setattr(
+        muto_driver_module.time,
+        'monotonic',
+        lambda: current[0],
+    )
+    driver = telemetry_driver(start_monotonic=1.0)
+    driver.telemetry_scheduler.next_raw_monotonic = 2.0
+    driver.last_locomotion_tick_monotonic = 1.0
+
+    assert yahboomcar_driver.service_imu_telemetry(
+        driver, now_monotonic=1.018) is False
+    assert driver.imu.attitude_skipped == 1
+    assert driver.imu.attitude_timeouts == []
+    assert driver.telemetry_scheduler.next_attitude_monotonic == 1.0
+
+    current[0] = 1.030
+    driver.last_locomotion_tick_monotonic = 1.020
+    assert yahboomcar_driver.service_imu_telemetry(
+        driver, now_monotonic=1.030) is True
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert driver.telemetry_scheduler.next_attitude_monotonic == 1.1
+
+
+def test_late_callback_advances_deadline_without_catchup(monkeypatch):
+    current = [0.45]
+    monkeypatch.setattr(
+        muto_driver_module.time,
+        'monotonic',
+        lambda: current[0],
+    )
+    driver = telemetry_driver(start_monotonic=0.1)
+    driver.telemetry_scheduler.next_raw_monotonic = 1.0
+
+    service_telemetry(driver, 0.45)
+
+    assert len(driver.imu.attitude_timeouts) == 1
+    assert abs(
+        driver.telemetry_scheduler.next_attitude_monotonic - 0.5
+    ) < 1e-9
+
+    current[0] = 0.46
+    service_telemetry(driver, 0.46)
+    assert len(driver.imu.attitude_timeouts) == 1
+
+
+def test_disabled_attitude_services_only_raw(monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 0.0)
+    driver = telemetry_driver(attitude_rate_hz=0.0)
+
+    service_telemetry(driver, 0.0)
+
+    assert driver.imu.attitude_timeouts == []
+    assert len(driver.imu.timeouts) == 1
+    assert driver.last_selected_telemetry_endpoint == RAW_TELEMETRY
+
+
+def test_telemetry_status_exposes_scheduler_and_read_counters():
+    driver = telemetry_driver()
+    driver.muto = FakeMuto(gait_state('move_x'))
+    driver.imu_poll_rate_hz = 10.0
+    driver.imu_attitude_poll_rate_hz = 10.0
+    driver.imu_telemetry_status_pub = FakePublisher()
+    driver.telemetry_status_publish_count = 0
+    driver.next_telemetry_status_monotonic = 0.0
+    driver.telemetry_control_slot_count = 50
+    driver.telemetry_idle_slot_count = 7
+    driver.raw_telemetry_selected_count = 12
+    driver.raw_telemetry_deferred_count = 2
+    driver.attitude_telemetry_selected_count = 14
+    driver.attitude_telemetry_deferred_count = 3
+    driver.last_selected_telemetry_endpoint = ATTITUDE_TELEMETRY
+    driver.imu.poll_count = 10
+    driver.imu.successful_read_count = 9
+    driver.imu.failed_read_count = 1
+    driver.imu.changed_snapshot_count = 2
+    driver.imu.duplicate_sample_count = 7
+    driver.imu.skipped_for_locomotion_count = 2
+    driver.imu.attitude_poll_count = 11
+    driver.imu.successful_attitude_read_count = 10
+    driver.imu.failed_attitude_read_count = 1
+    driver.imu.attitude_skipped_for_locomotion_count = 3
+
+    assert yahboomcar_driver.maybe_publish_imu_telemetry_status(
+        driver,
+        now_monotonic=0.0,
+    ) is True
+
+    payload = json.loads(driver.imu_telemetry_status_pub.message.data)
+    assert payload['schema_version'] == 1
+    assert payload['scheduler_policy'] == 'gait_then_one_telemetry'
+    assert payload['active_mode'] == 'move_x'
+    assert payload['locomotion_update_rate_hz'] == 50.0
+    assert payload['response_timeout_sec'] == 0.008
+    assert payload['locomotion_guard_sec'] == 0.003
+    assert payload['raw_imu']['configured_poll_rate_hz'] == 10.0
+    assert payload['raw_imu'] == {
+        'attempted': 10,
+        'changed_snapshots': 2,
+        'configured_poll_rate_hz': 10.0,
+        'deadline_skips': 2,
+        'deferred': 2,
+        'duplicate_snapshots': 7,
+        'failed_reads': 1,
+        'selected': 12,
+        'successful_reads': 9,
+    }
+    assert payload['controller_attitude']['configured_poll_rate_hz'] == 10.0
+    assert payload['controller_attitude'] == {
+        'attempted': 11,
+        'configured_poll_rate_hz': 10.0,
+        'deadline_skips': 3,
+        'deferred': 3,
+        'failed_reads': 1,
+        'selected': 14,
+        'successful_reads': 10,
+    }
+    assert driver.next_telemetry_status_monotonic == 1.0
 
 
 def test_imu_poll_is_skipped_when_gait_deadline_is_too_close(monkeypatch):
     monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.018)
-    driver = SimpleNamespace(
-        imu=FakeImuPublisher(),
-        last_locomotion_tick_monotonic=10.0,
-        locomotion_update_rate_hz=50.0,
-        imu_locomotion_guard_sec=0.003,
-    )
+    driver = telemetry_driver()
+    driver.last_locomotion_tick_monotonic = 10.0
 
     assert yahboomcar_driver.poll_imu(driver) is False
     assert driver.imu.skipped == 1
@@ -298,12 +592,8 @@ def test_imu_poll_is_skipped_when_gait_deadline_is_too_close(monkeypatch):
 
 def test_imu_poll_uses_remaining_gait_budget(monkeypatch):
     monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.010)
-    driver = SimpleNamespace(
-        imu=FakeImuPublisher(),
-        last_locomotion_tick_monotonic=10.0,
-        locomotion_update_rate_hz=50.0,
-        imu_locomotion_guard_sec=0.003,
-    )
+    driver = telemetry_driver()
+    driver.last_locomotion_tick_monotonic = 10.0
 
     assert yahboomcar_driver.poll_imu(driver) is True
     assert driver.imu.skipped == 0
@@ -314,12 +604,8 @@ def test_imu_poll_uses_remaining_gait_budget(monkeypatch):
 def test_attitude_poll_is_skipped_when_gait_deadline_is_too_close(
         monkeypatch):
     monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.018)
-    driver = SimpleNamespace(
-        imu=FakeImuPublisher(),
-        last_locomotion_tick_monotonic=10.0,
-        locomotion_update_rate_hz=50.0,
-        imu_locomotion_guard_sec=0.003,
-    )
+    driver = telemetry_driver()
+    driver.last_locomotion_tick_monotonic = 10.0
 
     assert yahboomcar_driver.poll_controller_attitude(driver) is False
     assert driver.imu.attitude_skipped == 1
@@ -328,12 +614,8 @@ def test_attitude_poll_is_skipped_when_gait_deadline_is_too_close(
 
 def test_attitude_poll_uses_remaining_gait_budget(monkeypatch):
     monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.010)
-    driver = SimpleNamespace(
-        imu=FakeImuPublisher(),
-        last_locomotion_tick_monotonic=10.0,
-        locomotion_update_rate_hz=50.0,
-        imu_locomotion_guard_sec=0.003,
-    )
+    driver = telemetry_driver()
+    driver.last_locomotion_tick_monotonic = 10.0
 
     assert yahboomcar_driver.poll_controller_attitude(driver) is True
     assert driver.imu.attitude_skipped == 0

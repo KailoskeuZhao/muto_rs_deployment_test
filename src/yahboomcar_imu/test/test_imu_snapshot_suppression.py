@@ -59,6 +59,7 @@ def make_publisher():
     publisher.stale_warning_sec = 0.0
     publisher.poll_count = 0
     publisher.successful_read_count = 0
+    publisher.failed_read_count = 0
     publisher.changed_snapshot_count = 0
     publisher.duplicate_sample_count = 0
     publisher.skipped_for_locomotion_count = 0
@@ -93,6 +94,26 @@ def test_identical_accel_gyro_snapshot_is_not_retimestamped(monkeypatch):
     assert len(publisher.publisher.messages) == 2
     assert len(publisher.mag_raw_publisher.messages) == 2
     assert len(publisher.publisher_1.messages) == 2
+
+
+def test_failed_read_is_distinct_from_suppressed_duplicate(monkeypatch):
+    sample = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+    snapshots = iter((sample, sample, None))
+    monkeypatch.setattr(
+        imu_node,
+        'read_imu_raw',
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    publisher = make_publisher()
+
+    assert publisher.publish_imu_data() is True
+    assert publisher.publish_imu_data() is False
+    assert publisher.publish_imu_data() is False
+
+    assert publisher.poll_count == 3
+    assert publisher.successful_read_count == 2
+    assert publisher.duplicate_sample_count == 1
+    assert publisher.failed_read_count == 1
 
 
 def test_identical_snapshot_can_be_republished_for_diagnostics(monkeypatch):

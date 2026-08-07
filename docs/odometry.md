@@ -299,8 +299,12 @@ estimate:
 - gyro biases for x, y, and z;
 - a yaw-rate deadband before publishing `angular_velocity.z`.
 
-The host requests the baseboard's protocol `0x61` snapshot at 10 Hz. This is a
-poll rate, not an ICM-20948 ODR setting. The 2026-08-07 bag contained responsive
+The host requests the baseboard's protocol `0x61` snapshot at 10 Hz during
+normal runtime. This is a poll rate, not an ICM-20948 ODR setting. The raw
+cache changes at only about 1.033 Hz, but the experiment retains 10 Hz polling
+so its host-observed transition timing is not degraded relative to earlier
+bags. Startup
+calibration retains its independent 0.1 s attempt interval. The 2026-08-07 bag contained responsive
 serial replies but only about 1.033 changed accel/gyro snapshots per second.
 Consecutive exact duplicates are therefore suppressed by default instead of
 being published with fresh timestamps. The protocol exposes no acquisition
@@ -312,7 +316,13 @@ The driver also requests the independent fused-attitude endpoint `0x60` at a
 10 Hz host rate and publishes every successful response, including duplicates,
 on `/imu/controller_attitude`. Live testing measured roughly 5 Hz controller
 updates; requesting at 10 Hz reduces cadence aliasing and makes repeated cached
-values visible in the bag. The message timestamp is host receive time and its
+values visible in the bag. The 50 Hz gait callback services at most one due
+telemetry endpoint after each gait phase, with raw polls phased between
+attitude polls. This replaces the aligned timers that the first attitude bag
+showed were starving `0x60` during motion. Scheduler and transport counters are
+published on `/muto/imu_telemetry_status`. This new scheduling change is
+code-tested but still requires the next moving hardware bag. The attitude
+message timestamp is host receive time and its
 frame is deliberately unset. Controller axis signs, Euler order, wrap,
 reference, magnetic dependence, latency, temperature units, and covariance
 remain unvalidated.

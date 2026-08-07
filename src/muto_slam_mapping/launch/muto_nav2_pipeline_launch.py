@@ -271,8 +271,9 @@ def generate_launch_description():
             'imu_publish_rate_hz',
             default_value='10.0',
             description=(
-                'Host poll rate for the controller-cached IMU snapshot; '
-                'this does not change the ICM-20948 sample rate.'
+                'Host poll rate for the controller-cached IMU snapshot. Ten '
+                'Hz retains the prior timestamp-observation window while raw '
+                'and attitude use separate coordinated post-gait slots.'
             ),
         ),
         DeclareLaunchArgument(
@@ -280,7 +281,8 @@ def generate_launch_description():
             default_value='10.0',
             description=(
                 'Host poll rate for the controller-fused 0x60 Euler '
-                'attitude. Set 0.0 to disable; it is recorded but not fused.'
+                'attitude. It receives separate coordinated gait slots from '
+                'raw 0x61. Set 0.0 to disable; it is recorded but not fused.'
             ),
         ),
         DeclareLaunchArgument(

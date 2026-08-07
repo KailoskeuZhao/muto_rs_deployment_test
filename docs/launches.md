@@ -21,12 +21,12 @@ files invoke its installed `ekf_node`; this workspace does not keep
 | Launch file | What it starts | Usual role |
 | --- | --- | --- |
 | `muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Includes hardware, static sensor TF, LiDAR odometry/EKF, online async mapping, camera depth projection, and Nav2 planner/controller/action servers with minimum delays and topic/TF readiness gates. | One-shot full robot Nav2 pipeline. Use this for normal bringup once the robot dependencies are installed. |
-| `yahboomcar_bringup/launch/muto_hardware_launch.py` | `lidar_tg30/lidar_node`, Orbbec `astra_pro_plus.launch.py`, and the fixed-rate `yahboomcar_bringup/muto_driver` locomotion loop. The driver also publishes raw/processed IMU and diagnostic controller-fused `0x60` attitude. | Hardware source layer. Run first on the robot. The initial driver tick commands standby, so support the robot and keep its legs clear. |
+| `yahboomcar_bringup/launch/muto_hardware_launch.py` | `lidar_tg30/lidar_node`, Orbbec `astra_pro_plus.launch.py`, and the fixed-rate `yahboomcar_bringup/muto_driver` locomotion loop. The driver also publishes raw/processed IMU, diagnostic controller-fused `0x60` attitude, and cumulative IMU scheduler status. | Hardware source layer. Run first on the robot. The initial driver tick commands standby, so support the robot and keep its legs clear. |
 | `tf2_publisher/launch/all_tf2_publishers_launch.py` | Static TF publishers for `base_frame -> camera_link`, `base_frame -> lidar_frame`, and `base_frame -> imu_link`. Optional odom TF publisher is off by default. | Sensor TF layer. Needed before scan conversion, RF2O, mapping, and Nav2. |
 | `lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | Default path filters `/lidar/raw_laserscan` into `/lidar/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`, then runs RF2O and the odometry deadband/jump wrapper. | LiDAR odometry chain. Direct standalone launch lets the wrapper publish `odom -> base_frame` by default. |
 | `yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Includes the LiDAR odometry launch with odom TF disabled and runs the installed `robot_localization/ekf_node`. Measured-joint `/foot_odom` is default-off; set `launch_foot_odometry:=true` only for controlled diagnostics. | Preferred odometry/localization layer. EKF owns `odom -> base_frame`. |
-| `muto_odometry_bag/launch/record_odometry_bag_launch.py` | Records raw LiDAR, raw/processed IMU, diagnostic controller attitude, commanded gait, `cmd_vel`, endpoint events, build metadata, `/tf_static`, and optional motor-service snapshots through `rosbag2_cpp::Writer`. | Attach to a live hardware pipeline to capture only odometry source data and field-test provenance. |
-| `muto_odometry_bag/launch/replay_odometry_bag_launch.py` | Publishes recorded source topics, including optional controller attitude, and `/clock`, recreates `get_motor_angles`, and starts the normal LiDAR/foot/EKF launch. It uses current static sensor TF by default or recorded `/tf_static` on request. | Offline repeatable odometry run through the original nodes; no hardware, mapping, or Nav2. |
+| `muto_odometry_bag/launch/record_odometry_bag_launch.py` | Records raw LiDAR, raw/processed IMU, diagnostic controller attitude, IMU scheduler status, commanded gait, `cmd_vel`, endpoint events, build metadata, `/tf_static`, and optional motor-service snapshots through `rosbag2_cpp::Writer`. | Attach to a live hardware pipeline to capture only odometry source data and field-test provenance. |
+| `muto_odometry_bag/launch/replay_odometry_bag_launch.py` | Publishes recorded source topics, including optional controller attitude and IMU scheduler status, and `/clock`, recreates `get_motor_angles`, and starts the normal LiDAR/foot/EKF launch. It uses current static sensor TF by default or recorded `/tf_static` on request. | Offline repeatable odometry run through the original nodes; no hardware, mapping, or Nav2. |
 | `muto_odometry_bag/launch/replay_odometry_comparison_launch.py` | Replays one source bag through LiDAR-only, leg-only, LiDAR-plus-IMU EKF, and LiDAR-plus-leg-plus-IMU EKF paths concurrently. Only the fully fused EKF publishes odom TF. | Side-by-side odometry comparison under one replay clock. |
 | `muto_exploration_bag/launch/record_exploration_bag_launch.py` | Arms a standalone compact MCAP recorder that retains navigation, odometry, structured object results, action traffic, and operator events while excluding bulky image and point-cloud payloads. | Automatic with the command launch, or launch separately before an exploration action. |
 | `muto_nav2_bag/launch/record_nav2_bag_launch.py` | Immediately opens a manually controlled, navigation-only MCAP with TF, maps, odometry, scans, goals, paths, costmaps, commands, Nav2 action progress, and diagnostic context. | Attach to any live Nav2 run; stop with its service or `Ctrl-C`. It is independent of the mission recorder. |
@@ -135,21 +135,29 @@ explicit rollback only. Nonzero level changes wait for the next complete gait
 boundary; selected and active levels plus pending state are carried separately
 by `/muto/motion_command_state`. Stop and timeout directly command nominal
 stance and are abrupt rather than a smooth deceleration. Motor feedback never
-sleeps to settle inside the driver, because that process also owns the gait and
-IMU timers. Each gait phase normally batches six vendor leg frames into one
-serial write; `batch_gait_phase_writes:=false` is the hardware rollback.
+sleeps to settle inside the driver, because that process also owns the
+gait-slotted telemetry scheduler. Each gait phase normally batches six vendor
+leg frames into one serial write; `batch_gait_phase_writes:=false` is the
+hardware rollback.
 
-The host polls the controller's cached IMU packet at 10 Hz and suppresses
-consecutive identical accel/gyro values. Startup calibration targets ten
+After startup, the host polls the controller's cached raw IMU packet at 10 Hz
+and suppresses consecutive identical accel/gyro values. Although the cache
+changes at only about 1.033 Hz, retaining the previous host rate keeps its
+transition timestamp uncertainty comparable during the `0x60` experiment.
+Startup calibration is independent: it targets ten
 changed snapshots, permits 150 serial attempts, and has a 15 s wall-clock
 limit. See [`imu_serial_pipeline_2026-08-07.md`](imu_serial_pipeline_2026-08-07.md)
 for the controller-rate probe and firmware finding.
 
-The same driver separately requests the vendor-fused `0x60` attitude at a
+The same 50 Hz control callback requests the vendor-fused `0x60` attitude at a
 10 Hz host rate and publishes every valid response on
 `/imu/controller_attitude`. The higher request rate avoids aliasing the
 roughly 5 Hz controller producer; it does not make the controller compute at
-10 Hz. Both serial telemetry paths use the gait-deadline guard. Set
+10 Hz. Each control slot sends the gait phase first and then services at most
+one due telemetry endpoint. Raw reads are phased between attitude reads so
+they no longer compete as aligned timers. Both paths retain the gait-deadline
+guard. Cumulative scheduling and read counters are published on
+`/muto/imu_telemetry_status` for bag analysis. Set
 `imu_attitude_publish_rate_hz:=0.0` to disable this diagnostic path. It is
 recorded for evaluation but is not an EKF input.
 

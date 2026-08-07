@@ -74,6 +74,7 @@ def make_publisher(samples):
     publisher.response_timeout_sec = imu_node.DEFAULT_RESPONSE_TIMEOUT_SEC
     publisher.attitude_poll_count = 0
     publisher.successful_attitude_read_count = 0
+    publisher.failed_attitude_read_count = 0
     publisher.attitude_skipped_for_locomotion_count = 0
     return publisher
 
@@ -118,4 +119,5 @@ def test_controller_attitude_rejects_short_and_nonfinite_payloads():
     assert publisher.controller_attitude_publisher.messages == []
     assert publisher.attitude_poll_count == 2
     assert publisher.successful_attitude_read_count == 0
+    assert publisher.failed_attitude_read_count == 2
     assert len(publisher.node.logger.warnings) == 2

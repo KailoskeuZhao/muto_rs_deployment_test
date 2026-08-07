@@ -23,7 +23,10 @@ def generate_launch_description():
         default_value="10.0",
         description=(
             "Host polling rate for the controller-cached raw IMU snapshot. "
-            "This does not configure the ICM-20948 output-data rate."
+            "Ten Hz retains the prior timestamp-observation window for the "
+            "0x60 comparison; runtime polls use separate slots in one "
+            "coordinated post-gait scheduler. This does not configure the "
+            "ICM-20948 output-data rate."
         ),
     )
     imu_attitude_publish_rate_hz_arg = DeclareLaunchArgument(
@@ -31,7 +34,9 @@ def generate_launch_description():
         default_value="10.0",
         description=(
             "Host polling rate for the controller-fused 0x60 Euler attitude. "
-            "Set 0.0 to disable; this diagnostic topic is not fused by the EKF."
+            "The coordinated gait-slot scheduler gives it a separate serial "
+            "opportunity from raw 0x61. Set 0.0 to disable; this diagnostic "
+            "topic is not fused by the EKF."
         ),
     )
     imu_suppress_identical_snapshots_arg = DeclareLaunchArgument(

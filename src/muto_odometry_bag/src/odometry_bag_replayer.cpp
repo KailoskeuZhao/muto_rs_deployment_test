@@ -58,6 +58,8 @@ constexpr char kRawImuType[] = "sensor_msgs/msg/Imu";
 constexpr char kControllerAttitudeTopic[] = "/imu/controller_attitude";
 constexpr char kControllerAttitudeType[] =
   "muto_hexapod_interfaces_custom/msg/ControllerAttitude";
+constexpr char kImuTelemetryStatusTopic[] = "/muto/imu_telemetry_status";
+constexpr char kImuTelemetryStatusType[] = "std_msgs/msg/String";
 constexpr char kGaitTopic[] = "/muto/commanded_gait_state";
 constexpr char kGaitType[] =
   "muto_hexapod_interfaces_custom/msg/CommandedGaitState";
@@ -144,6 +146,8 @@ public:
       rclcpp::QoS(rclcpp::KeepLast(20)).reliable().durability_volatile();
     const auto clock_qos =
       rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
+    const auto telemetry_status_qos =
+      rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
     const auto retained_qos =
       rclcpp::QoS(rclcpp::KeepLast(100)).reliable().transient_local();
 
@@ -156,6 +160,9 @@ public:
     controller_attitude_publisher_ = create_publisher<
       muto_hexapod_interfaces_custom::msg::ControllerAttitude>(
       kControllerAttitudeTopic, reliable_qos);
+    imu_telemetry_status_publisher_ =
+      create_publisher<std_msgs::msg::String>(
+      kImuTelemetryStatusTopic, telemetry_status_qos);
     gait_publisher_ =
       create_publisher<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
       kGaitTopic, gait_qos);
@@ -262,6 +269,11 @@ private:
       message_counts,
       kControllerAttitudeTopic,
       kControllerAttitudeType);
+    validate_optional_topic(
+      topics,
+      message_counts,
+      kImuTelemetryStatusTopic,
+      kImuTelemetryStatusType);
     validate_optional_topic(topics, message_counts, kEventTopic, kEventType);
     validate_optional_topic(topics, message_counts, kMetadataTopic, kMetadataType);
     validate_optional_topic(
@@ -409,6 +421,9 @@ private:
         deserialize<
           muto_hexapod_interfaces_custom::msg::ControllerAttitude>(
           bag_message));
+    } else if (bag_message->topic_name == kImuTelemetryStatusTopic) {
+      imu_telemetry_status_publisher_->publish(
+        deserialize<std_msgs::msg::String>(bag_message));
     } else if (bag_message->topic_name == kGaitTopic) {
       gait_publisher_->publish(
         deserialize<muto_hexapod_interfaces_custom::msg::CommandedGaitState>(
@@ -535,6 +550,8 @@ private:
   rclcpp::Publisher<
     muto_hexapod_interfaces_custom::msg::ControllerAttitude>::SharedPtr
     controller_attitude_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
+    imu_telemetry_status_publisher_;
   rclcpp::Publisher<
     muto_hexapod_interfaces_custom::msg::CommandedGaitState>::SharedPtr
     gait_publisher_;

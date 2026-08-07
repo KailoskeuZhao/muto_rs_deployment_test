@@ -357,13 +357,30 @@ def test_controller_attitude_is_recorded_and_optionally_replayed_not_fused():
 
     for source in (recorder, replayer):
         assert '/imu/controller_attitude' in source
+        assert '/muto/imu_telemetry_status' in source
         assert (
             'muto_hexapod_interfaces_custom/msg/ControllerAttitude'
             in source
         )
+    assert r'\"schema_version\":3' in recorder
+    assert 'imu_telemetry_status_capture_enabled' in recorder
+    assert 'kImuTelemetryStatusType' in replayer
+    assert 'kImuTelemetryStatusTopic,' in replayer
     assert 'validate_optional_topic(' in replayer
     assert ekf['imu0'] == '/imu/data_processed'
     assert '/imu/controller_attitude' not in str(ekf)
+
+
+def test_driver_uses_one_gait_slotted_telemetry_scheduler():
+    driver = (
+        HARDWARE_ROOT / 'yahboomcar_bringup' / 'muto_driver.py'
+    ).read_text(encoding='utf-8')
+
+    assert 'class TelemetryScheduler' in driver
+    assert 'self.service_imu_telemetry()' in driver
+    assert 'self.imu_timer = self.create_timer' not in driver
+    assert 'self.imu_attitude_timer = self.create_timer' not in driver
+    assert "'scheduler_policy': 'gait_then_one_telemetry'" in driver
 
 
 def test_odometry_comparison_varies_inputs_not_covariance_profile():

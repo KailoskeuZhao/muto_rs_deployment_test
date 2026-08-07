@@ -138,8 +138,8 @@ Useful top-level switches include:
 | `cmd_vel_timeout` | `0.5` | Returns the gait to standby when velocity commands stop. |
 | `locomotion_command_mapping` | `calibrated` | Uses an explicit physical velocity profile; `legacy_100` is rollback-only. |
 | `locomotion_calibration_file` | `muto_locomotion_provisional_20260806.yaml` | Provisional gait-level mapping; replace after marked-field trials. |
-| `imu_publish_rate_hz` | `10.0` | Host poll rate for the controller-cached snapshot; it does not set sensor ODR. |
-| `imu_attitude_publish_rate_hz` | `10.0` | Host poll rate for diagnostic fused `0x60` attitude; `0.0` disables it and no EKF consumes it. |
+| `imu_publish_rate_hz` | `10.0` | Runtime host poll rate for the roughly 1.033 Hz controller-cached raw snapshot; retaining 10 Hz preserves its prior transition-time observation window for the `0x60` comparison. |
+| `imu_attitude_publish_rate_hz` | `10.0` | Host poll rate for diagnostic fused `0x60` attitude; the gait-slotted scheduler gives it dedicated opportunities intended to observe its roughly 5 Hz updates without aligned-timer contention. `0.0` disables it and no EKF consumes it. |
 | `imu_suppress_identical_snapshots` | `true` | Avoids assigning repeated accel/gyro values new ROS timestamps. |
 | `imu_response_timeout_sec` | `0.008` | Runtime serial budget; polls too close to a gait deadline are skipped. |
 | `imu_calibration_sample_count` | `10` | Changed stationary accel/gyro snapshots targeted at startup. |
@@ -244,6 +244,7 @@ The important live sensor inputs are:
 | `/camera/depth/camera_info` | `sensor_msgs/msg/CameraInfo` matching the depth profile. |
 | `/imu/data_processed` | `sensor_msgs/msg/Imu`, frame `imu_link`; yaw rate is the active EKF field. |
 | `/imu/controller_attitude` | `muto_hexapod_interfaces_custom/msg/ControllerAttitude`; host-stamped vendor Euler degrees with frame intentionally unset. |
+| `/muto/imu_telemetry_status` | `std_msgs/msg/String`; one-second cumulative raw/attitude scheduler, attempt, success, failure, duplicate, deferral, and gait-deadline-skip counters. |
 
 Current Astra Pro Plus launch defaults request color at `640x480 @ 30 Hz` and
 depth at `320x240 @ 30 Hz`. The downstream depth-to-scan and SAM2 projection
@@ -282,9 +283,16 @@ whether a replacement is pending.
 A stale or zero command returns directly to nominal stance instead of performing
 a smooth deceleration. Motor service reads use the gait target current during
 that serial read and add no artificial settling delay. The read still holds the
-shared serial bus, so slow responses can delay the gait and IMU timers. The
-2026-08-07 bag showed this for 651 of 652 motor-overlapping gait intervals;
+shared serial bus, so slow responses can delay the gait-slotted telemetry loop.
+The 2026-08-07 bag showed this for 651 of 652 motor-overlapping gait intervals;
 leave `launch_foot_odometry:=false` in normal deployment.
+
+Raw `0x61` and fused-attitude `0x60` no longer use independent ROS timers. The
+50 Hz locomotion callback sends its gait phase first, selects at most one due
+telemetry endpoint, and applies the existing response-budget guard. The
+defaults phase 10 Hz raw polling between 10 Hz attitude polling. A transaction
+that begins advances its endpoint deadline even if the controller returns no
+valid packet; a pre-I/O deadline skip remains due for the next control slot.
 
 The deadband wrapper applies its translation and yaw guards per axis when
 recent `cmd_vel` indicates that axis is stationary. Standalone
@@ -437,6 +445,8 @@ ros2 topic hz /lidar/raw_laserscan
 ros2 topic echo /camera/depth/camera_info --once
 ros2 topic hz /imu/data_processed
 ros2 topic hz /imu/controller_attitude
+ros2 topic echo /muto/imu_telemetry_status --once \
+  --qos-durability transient_local
 ros2 run tf2_ros tf2_echo base_frame lidar_frame
 ros2 run tf2_ros tf2_echo base_frame imu_link
 ros2 run tf2_ros tf2_echo base_frame camera_depth_optical_frame

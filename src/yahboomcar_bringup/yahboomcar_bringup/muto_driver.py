@@ -26,7 +26,7 @@ from muto_hexapod_lib_custom.movement.velocity_calibration import (
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from yahboomcar_imu.imu_node import ImuPublisher
 import yaml
@@ -38,6 +38,10 @@ DEFAULT_IMU_POLL_RATE_HZ = 10.0
 DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ = 10.0
 DEFAULT_IMU_LOCOMOTION_GUARD_SEC = 0.003
 MIN_IMU_TRANSACTION_BUDGET_SEC = 0.004
+IMU_TELEMETRY_STATUS_TOPIC = '/muto/imu_telemetry_status'
+IMU_TELEMETRY_STATUS_PERIOD_SEC = 1.0
+RAW_TELEMETRY = 'raw_imu'
+ATTITUDE_TELEMETRY = 'controller_attitude'
 
 
 def _default_calibration_file():
@@ -67,6 +71,77 @@ def _available_telemetry_response_timeout(driver):
     if available < MIN_IMU_TRANSACTION_BUDGET_SEC:
         return None
     return min(response_timeout, available)
+
+
+def _advance_periodic_deadline(deadline, period, now_monotonic):
+    """Advance a completed periodic job without issuing catch-up bursts."""
+    next_deadline = deadline + period
+    if next_deadline <= now_monotonic:
+        missed_periods = (
+            math.floor((now_monotonic - next_deadline) / period) + 1
+        )
+        next_deadline += missed_periods * period
+    return next_deadline
+
+
+class TelemetryScheduler:
+    """Choose at most one serial telemetry transaction per gait slot."""
+
+    def __init__(self, raw_rate_hz, attitude_rate_hz, start_monotonic):
+        self.raw_period_sec = 1.0 / raw_rate_hz
+        self.attitude_period_sec = (
+            None if attitude_rate_hz <= 0.0 else 1.0 / attitude_rate_hz
+        )
+        self.next_attitude_monotonic = (
+            None if self.attitude_period_sec is None else start_monotonic
+        )
+        # Startup calibration has just read the raw endpoint. Phase the first
+        # runtime raw poll between attitude polls instead of recreating two
+        # aligned timers that compete for the same post-gait serial budget.
+        raw_phase_offset = (
+            0.0
+            if self.attitude_period_sec is None
+            else 0.5 * min(
+                self.raw_period_sec,
+                self.attitude_period_sec,
+            )
+        )
+        self.next_raw_monotonic = start_monotonic + raw_phase_offset
+
+    def due_endpoints(self, now_monotonic):
+        raw_due = now_monotonic >= self.next_raw_monotonic
+        attitude_due = (
+            self.next_attitude_monotonic is not None
+            and now_monotonic >= self.next_attitude_monotonic
+        )
+        return raw_due, attitude_due
+
+    def select(self, now_monotonic):
+        """Prioritize due attitude; raw remains due for the following slot."""
+        raw_due, attitude_due = self.due_endpoints(now_monotonic)
+        if not raw_due and not attitude_due:
+            return None
+        if attitude_due:
+            return ATTITUDE_TELEMETRY
+        return RAW_TELEMETRY
+
+    def mark_attempted(self, endpoint, now_monotonic):
+        """Advance only after serial I/O began; guarded skips retry next slot."""
+        if endpoint == ATTITUDE_TELEMETRY:
+            self.next_attitude_monotonic = _advance_periodic_deadline(
+                self.next_attitude_monotonic,
+                self.attitude_period_sec,
+                now_monotonic,
+            )
+            return
+        if endpoint == RAW_TELEMETRY:
+            self.next_raw_monotonic = _advance_periodic_deadline(
+                self.next_raw_monotonic,
+                self.raw_period_sec,
+                now_monotonic,
+            )
+            return
+        raise ValueError(f'unknown telemetry endpoint: {endpoint}')
 
 
 def load_velocity_calibration(path, phase_rate_hz):
@@ -209,6 +284,16 @@ class yahboomcar_driver(Node):
             self.motion_command_state_topic,
             gait_state_qos,
         )
+        telemetry_status_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.imu_telemetry_status_pub = self.create_publisher(
+            String,
+            IMU_TELEMETRY_STATUS_TOPIC,
+            telemetry_status_qos,
+        )
 
         self.vel_x = 0.0
         self.vel_y = 0.0
@@ -261,6 +346,13 @@ class yahboomcar_driver(Node):
                 f'{DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ:.1f}')
             imu_attitude_publish_rate_hz = DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ
         self.imu_attitude_poll_rate_hz = imu_attitude_publish_rate_hz
+        if (
+            self.imu_poll_rate_hz + self.imu_attitude_poll_rate_hz
+            > self.locomotion_update_rate_hz
+        ):
+            self.get_logger().warn(
+                'Combined IMU telemetry poll rates exceed the locomotion '
+                'slot rate; requested rates cannot both be guaranteed')
         self.imu_locomotion_guard_sec = float(self.declare_parameter(
             'imu_locomotion_guard_sec',
             DEFAULT_IMU_LOCOMOTION_GUARD_SEC,
@@ -278,26 +370,34 @@ class yahboomcar_driver(Node):
         # the host-side desired state and does not itself write the servos.
         self.muto.tick_motion()
         self.imu = ImuPublisher(self, self.muto, imu_link)
+        scheduler_started = time.monotonic()
+        self.telemetry_scheduler = TelemetryScheduler(
+            self.imu_poll_rate_hz,
+            self.imu_attitude_poll_rate_hz,
+            scheduler_started,
+        )
+        self.telemetry_control_slot_count = 0
+        self.telemetry_idle_slot_count = 0
+        self.raw_telemetry_selected_count = 0
+        self.attitude_telemetry_selected_count = 0
+        self.raw_telemetry_deferred_count = 0
+        self.attitude_telemetry_deferred_count = 0
+        self.last_selected_telemetry_endpoint = ''
+        self.telemetry_status_publish_count = 0
+        self.next_telemetry_status_monotonic = scheduler_started
         # Reassert standby after the bounded calibration interval, then start
-        # the periodic ROS callbacks.
+        # the unified gait-first control-slot callback.
         self.update_locomotion()
         self.locomotion_timer = self.create_timer(
             1.0 / self.locomotion_update_rate_hz,
             self.update_locomotion,
         )
-        self.imu_timer = self.create_timer(
-            1.0 / imu_publish_rate_hz,
-            self.poll_imu,
-        )
-        self.imu_attitude_timer = None
-        if imu_attitude_publish_rate_hz > 0.0:
-            self.imu_attitude_timer = self.create_timer(
-                1.0 / imu_attitude_publish_rate_hz,
-                self.poll_controller_attitude,
-            )
         self.get_logger().info(
-            f'IMU controller poll rate set to {imu_publish_rate_hz:.1f} Hz; '
-            'identical accel/gyro snapshots are '
+            'Coordinated gait-first telemetry scheduler: raw 0x61 at '
+            f'{imu_publish_rate_hz:.1f} Hz, '
+            f'fused 0x60 at {imu_attitude_publish_rate_hz:.1f} Hz; '
+            'at most one telemetry transaction per gait slot. Raw identical '
+            'accel/gyro snapshots are '
             + (
                 'suppressed'
                 if self.imu.suppress_identical_snapshots
@@ -323,10 +423,15 @@ class yahboomcar_driver(Node):
 
     def update_locomotion(self):
         """Advance one gait phase from the most recent velocity command."""
+        now_monotonic = time.monotonic()
         if self.motors_released:
+            # Torque release suppresses leg commands, not sensor diagnostics.
+            # Keep a fresh slot boundary so guarded telemetry can continue.
+            self.last_locomotion_tick_monotonic = now_monotonic
+            self.service_imu_telemetry()
+            self.maybe_publish_imu_telemetry_status()
             return
 
-        now_monotonic = time.monotonic()
         previous_tick = self.last_locomotion_tick_monotonic
         self.last_locomotion_tick_monotonic = now_monotonic
         tick_period = 1.0 / self.locomotion_update_rate_hz
@@ -372,25 +477,128 @@ class yahboomcar_driver(Node):
                 throttle_duration_sec=5.0,
             )
 
-    def poll_imu(self):
-        """Poll telemetry only when it fits before the next gait deadline."""
+        # One scheduler owns both serial sensor endpoints. Running it after
+        # the gait phase prevents independently aligned timers from letting
+        # raw 0x61 traffic starve fused 0x60 attitude while the robot moves.
+        self.service_imu_telemetry()
+        self.maybe_publish_imu_telemetry_status()
+
+    def _poll_imu_outcome(self):
+        """Return ``(serial_attempted, publication_succeeded)`` for raw IMU."""
         response_timeout = _available_telemetry_response_timeout(self)
         if response_timeout is None:
             self.imu.note_poll_skipped_for_locomotion()
-            return False
+            return False, False
 
-        return self.imu.publish_imu_data(
+        return True, self.imu.publish_imu_data(
+            response_timeout_sec=response_timeout)
+
+    def poll_imu(self):
+        """Poll telemetry only when it fits before the next gait deadline."""
+        _, published = self._poll_imu_outcome()
+        return published
+
+    def _poll_controller_attitude_outcome(self):
+        """Return ``(serial_attempted, published)`` for fused attitude."""
+        response_timeout = _available_telemetry_response_timeout(self)
+        if response_timeout is None:
+            self.imu.note_attitude_poll_skipped_for_locomotion()
+            return False, False
+
+        return True, self.imu.publish_controller_attitude(
             response_timeout_sec=response_timeout)
 
     def poll_controller_attitude(self):
         """Poll fused 0x60 attitude within the same gait deadline guard."""
-        response_timeout = _available_telemetry_response_timeout(self)
-        if response_timeout is None:
-            self.imu.note_attitude_poll_skipped_for_locomotion()
+        _, published = self._poll_controller_attitude_outcome()
+        return published
+
+    def service_imu_telemetry(self, now_monotonic=None):
+        """Run no more than one due serial telemetry job after a gait phase."""
+        if now_monotonic is None:
+            now_monotonic = time.monotonic()
+        self.telemetry_control_slot_count += 1
+        raw_due, attitude_due = self.telemetry_scheduler.due_endpoints(
+            now_monotonic)
+        endpoint = self.telemetry_scheduler.select(now_monotonic)
+        if endpoint is None:
+            self.telemetry_idle_slot_count += 1
             return False
 
-        return self.imu.publish_controller_attitude(
-            response_timeout_sec=response_timeout)
+        if raw_due and attitude_due:
+            if endpoint == ATTITUDE_TELEMETRY:
+                self.raw_telemetry_deferred_count += 1
+            else:
+                self.attitude_telemetry_deferred_count += 1
+
+        self.last_selected_telemetry_endpoint = endpoint
+        if endpoint == ATTITUDE_TELEMETRY:
+            self.attitude_telemetry_selected_count += 1
+            attempted, published = (
+                self._poll_controller_attitude_outcome())
+        else:
+            self.raw_telemetry_selected_count += 1
+            attempted, published = self._poll_imu_outcome()
+
+        if attempted:
+            self.telemetry_scheduler.mark_attempted(
+                endpoint,
+                now_monotonic,
+            )
+        return published
+
+    def maybe_publish_imu_telemetry_status(self, now_monotonic=None):
+        """Publish cumulative scheduler/read counters for bag analysis."""
+        if now_monotonic is None:
+            now_monotonic = time.monotonic()
+        if now_monotonic < self.next_telemetry_status_monotonic:
+            return False
+
+        active_state = self.muto.commanded_gait_state
+        message = String()
+        message.data = json.dumps({
+            'schema_version': 1,
+            'scheduler_policy': 'gait_then_one_telemetry',
+            'active_mode': active_state.mode,
+            'locomotion_update_rate_hz': self.locomotion_update_rate_hz,
+            'response_timeout_sec': self.imu.response_timeout_sec,
+            'locomotion_guard_sec': self.imu_locomotion_guard_sec,
+            'minimum_transaction_budget_sec': (
+                MIN_IMU_TRANSACTION_BUDGET_SEC),
+            'control_slots': self.telemetry_control_slot_count,
+            'idle_slots': self.telemetry_idle_slot_count,
+            'last_selected_endpoint': self.last_selected_telemetry_endpoint,
+            'raw_imu': {
+                'configured_poll_rate_hz': self.imu_poll_rate_hz,
+                'selected': self.raw_telemetry_selected_count,
+                'deferred': self.raw_telemetry_deferred_count,
+                'attempted': self.imu.poll_count,
+                'successful_reads': self.imu.successful_read_count,
+                'failed_reads': self.imu.failed_read_count,
+                'changed_snapshots': self.imu.changed_snapshot_count,
+                'duplicate_snapshots': self.imu.duplicate_sample_count,
+                'deadline_skips': self.imu.skipped_for_locomotion_count,
+            },
+            'controller_attitude': {
+                'configured_poll_rate_hz': self.imu_attitude_poll_rate_hz,
+                'selected': self.attitude_telemetry_selected_count,
+                'deferred': self.attitude_telemetry_deferred_count,
+                'attempted': self.imu.attitude_poll_count,
+                'successful_reads': (
+                    self.imu.successful_attitude_read_count),
+                'failed_reads': self.imu.failed_attitude_read_count,
+                'deadline_skips': (
+                    self.imu.attitude_skipped_for_locomotion_count),
+            },
+        }, separators=(',', ':'), sort_keys=True)
+        self.imu_telemetry_status_pub.publish(message)
+        self.telemetry_status_publish_count += 1
+        self.next_telemetry_status_monotonic = _advance_periodic_deadline(
+            self.next_telemetry_status_monotonic,
+            IMU_TELEMETRY_STATUS_PERIOD_SEC,
+            now_monotonic,
+        )
+        return True
 
     def publish_commanded_gait_state(self, state):
         """Publish the trajectory phase just sent to the motor controller."""
@@ -598,9 +806,10 @@ class yahboomcar_driver(Node):
             return response
 
         # This callback shares the driver's single-threaded executor with the
-        # 50 Hz gait and IMU timers. Never sleep here to let a target settle:
-        # doing so pauses both real-time loops. The motor residual must reflect
-        # tracking during the normal moving gait, not an artificial hold.
+        # 50 Hz gait-slotted telemetry loop. Never sleep here to let a target
+        # settle: doing so pauses both gait and sensor servicing. The motor
+        # residual must reflect tracking during the normal moving gait, not an
+        # artificial hold.
         read_start_monotonic = time.monotonic()
         try:
             state, angles = self.muto.read_motor_with_gait_state()

@@ -86,6 +86,39 @@ it should not yet replace a high-rate yaw-rate source. Known-angle rotation,
 wrap, frame-sign, dynamic-lag, magnetic-disturbance, and covariance tests are
 required before estimator fusion.
 
+## First marked attitude bag and scheduling fault
+
+`muto_odometry_attitude_001` recorded 387.79 seconds, 2,491 controller-attitude
+messages, and six manual field markers. At rest, 2,489 samples arrived over
+250.46 seconds: 9.94 Hz host polling with a 0.200 s median interval between
+distinct Euler values. This confirms the roughly 5 Hz producer under a 10 Hz
+poller. Positive yaw matched counter-clockwise ROS rotation, negative yaw
+matched clockwise rotation, and the final turn crossed the expected +/-180
+degree wrap. Sequential turn changes from RF2O and `0x60` agreed within about
+0.4 to 3.6 degrees, but the markers were approximate and are not sufficient
+for accuracy or covariance estimation.
+
+The same bag exposed a host scheduling fault: only two `0x60` samples occurred
+during 136.89 seconds of active gait, with zero samples during stable turns and
+a maximum 26.0 second gap. The raw and attitude timers had identical 10 Hz
+periods. Raw was registered first and normally consumed the only serial read
+that fit after a moving gait phase; the attitude deadline guard then skipped
+its aligned callback. This was not rosbag loss. Gait still passed acceptance at
+50.00 Hz, with 20.64 ms active p95 and 22.38 ms active p99 intervals and no
+missing gait sequence.
+
+The workspace correction replaces both sensor timers with one gait-slotted
+scheduler. Every 20 ms control slot sends the gait phase first and services at
+most one due telemetry endpoint. Runtime raw polling remains 10 Hz for a clean
+A/B comparison with its prior timestamp-observation window, attitude polling
+also runs at 10 Hz, and the first raw deadline is
+phased 50 ms after attitude. A controller read attempt advances its deadline
+without catch-up bursts; a pre-I/O gait-deadline skip retries next slot. The
+deadline guard remains intact. `/muto/imu_telemetry_status` publishes cumulative
+selection, deferral, attempt, success, failure, duplicate, and skip counters
+and is included in schema-3 odometry bags. This correction is code-tested but
+requires a second marked moving bag before any estimator fusion decision.
+
 The exact reports and tested source were preserved on `new-spider` at:
 
 ```text
@@ -119,12 +152,18 @@ without changing a gait level.
 - The custom library can read the controller's fused roll, pitch, yaw, and
   temperature endpoint at address `0x60` without the vendor's fixed 50 ms
   post-request sleep.
-- The normal host IMU poll rate is 10 Hz, matching Yahboom's original ROS node.
-  This parameter is explicitly a host poll rate, not a sensor ODR control.
-- The driver requests fused `0x60` attitude at a separate 10 Hz host rate and
-  publishes every valid response, including duplicates, on
-  `/imu/controller_attitude`. Ten requests per second avoid the cadence alias
-  observed when polling the roughly 5 Hz producer at exactly 5 Hz.
+- The normal runtime raw-IMU host poll rate remains 10 Hz for this A/B test.
+  This avoids worsening the host-observed transition timestamp of its measured
+  1.033 Hz cache and biasing the comparison toward `0x60`. Startup calibration
+  keeps its independent 10 Hz attempt loop. Neither parameter configures ODR.
+- The driver requests fused `0x60` attitude at 10 Hz and publishes every valid
+  response, including duplicates, on `/imu/controller_attitude`. Ten requests
+  per second avoid the cadence alias observed when polling the roughly 5 Hz
+  producer at exactly 5 Hz.
+- One 50 Hz gait-slotted scheduler owns both runtime sensor endpoints. It sends
+  gait first and permits at most one raw or attitude serial request per slot.
+- `/muto/imu_telemetry_status` exposes scheduler and controller-read counters
+  and is recorded and optionally replayed by `muto_odometry_bag`.
 - `ControllerAttitude` preserves the controller's degree-valued roll, pitch,
   yaw, and raw temperature byte with host receive time. Its frame remains
   intentionally empty and no EKF configuration consumes it.
@@ -204,10 +243,13 @@ After rebuilding and deploying, record another marked-field bag and require:
 - gait mean between 49 and 51 Hz;
 - gait p95 interval at or below 22 ms and p99 at or below 25 ms;
 - no regular 40–52 ms gaps associated with motor reads;
-- a nonzero `/imu/controller_attitude` bag count, with valid publications close
-  to the requested 10 Hz after deadline skips; report exact-value transitions
-  against the prior roughly 4 Hz stationary lower bound rather than treating
-  them as a hard 5 Hz requirement;
+- nonzero `/imu/controller_attitude` and `/muto/imu_telemetry_status` bag
+  counts;
+- close to 10 Hz successful attitude polls during both standby and active gait,
+  with distinct-value transitions reported against the prior roughly 4-5 Hz
+  stationary lower bound rather than treated as a hard 5 Hz requirement;
+- scheduler status showing no prolonged attitude starvation, bounded
+  deadline-skip growth, and raw polling close to its configured 10 Hz;
 - marked stationary, positive/negative 90-degree, and full-turn segments for
   sign, wrap, lag, reset, and magnetic-disturbance analysis before any fusion;
 - measured controller response and value-transition rates from the standalone

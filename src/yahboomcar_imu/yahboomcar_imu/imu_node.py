@@ -234,11 +234,13 @@ class ImuPublisher:
 
         self.poll_count = 0
         self.successful_read_count = 0
+        self.failed_read_count = 0
         self.changed_snapshot_count = 0
         self.duplicate_sample_count = 0
         self.skipped_for_locomotion_count = 0
         self.attitude_poll_count = 0
         self.successful_attitude_read_count = 0
+        self.failed_attitude_read_count = 0
         self.attitude_skipped_for_locomotion_count = 0
         self.last_observed_motion_sample = None
         self.last_changed_monotonic = None
@@ -464,6 +466,7 @@ class ImuPublisher:
             ),
         )
         if attitude is None:
+            self.failed_attitude_read_count += 1
             return False
 
         self.successful_attitude_read_count += 1
@@ -499,6 +502,7 @@ class ImuPublisher:
         )
         self.last_read_duration_sec = time.monotonic() - read_started
         if raw is None:
+            self.failed_read_count += 1
             return False
 
         self.successful_read_count += 1

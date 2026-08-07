@@ -22,12 +22,13 @@ During replay, the existing packages still perform every calculation:
 | `/imu/data_processed` | `sensor_msgs/msg/Imu` | Existing EKF IMU input |
 | `/imu/data_raw` | `sensor_msgs/msg/Imu` | Original IMU sample for later calibration and processing changes |
 | `/imu/controller_attitude` | `muto_hexapod_interfaces_custom/msg/ControllerAttitude` | Every successful vendor-fused `0x60` roll/pitch/yaw poll plus its raw temperature byte |
+| `/muto/imu_telemetry_status` | `std_msgs/msg/String` | One-second cumulative scheduler selection, deferral, attempt, success, failure, duplicate, and deadline-skip counters |
 | `/muto/commanded_gait_state` | `muto_hexapod_interfaces_custom/msg/CommandedGaitState` | Backward-compatible commanded stance/swing and continuous foot targets |
 | `/muto/motion_command_state` | `muto_hexapod_interfaces_custom/msg/MotionCommandState` | Requested twist, selected and active levels, pending/projection flags, prediction, and profile |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Existing RF2O deadband gate input |
 | `/muto/measured_motor_state` | `std_msgs/msg/String` | Optional representation of each successful `get_motor_angles` response when motor recording is enabled |
 | `/muto/odometry_test_event` | `std_msgs/msg/String` | Timestamped JSON start/end and measured field-pose markers |
-| `/muto/odometry_recording_metadata` | `std_msgs/msg/String` | Recorder build git revision, dirty state, and bag schema |
+| `/muto/odometry_recording_metadata` | `std_msgs/msg/String` | Recorder build git revision, dirty state, bag schema, and telemetry-status capture contract |
 | `/tf_static` | `tf2_msgs/msg/TFMessage` | Exact static sensor geometry offered during recording |
 
 The recorder does not poll `get_motor_angles` by default. Set
@@ -40,6 +41,10 @@ raw temperature byte, and deliberately retains identical consecutive replies
 so cache cadence remains measurable. Its frame is intentionally unset and it
 is not an EKF input while axis signs, Euler order, wrap, reference, and
 temperature units remain unvalidated.
+The same driver publishes `/muto/imu_telemetry_status`; the recorder stores it
+without initiating any serial transaction. Its counters distinguish controller
+read failures from gait-deadline skips and valid raw snapshots suppressed as
+duplicates.
 
 The source bag intentionally excludes `scan_odom_raw`, `scan_odom`,
 `foot_odom`, `odometry/filtered`, and dynamic `/tf`. Those are results under
@@ -118,7 +123,7 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 
 ```bash
 ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
-  bag_path:=/opt/muto_rs_ws/bags/muto_odometry_attitude_001 \
+  bag_path:=/opt/muto_rs_ws/bags/muto_odometry_attitude_002 \
   record_motor_angles:=false
 ```
 
@@ -126,13 +131,20 @@ ros2 launch muto_odometry_bag record_odometry_bag_launch.py \
 
 ```bash
 ros2 topic hz /imu/controller_attitude
+ros2 topic echo /muto/imu_telemetry_status --once \
+  --qos-durability transient_local
 ```
 
 The hardware launch requests `0x60` at 10 Hz to avoid aliasing the measured
-roughly 5 Hz controller producer. Requests that cannot fit before the next gait
-deadline are skipped. Set `imu_attitude_publish_rate_hz:=0.0` on the pipeline
+roughly 5 Hz controller producer and retains raw `0x61` polling at 10 Hz so
+the comparison does not worsen its host-observed transition timestamps. A
+single gait-slotted scheduler sends the gait first and then
+services at most one endpoint; requests that cannot fit before the next gait
+deadline remain due for the next slot. Set
+`imu_attitude_publish_rate_hz:=0.0` on the pipeline
 launch for rollback. After stopping the recorder with `Ctrl-C`, require
-`ros2 bag info` to show a nonzero `/imu/controller_attitude` count.
+`ros2 bag info` to show nonzero `/imu/controller_attitude` and
+`/muto/imu_telemetry_status` counts.
 
 This rerun leaves motor polling off so the additional `0x60` traffic can be
 evaluated without the known blocking motor-read confounder. Replay it with
@@ -172,8 +184,9 @@ ros2 launch muto_odometry_bag replay_odometry_bag_launch.py \
 ```
 
 The replayed test-event and recording-metadata topics are available to
-analysis tools. Raw IMU and controller attitude are also republished when
-present. Controller attitude is optional, so older bags remain replayable. To
+analysis tools. Raw IMU, controller attitude, and IMU telemetry status are also
+republished when present. Controller attitude and telemetry status are
+optional, so schema-1/2 bags remain replayable. To
 test a revised IMU processor, launch that processor separately and suppress the
 previously processed samples so it is the only publisher of
 `/imu/data_processed`:

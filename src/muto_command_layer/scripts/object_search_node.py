@@ -479,7 +479,7 @@ class ObjectSearchNode(Node):
                 'metadata shortlist', shortlist, list(objects_by_id))
 
             final_selections = shortlist
-            if len(shortlist) > 1:
+            if shortlist:
                 self._publish_feedback(
                     goal_handle,
                     FindObject.Feedback.PHASE_VISUAL_REFINEMENT,
@@ -509,12 +509,8 @@ class ObjectSearchNode(Node):
                     visual_ids,
                 )
             elif self.log_vlm_judgements:
-                reason = (
-                    'no metadata candidates'
-                    if not shortlist else 'one metadata candidate'
-                )
                 self.get_logger().info(
-                    f'VLM visual target filtering skipped: {reason}')
+                    'VLM visual target filtering skipped: no metadata candidates')
 
             self._publish_feedback(
                 goal_handle,

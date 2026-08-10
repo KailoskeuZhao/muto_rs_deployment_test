@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import math
 import threading
+import traceback
 import time
 
 from action_msgs.msg import GoalStatus
@@ -2302,7 +2303,8 @@ class ModelCommanderNode(Node):
             )
             goal_handle.abort()
             self.get_logger().error(
-                f'Internal model-commander error: {type(error).__name__}')
+                f'Internal model-commander error: {type(error).__name__}: {error}\n'
+                f'{traceback.format_exc()}')
             return result
         finally:
             self._stop_camera_subscription()

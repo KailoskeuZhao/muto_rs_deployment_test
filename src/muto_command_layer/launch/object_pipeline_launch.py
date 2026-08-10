@@ -158,11 +158,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'vlm_base_url',
-            default_value='http://43.165.176.234:8080/',
+            default_value='http://43.165.176.234:8080/v1',
         ),
         DeclareLaunchArgument(
             'vlm_wire_api',
-            default_value='responses',
+            default_value='chat_completions',
             description='VLM protocol: responses or chat_completions.',
         ),
         DeclareLaunchArgument(

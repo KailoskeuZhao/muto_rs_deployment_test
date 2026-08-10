@@ -180,11 +180,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'vlm_base_url',
-            default_value='http://43.165.176.234:8080/',
+            default_value='http://43.165.176.234:8080/v1',
         ),
         DeclareLaunchArgument(
             'vlm_wire_api',
-            default_value='responses',
+            default_value='chat_completions',
             description='VLM protocol: responses or chat_completions.',
         ),
         DeclareLaunchArgument(
@@ -518,6 +518,23 @@ def generate_launch_description():
             description='Public active object-search action name.',
         ),
         DeclareLaunchArgument(
+            'launch_model_commander',
+            default_value='true',
+            description=(
+                'Start the persistent model-supervised object commander.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'look_for_object_action',
+            default_value='/look_for_object',
+            description='Public model-supervised object-search action name.',
+        ),
+        DeclareLaunchArgument(
+            'model_commander_status_topic',
+            default_value='/model_commander/status',
+            description='Transient model-commander heartbeat and state.',
+        ),
+        DeclareLaunchArgument(
             'registry_topic',
             default_value='/sam2/stored_objects',
             description='Transient snapshot of confirmed static objects.',
@@ -525,7 +542,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'vlm_action',
             default_value='/vlm/generate',
-            description='GenerateVlm child action used for object search.',
+            description=(
+                'GenerateVlm action used for search, routing, and planning.'
+            ),
         ),
         DeclareLaunchArgument(
             'object_match_topic',
@@ -535,7 +554,22 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'vlm_model',
             default_value='gpt-5.6-sol',
-            description='Model used by the VLM socket and object search.',
+            description='Default model used by the VLM socket.',
+        ),
+        DeclareLaunchArgument(
+            'object_search_vlm_model',
+            default_value='gpt-5.6-sol',
+            description='Model used by registry object matching.',
+        ),
+        DeclareLaunchArgument(
+            'model_commander_vlm_model',
+            default_value='gpt-5.6-luna',
+            description='Fast model used by persistent command planning.',
+        ),
+        DeclareLaunchArgument(
+            'natural_language_vlm_model',
+            default_value='gpt-5.3-codex-spark',
+            description='Fast model used by natural-language command routing.',
         ),
         DeclareLaunchArgument(
             'launch_natural_language_command',
@@ -801,7 +835,40 @@ def generate_launch_description():
                     'match_topic': LaunchConfiguration(
                         'object_match_topic'
                     ),
-                    'vlm_model': LaunchConfiguration('vlm_model'),
+                    'vlm_model': LaunchConfiguration('object_search_vlm_model'),
+                },
+            ],
+        ),
+        Node(
+            package='muto_command_layer',
+            executable='model_commander_node',
+            name='model_commander',
+            output='screen',
+            condition=IfCondition(
+                LaunchConfiguration('launch_model_commander')
+            ),
+            parameters=[
+                LaunchConfiguration('params_file'),
+                {
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                    'action_name': LaunchConfiguration(
+                        'look_for_object_action'
+                    ),
+                    'vlm_action': LaunchConfiguration('vlm_action'),
+                    'find_object_action': LaunchConfiguration(
+                        'find_object_action'
+                    ),
+                    'explore_and_record_action': LaunchConfiguration(
+                        'explore_and_record_action'
+                    ),
+                    'registry_topic': LaunchConfiguration('registry_topic'),
+                    'visual_observation_topic': LaunchConfiguration(
+                        'image_topic'
+                    ),
+                    'status_topic': LaunchConfiguration(
+                        'model_commander_status_topic'
+                    ),
+                    'vlm_model': LaunchConfiguration('model_commander_vlm_model'),
                 },
             ],
         ),
@@ -827,6 +894,9 @@ def generate_launch_description():
                     'find_something_action': LaunchConfiguration(
                         'find_something_action'
                     ),
+                    'look_for_object_action': LaunchConfiguration(
+                        'look_for_object_action'
+                    ),
                     'go_to_object_action': LaunchConfiguration('action_name'),
                     'explore_service': LaunchConfiguration('explore_service'),
                     'save_map_service': LaunchConfiguration(
@@ -838,7 +908,7 @@ def generate_launch_description():
                     'explore_and_record_action': LaunchConfiguration(
                         'explore_and_record_action'
                     ),
-                    'vlm_model': LaunchConfiguration('vlm_model'),
+                    'vlm_model': LaunchConfiguration('natural_language_vlm_model'),
                 },
             ],
         ),

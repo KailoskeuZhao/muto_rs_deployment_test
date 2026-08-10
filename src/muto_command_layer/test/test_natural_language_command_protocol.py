@@ -11,6 +11,8 @@ from natural_language_command_protocol import (  # noqa: E402
     build_command_schema,
     CommandProtocolError,
     parse_command_intent,
+    parse_explicit_local_cancel,
+    parse_explicit_local_command,
     SUPPORTED_COMMANDS,
 )
 import pytest  # noqa: E402
@@ -64,6 +66,76 @@ def test_schema_matches_local_command_and_argument_bounds():
     assert schema['properties']['max_cycles']['maximum'] == 20
 
 
+@pytest.mark.parametrize('query', [
+    'cancel',
+    'Cancel the active command!',
+    'abort current command',
+])
+def test_unambiguous_cancel_can_bypass_a_busy_vlm(query):
+    intent = parse_explicit_local_cancel(query)
+
+    assert intent.command == 'cancel_active_command'
+    assert intent.object_query == ''
+    assert not any((
+        intent.exploration_duration,
+        intent.observation_duration,
+        intent.scan_step_count,
+        intent.max_cycles,
+    ))
+
+
+@pytest.mark.parametrize('query, command, object_query', [
+    ('look for the red mug', 'look_for_object', 'the red mug'),
+    ('search for chair near desk', 'look_for_object', 'chair near desk'),
+    ('find blue bottle', 'find_object', 'blue bottle'),
+    ('go to marker_3', 'go_to_object', 'marker_3'),
+    ('navigate to the yellow cone', 'go_to_object', 'the yellow cone'),
+    ('start exploration', 'start_exploration', ''),
+    ('stop exploring', 'stop_exploration', ''),
+    ('explore, scan, and record', 'explore_and_record', ''),
+    ('save the map', 'save_map', ''),
+    ('save map as lab_run_01', 'save_map', ''),
+])
+def test_common_single_commands_bypass_vlm(query, command, object_query):
+    intent = parse_explicit_local_command(query)
+
+    assert intent.command == command
+    assert intent.object_query == object_query
+    if query == 'save map as lab_run_01':
+        assert intent.map_name == 'lab_run_01'
+    else:
+        assert intent.map_name == ''
+    assert not any((
+        intent.exploration_duration,
+        intent.observation_duration,
+        intent.scan_step_count,
+        intent.max_cycles,
+    ))
+
+
+@pytest.mark.parametrize('query', [
+    'do not cancel the active command',
+    'stop exploring',
+    'cancel navigation and save the map',
+    'cancel the model search',
+    'cancel navigation',
+    'please cancel whatever is happening',
+])
+def test_ambiguous_or_compound_cancel_still_requires_interpretation(query):
+    assert parse_explicit_local_cancel(query) is None
+
+
+@pytest.mark.parametrize('query', [
+    'find chair and go to it',
+    'look for',
+    'save map as ../bad',
+    'please find the mug',
+    'can you start exploring',
+])
+def test_ambiguous_or_compound_commands_still_require_interpretation(query):
+    assert parse_explicit_local_command(query) is None
+
+
 @pytest.mark.parametrize('command', [
     'start_exploration',
     'stop_exploration',
@@ -75,7 +147,12 @@ def test_argumentless_commands_accept_only_zeroed_arguments(command):
 
 
 @pytest.mark.parametrize(
-    'command', ['find_object', 'find_something', 'go_to_object'])
+    'command', [
+        'find_object',
+        'find_something',
+        'look_for_object',
+        'go_to_object',
+    ])
 def test_object_commands_preserve_description_and_reject_motion_arguments(
         command):
     intent = parse(response(command, '  red chair near the desk  '))

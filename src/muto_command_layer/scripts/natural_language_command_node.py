@@ -11,6 +11,7 @@ from muto_command_layer.action import (
     FindObject,
     FindSomething,
     GoToObject,
+    LookForObject,
     NaturalLanguageCommand,
 )
 from muto_vlm_socket.action import GenerateVlm
@@ -20,6 +21,7 @@ from natural_language_command_protocol import (
     build_command_schema,
     CommandProtocolError,
     parse_command_intent,
+    parse_explicit_local_command,
 )
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
@@ -72,6 +74,12 @@ class NaturalLanguageCommandNode(Node):
             self.find_something_action,
             callback_group=self._callback_group,
         )
+        self._model_commander_client = ActionClient(
+            self,
+            LookForObject,
+            self.look_for_object_action,
+            callback_group=self._callback_group,
+        )
         self._program_client = ActionClient(
             self,
             ExploreAndRecord,
@@ -115,14 +123,15 @@ class NaturalLanguageCommandNode(Node):
         self.declare_parameter('vlm_action', '/vlm/generate')
         self.declare_parameter('find_object_action', '/find_object')
         self.declare_parameter('find_something_action', '/find_something')
+        self.declare_parameter('look_for_object_action', '/look_for_object')
         self.declare_parameter('go_to_object_action', '/go_to_object')
         self.declare_parameter('explore_service', '/explore')
         self.declare_parameter('save_map_service', '/save_map')
         self.declare_parameter(
             'explore_and_record_action', '/explore_and_record')
-        self.declare_parameter('vlm_model', '')
+        self.declare_parameter('vlm_model', 'gpt-5.3-codex-spark')
         self.declare_parameter('endpoint_timeout', 5.0)
-        self.declare_parameter('vlm_result_timeout', 180.0)
+        self.declare_parameter('vlm_result_timeout', 45.0)
         self.declare_parameter('find_result_timeout', 400.0)
         self.declare_parameter('save_map_result_timeout', 15.0)
         self.declare_parameter('cancel_timeout', 2.0)
@@ -138,6 +147,7 @@ class NaturalLanguageCommandNode(Node):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
                 'find_something_action', 'go_to_object_action',
+                'look_for_object_action',
                 'explore_service',
                 'save_map_service',
                 'explore_and_record_action', 'vlm_model',
@@ -154,6 +164,7 @@ class NaturalLanguageCommandNode(Node):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
                 'find_something_action', 'go_to_object_action',
+                'look_for_object_action',
                 'explore_service',
                 'save_map_service',
                 'explore_and_record_action'):
@@ -258,17 +269,15 @@ class NaturalLanguageCommandNode(Node):
             raise CommandFailure(f'{operation_name} failed') from error
 
     def _cancel_when_available(self, send_future):
-        deadline = time.monotonic() + self.cancel_timeout
-        while not send_future.done() and rclpy.ok() and \
-                time.monotonic() < deadline:
-            time.sleep(0.05)
-        if send_future.done():
+        def cancel_dispatched_goal(completed_future):
             try:
-                handle = send_future.result()
+                handle = completed_future.result()
                 if handle.accepted:
-                    handle.cancel_goal_async()
+                    self._cancel_goal_best_effort(handle)
             except Exception:
                 pass
+
+        send_future.add_done_callback(cancel_dispatched_goal)
 
     @staticmethod
     def _text_content(text):
@@ -552,8 +561,8 @@ class NaturalLanguageCommandNode(Node):
                 raise CommandFailure('no registered object matched the request')
             if len(object_ids) != 1:
                 raise CommandFailure(
-                    'go_to_object is ambiguous; matching IDs: ' +
-                    ', '.join(object_ids))
+                    'go_to_object is ambiguous; matching IDs: {}'.format(
+                        ', '.join(object_ids)))
             self._publish_feedback(
                 goal_handle,
                 NaturalLanguageCommand.Feedback.PHASE_DISPATCHING,
@@ -582,6 +591,20 @@ class NaturalLanguageCommandNode(Node):
                 'FindSomething action server',
             )
             return 'active object search dispatched'
+
+        if command == 'look_for_object':
+            child_goal = LookForObject.Goal()
+            child_goal.prompt = intent.object_query
+            child_goal.max_duration = 0.0
+            child_goal.max_planning_steps = 0
+            self._dispatch_motion(
+                self._model_commander_client,
+                child_goal,
+                goal_handle,
+                command,
+                'LookForObject action server',
+            )
+            return 'model-supervised object-search mission dispatched'
 
         if command == 'start_exploration':
             return self._start_exploration(goal_handle)
@@ -617,12 +640,21 @@ class NaturalLanguageCommandNode(Node):
         result = NaturalLanguageCommand.Result()
         query = goal_handle.request.query.strip()
         try:
-            self._publish_feedback(
-                goal_handle,
-                NaturalLanguageCommand.Feedback.PHASE_INTERPRETING,
-                'interpreting natural-language command',
-            )
-            intent = self._interpret(query, goal_handle)
+            intent = parse_explicit_local_command(query)
+            if intent is None:
+                self._publish_feedback(
+                    goal_handle,
+                    NaturalLanguageCommand.Feedback.PHASE_INTERPRETING,
+                    'interpreting natural-language command',
+                )
+                intent = self._interpret(query, goal_handle)
+            else:
+                self._publish_feedback(
+                    goal_handle,
+                    NaturalLanguageCommand.Feedback.PHASE_INTERPRETING,
+                    'recognized explicit command locally',
+                    intent.command,
+                )
             result.command = intent.command
             result.arguments_json = intent.arguments_json()
             self.get_logger().info(

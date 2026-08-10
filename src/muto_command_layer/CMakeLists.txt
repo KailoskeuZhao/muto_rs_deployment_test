@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/FindSomething.action"
   "action/GoToObject.action"
   "action/FindObject.action"
+  "action/LookForObject.action"
   "action/NaturalLanguageCommand.action"
   DEPENDENCIES geometry_msgs std_msgs
 )
@@ -105,7 +106,12 @@ install(PROGRAMS scripts/active_object_search_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME active_object_search_node
 )
+install(PROGRAMS scripts/model_commander_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME model_commander_node
+)
 install(FILES
+  scripts/model_commander_protocol.py
   scripts/object_search_protocol.py
   scripts/natural_language_command_protocol.py
   DESTINATION lib/${PROJECT_NAME}
@@ -157,6 +163,16 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_natural_language_command_protocol
     test/test_natural_language_command_protocol.py
     TIMEOUT 30
+  )
+
+  ament_add_pytest_test(test_model_commander_protocol
+    test/test_model_commander_protocol.py
+    TIMEOUT 30
+  )
+
+  ament_add_pytest_test(test_model_commander_integration
+    test/test_model_commander_integration.py
+    TIMEOUT 120
   )
 
   ament_add_pytest_test(test_natural_language_command_integration

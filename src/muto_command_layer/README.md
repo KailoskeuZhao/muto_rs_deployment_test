@@ -2,10 +2,10 @@
 
 `muto_command_layer` exposes robot-level commands above perception, the object
 registry, the VLM socket, and Nav2. It provides `/find_object` registry lookup,
-cancellable `/find_something` active search and `/go_to_object` navigation,
-`/explore` start/stop, a sanitized `/save_map` wrapper, and a validated
-`/natural_language_command` action that routes natural language to those typed
-interfaces.
+deterministic `/find_something` active search, persistent model-supervised
+`/look_for_object` missions, `/go_to_object` navigation, `/explore` start/stop,
+a sanitized `/save_map` wrapper, and a validated `/natural_language_command`
+action that routes natural language to those typed interfaces.
 
 See [Object pipeline functions](docs/object_pipeline_functions.md) for the
 complete functional interface, runtime dependencies, operator commands, and
@@ -28,26 +28,33 @@ similarly named child launch arguments cannot leak into another package.
 
 The deployment-level VLM settings live in
 `config/object_pipeline_vlm.yaml`. It contains the provider URL, wire API,
-model, request limits, and the *name* of the credential environment variable.
-The checked-in profile selects the tested `hkuproxy` Responses endpoint,
-`gpt-5.6-sol`, and `HKU_API_KEY`. Select another file at launch time with
-`vlm_params_file:=/absolute/path/to/vlm.yaml`. The top-level launch always sets
-the provider URL, wire API, and model from `vlm_base_url`, `vlm_wire_api`, and
-`vlm_model`; their defaults mirror the checked-in profile. When selecting a
-file for a different provider, override those three launch arguments as well.
+default model, request limits, and the *name* of the credential environment variable.
+The checked-in profile selects the tested `hkuproxy` chat-completions endpoint,
+`gpt-5.6-sol`, and `HKU_API_KEY`. `vlm_model` remains the VLM socket default
+and object matching keeps `object_search_vlm_model:=gpt-5.6-sol` by default.
+Natural-language routing uses
+`natural_language_vlm_model:=gpt-5.3-codex-spark`, while persistent commander
+planning keeps `model_commander_vlm_model:=gpt-5.6-luna`. Select another
+provider file with `vlm_params_file:=/absolute/path/to/vlm.yaml`; when doing
+so, also override `vlm_base_url`, `vlm_wire_api`, and the relevant model
+arguments.
 
 > **Transport warning:** the current proxy URL uses plain HTTP. Although the
 > key is absent from launch arguments and YAML, its bearer header is not
-> encrypted in transit. Use this endpoint only through a trusted network,
-> VPN, or secure tunnel, or replace it with an HTTPS endpoint.
+> encrypted in transit. `/look_for_object` also sends fresh full-camera JPEGs
+> for model inspection, in addition to selected registry crops used by
+> `/find_object`. Use this endpoint only through a trusted network, VPN, or
+> secure tunnel, or replace it with an HTTPS endpoint.
 
 The included processes are launched together; dependency readiness is checked
 when an action goal is executed rather than through arbitrary startup delays.
 The `/go_to_object` action requires Nav2's global-costmap service, navigation
 action, and global/base TF.
 `/find_object` requires the registry and VLM socket; camera and TF inputs are
-additionally needed to create new registry entries. The Muto-configured
-frontier explorer is also started in cold idle so `/explore` can activate it
+additionally needed to create new registry entries. `/look_for_object` also
+requires fresh RGB frames whenever a registry miss needs a new model scheduling
+decision. The Muto-configured frontier explorer is started in cold idle so
+`/explore` can activate it
 without process startup latency.
 
 `muto_nav2_pipeline_launch.py` independently owns hardware, localization,
@@ -59,7 +66,7 @@ alongside each other:
 # Terminal 1: hardware, localization, mapping, and Nav2.
 ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 
-# Terminal 2: perception, registry, VLM, and both object commands.
+# Terminal 2: perception, registry, VLM, and the command stack.
 export HKU_API_KEY='your-key'
 ros2 launch muto_command_layer command_layer_launch.py
 ```
@@ -332,6 +339,7 @@ Supported commands are:
 
 - `find_object`
 - `find_something`
+- `look_for_object`
 - `go_to_object`
 - `start_exploration`
 - `stop_exploration`
@@ -353,14 +361,20 @@ description. Navigation is dispatched only when exactly one static registry ID
 matches; no VLM-generated ID is sent directly to navigation. For
 `find_object`, the action waits for search completion and returns the exact IDs.
 
-Long-running `find_something`, `go_to_object`, and `explore_and_record`
-commands return once the typed child action accepts the goal. This leaves the
-router available for a later request such as `cancel the active command`; the
-child result is tracked asynchronously. Manual exploration start/stop waits for
-the `/explore` service response, while map saving waits for a bounded
-`/save_map` result. The router uses a two-thread executor so one thread can wait
-on a bounded child operation while the other processes ROS progress and cancel
-responses.
+Long-running `find_something`, `look_for_object`, `go_to_object`, and
+`explore_and_record` commands return once the typed child action accepts the
+goal. This leaves the router available for a later request such as `cancel the
+active command`; the child result is tracked asynchronously. To wait for the
+complete model-supervised outcome, call `/look_for_object` directly. Manual
+exploration start/stop waits for the `/explore` service response, while map
+saving waits for a bounded `/save_map` result. The router uses a two-thread
+executor so one thread can wait on a bounded child operation while the other
+processes ROS progress and cancel responses.
+
+Unambiguous phrases such as `cancel the active command` are recognized locally
+and do not use the single-request VLM socket. This keeps cancellation available
+while the model commander is planning. Ambiguous or compound requests still go
+through strict model classification.
 
 ## Find-object pipeline
 
@@ -459,6 +473,108 @@ so repeated observations of the same object do not repeatedly invoke the VLM.
 Finding and approaching are separate operations; use `/go_to_object` with one
 returned ID when movement to the object is wanted.
 
+## Persistent model-supervised search
+
+`/look_for_object` is the highest command-layer object-search mission. The
+`model_commander` node stays alive with the command stack, but model inference
+is event-driven: it runs only when a mission needs a new decision. It does not
+poll the model continuously.
+
+```text
+check the current registry
+          |
+          +-- match ------------------------------------> return it
+          |
+          v
+capture a newly received bounded RGB frame
+          |
+          v
+VLM inspects frame + state and selects one bounded next step
+  find_object | explore_and_record | wait | finish_not_found
+          |
+          v
+monitor the child result and confirmed-object set
+          |
+          +-- registry changed --> cancel stale work, recheck, replan
+          +-- child completed ---> recheck, then replan
+          +-- 20 s elapsed ------> VLM inspects a fresh frame while the
+                                    bounded child remains active
+                                      | continue current command
+                                      | stop, verify stopped, recheck, replan
+```
+
+The planner selects only from that fixed enum. Every scheduling request contains
+a newly received `/camera/color/image_raw` frame encoded as a bounded JPEG. The
+strict response must include a short visual observation and one of
+`not_visible`, `possible`, `likely`, or `unclear`. Local code owns every action
+client, limits duration and planning/dispatch counts, and rejects
+  `finish_not_found` until at least one bounded exploration program has completed
+  followed by a fresh registry check. `possible` or `likely` target evidence
+  forces another registry check before any further motion or no-match finish.
+  Visual evidence never sets `found`; only `/find_object` can confirm a registry
+  match. Therefore a target that never enters the YOLO/SAM registry cannot
+  complete this mission from VLM pixels alone. The model cannot provide ROS
+  names, poses, parameters, or code. Only one commander mission and one owned
+  child command run at a time.
+
+While `explore_and_record` or a model-directed wait remains active, the VLM also
+inspects a fresh forward-camera snapshot after each
+`active_inspection_period` cooldown (20 seconds by default). Model latency is
+additional; this is not a real-time 20 Hz/20-second control guarantee. Its
+separate strict monitor response can only
+`continue_current_command` or `interrupt_and_replan`. `possible` or `likely`
+target evidence must interrupt. Local code then confirms the owned child has
+stopped, checks `/find_object`, and only afterward invokes the normal planner.
+The VLM is a strategic monitor, not a real-time collision controller; Nav2 keeps
+that responsibility.
+
+The raw-image subscription exists only while one snapshot is being acquired, so
+the idle resident commander does not deserialize the full camera stream. Each
+inspection requires a frame received after the preceding inspection. Ordinary
+30 Hz camera updates neither trigger inference nor invalidate an in-flight model
+request. "Fresh" here means newly received with a bounded monotonic receipt age;
+it cannot detect a camera driver that republishes frozen pixels under new
+messages. A missing, stale, invalid, or oversized planning frame causes bounded
+no-motion retries. Repeated active-monitor failures stop the owned motion and
+abort rather than letting it run indefinitely without the promised monitor. One
+snapshot is the current forward view, not proof of complete 360-degree visual
+coverage.
+
+If the stop state of an accepted moving child cannot be confirmed, the
+commander fails closed: it retains the ownership handle, latches its status as
+`ownership_uncertain`, and rejects new missions until the commander process is
+restarted. This prevents replacement motion from being dispatched beside a
+possibly live old child.
+
+```bash
+ros2 action send_goal /look_for_object \
+  muto_command_layer/action/LookForObject \
+  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0}" \
+  --feedback
+```
+
+Zeros select the configured finite defaults: 30 minutes and 64 model planning
+steps. A no-match or budget-limited run is a completed action whose `found`
+field is false; dependency or repeated model failures abort the action. Cancel
+the direct action with `Ctrl-C`, or dispatch it through natural language and
+send `cancel the active command`.
+
+The commander's last state is published as bounded JSON with transient-local
+durability:
+
+```bash
+ros2 topic echo /model_commander/status --once \
+  --qos-durability transient_local
+```
+
+`/find_something` remains available as the deterministic rollback path. It
+always runs one fixed registry-search then explore-and-record sequence and does
+not ask the model to schedule steps.
+
+Every dispatched `/explore_and_record` step retains its existing action-scoped
+bag. A mission that schedules several steps therefore produces several bags;
+there is not yet one parent bag spanning model decisions and deferred periods.
+
 ## Important parameters
 
 - `approach_distance`: minimum center-to-centroid approach radius in metres;
@@ -497,8 +613,40 @@ returned ID when movement to the object is wanted.
   boundary coverage; default `0.98`. It does not measure camera or detector
   success.
 - `visibility_max_viewpoints`: optional hard viewpoint limit; `0` is unlimited.
-- `vlm_action` and `vlm_model`: child action endpoint and optional model
-  override for object search and command interpretation.
+- `vlm_action`: shared GenerateVlm action endpoint.
+- `vlm_model`: VLM socket default model.
+- `object_search_vlm_model`: model used by registry object matching; default
+  `gpt-5.6-sol`.
+- `natural_language_vlm_model`: faster command interpretation model; default
+  `gpt-5.3-codex-spark`.
+- `model_commander_vlm_model`: persistent command-planning model; default
+  `gpt-5.6-luna`.
+- `default_max_duration` and `default_max_planning_steps`: finite defaults for
+  `/look_for_object` goals that request zero; defaults are `1800` seconds and
+  `64` planning steps. Hard caps are `7200` seconds, `256` planning steps, and
+  `128` child-command dispatches.
+- `max_exploration_cycles`, `max_wait_seconds`, planner retry limits, command
+  failure limits, and repeated-no-progress limits: local bounds on every model
+  decision and recovery path.
+- `visual_observation_topic`, `visual_observation_timeout`, and
+  `visual_observation_max_age`: camera source and freshness requirements for
+  every model planning step; defaults are `/camera/color/image_raw`, `5.0`, and
+  `2.0` seconds.
+- `visual_observation_jpeg_quality`, `visual_observation_max_width`,
+  `visual_observation_max_height`, and `visual_observation_max_jpeg_bytes`:
+  bound the transmitted planning snapshot; defaults are `80`, `960`, `720`,
+  and `1048576` bytes.
+- `active_visual_monitoring`, `active_inspection_period`,
+  `active_inspection_timeout`, and `active_inspection_max_decision_age`: enable
+  strategic visual checks during long commands and bound their rate, inference
+  time, and result age; defaults are `true`, `20`, `60`, and `90` seconds.
+- `max_consecutive_active_inspection_failures` and `max_visual_interrupts`:
+  stop unmonitored motion after three consecutive monitor failures and bound a
+  mission to eight model-requested stop/replan cycles.
+- `visual_observation_max_source_width`,
+  `visual_observation_max_source_height`, and
+  `visual_observation_max_source_bytes`: reject unreasonable raw messages before
+  CvBridge conversion; defaults are `8192`, `8192`, and `67108864` bytes.
 - `max_query_characters`, `max_object_query_characters`, and
   `max_map_name_characters`: local input/output limits for natural-language
   routing; defaults `4096`, `1024`, and `128`.
@@ -509,8 +657,9 @@ returned ID when movement to the object is wanted.
   visual refinement; default `8`.
 - `require_all_candidate_images`: abort refinement when any shortlisted image
   is unavailable; default `true`.
-- `vlm_result_timeout`: upper bound for either VLM inference pass; default
-  `180` seconds.
+- `vlm_result_timeout`: upper bound for VLM inference. Object search defaults
+  to `180` seconds, model commander planning to `60`, and natural-language
+  routing to `45`.
 - `log_vlm_judgements`: emit validated metadata-shortlist and visual-filter
   decisions as single-line JSON; default `true`.
 - `max_log_description_characters` and `max_log_filtered_ids`: bound judgement

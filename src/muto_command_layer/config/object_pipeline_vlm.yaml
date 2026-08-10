@@ -2,10 +2,10 @@ vlm_socket:
   ros__parameters:
     action_name: /vlm/generate
 
-    # Match the hkuproxy provider in ~/.codex/config.toml. The socket appends
-    # the endpoint suffix selected by wire_api.
-    base_url: http://43.165.176.234:8080/
-    wire_api: responses
+    # Match the hkuproxy provider. The /responses path currently fails on this
+    # proxy; use the tested OpenAI-compatible chat-completions endpoint.
+    base_url: http://43.165.176.234:8080/v1
+    wire_api: chat_completions
     default_model: gpt-5.6-sol
     system_prompt: ""
 

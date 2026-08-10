@@ -7,7 +7,7 @@ runtime contracts.
 
 ## Scope and process graph
 
-The launch starts nine ROS nodes from six packages:
+The launch starts ten ROS nodes from six packages:
 
 ```text
 RGB + depth + CameraInfo + TF
@@ -39,8 +39,14 @@ RGB + depth + CameraInfo + TF
                v
        /find_something
 
+  model_commander
+    event-driven model decisions + bounded existing commands
+               |
+               v
+       /look_for_object
+
   vlm_socket provides /vlm/generate to object_search
-               and natural_language_command_router
+               natural_language_command_router, and model_commander
 
   natural_language_command_router
     strict intent enum -> existing typed command interfaces
@@ -61,16 +67,19 @@ ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 This command uses `config/object_pipeline_vlm.yaml`, whose checked-in profile
-selects the tested `hkuproxy` Responses endpoint, `gpt-5.6-sol`, and the
-`HKU_API_KEY` environment-variable name. The top-level provider arguments
-always override the corresponding file fields; their defaults mirror this
-profile. When selecting a parameter file for another provider, also set
-`vlm_base_url`, `vlm_wire_api`, and `vlm_model`.
+selects the tested `hkuproxy` chat-completions endpoint, `gpt-5.6-sol`, and the
+`HKU_API_KEY` environment-variable name. `vlm_model` remains the socket default,
+`object_search_vlm_model` keeps object matching on `gpt-5.6-sol`,
+`natural_language_vlm_model` defaults to `gpt-5.3-codex-spark`, and
+`model_commander_vlm_model` defaults to `gpt-5.6-luna`. When selecting a
+provider file for another backend, also set `vlm_base_url`, `vlm_wire_api`, and
+the relevant model arguments.
 
 > **Transport warning:** the checked-in proxy URL uses plain HTTP. The API key
 > is not stored in ROS configuration, but its bearer header is not encrypted
-> in transit. Use a trusted network, VPN, or secure tunnel, or configure an
-> HTTPS endpoint.
+> in transit. Model-supervised search also sends fresh full-camera JPEGs, not
+> only stored candidate crops. Use a trusted network, VPN, or secure tunnel,
+> or configure an HTTPS endpoint.
 
 For a full robot deployment, run the independent Nav2 and object pipelines
 alongside each other:
@@ -85,9 +94,9 @@ ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 The Nav2 pipeline does not start the annotator, registry, VLM socket, or command
-layer. The object pipeline owns `/find_object`, `/find_something`, and
-`/go_to_object`; its active-search and go-to-object commands consume the
-independent Nav2 stack through existing command actions.
+layer. The object pipeline owns `/find_object`, `/find_something`,
+`/look_for_object`, and `/go_to_object`; its active-search and go-to-object
+commands consume the independent Nav2 stack through existing command actions.
 
 ## Functions enabled by the pipeline
 
@@ -280,7 +289,82 @@ existing ID does not trigger another VLM query. The command assumes registered
 objects are static, does not pursue moving targets, and does not automatically
 approach a match.
 
-### 9. Explore and record with predicted visibility
+### 9. Run a persistent model-supervised object search
+
+`/look_for_object` is an always-available mission server above the existing
+typed commands. For each goal it first calls `/find_object` without moving. If
+there is no match, it waits for a new color-camera frame, converts it to a
+bounded JPEG, and asks the VLM to inspect that frame plus compact mission state.
+The VLM then chooses exactly one locally validated next step: `find_object`,
+bounded `explore_and_record`, bounded `wait`, or `finish_not_found`.
+
+```bash
+ros2 action send_goal /look_for_object \
+  muto_command_layer/action/LookForObject \
+  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0}" \
+  --feedback
+```
+
+The node monitors child completion and the transient-local object-registry
+snapshot. A changed confirmed-object identity set cancels an in-flight model
+decision, wait, or exploration program, then forces a fresh `/find_object` check
+before replanning. Position, confidence, and repeat-observation updates for the
+same identity deliberately do not churn this revision. This prevents a decision
+made against an older object inventory from being executed.
+
+The VLM also inspects a fresh forward-camera frame after a 20-second cooldown by
+default while `explore_and_record` or a model-directed wait remains active.
+Inference time is additional; this is strategic periodic monitoring, not a
+real-time camera loop. This
+restricted monitor can only continue the current bounded command or request a
+safe stop and replan. `possible` or `likely` evidence requires the latter. Local
+code confirms the child is terminal, checks the registry, and then runs the
+normal planner; the monitor cannot dispatch a replacement itself. Nav2 remains
+responsible for real-time collision response.
+
+Every inspection requires a camera frame received after the previous one. A
+raw-image subscription is created only while taking that snapshot; normal frame
+arrival does not invoke the model or cancel an in-flight decision. Newly
+received does not prove newly captured: a camera driver that republishes frozen
+pixels cannot be distinguished from a genuinely unchanged scene here.
+
+Local controls allow one mission and one owned child at a time, impose finite
+duration, planning-step, command-dispatch, wait, exploration-cycle, retry, and
+no-progress limits, and cancel the owned child when the parent goal is canceled.
+The strict decision schema cannot name ROS interfaces, poses, arbitrary
+parameters, or code. Its response must report a bounded visual summary and
+target evidence (`not_visible`, `possible`, `likely`, or `unclear`). A model
+cannot declare an object found: only an exact `/find_object` result can do that.
+`possible` or `likely` evidence forces a registry check before any further
+motion. It also cannot end a no-match mission until a bounded exploration
+program has completed and the current identity-set revision has been checked.
+An object that never enters the YOLO/SAM registry therefore cannot be returned
+as found from VLM pixels alone.
+
+A missing, stale, unconvertible, or oversized planning frame causes bounded
+no-motion retries and then aborts the model mission. During an owned motion,
+isolated monitor failures are retried; the configured consecutive-failure limit
+stops the child and aborts rather than continuing without visual supervision.
+Each request currently contains one forward-view JPEG; it is not proof that
+every direction observed during a 360-degree scan was inspected by the VLM.
+If an accepted moving child cannot be confirmed stopped, the commander retains
+its ownership state, publishes `ownership_uncertain`, and rejects new missions
+until its process is restarted.
+
+```bash
+ros2 topic echo /model_commander/status --once \
+  --qos-durability transient_local
+```
+
+The direct action remains active until it finds a match, reaches a valid
+no-match decision, exhausts a budget, fails, or is canceled. A zero goal budget
+selects the configured finite defaults of 1800 seconds and 64 planning steps.
+`/find_something` remains the deterministic fixed-sequence fallback.
+Each model-dispatched `/explore_and_record` step keeps its existing
+action-scoped MCAP, so a multi-step model mission can produce multiple bags.
+There is not yet a single parent bag covering deferred and planning periods.
+
+### 10. Explore and record with predicted visibility
 
 `/explore_and_record` alternates frontier navigation with six-step,
 360-degree observation scans and registry checkpoints. When frontier
@@ -310,7 +394,7 @@ published on `/explore_and_record/last_bag_path`; metadata includes the action
 goal context, recorder build git state, and active exclusion regex. Bags are
 finalized on success, cancel, and abort.
 
-### 10. Navigate to and face a registered object
+### 11. Navigate to and face a registered object
 
 The `/go_to_object` action accepts an exact persistent object ID:
 
@@ -340,7 +424,7 @@ the object after arrival. It aborts before dispatch when no reachable approach
 cell exists. Nav2 still performs final planning and execution and can reject a
 cell if the costmap changes after the service snapshot.
 
-### 11. Save the live occupancy map
+### 12. Save the live occupancy map
 
 The command layer wraps SLAM Toolbox's `/slam_toolbox/save_map` service as
 `/save_map`:
@@ -363,7 +447,7 @@ serialize the SLAM Toolbox pose graph. The wrapper returns SLAM Toolbox's
 standard result code and reports failure when no map has been received, the
 underlying service is unavailable, or the bounded save timeout expires.
 
-### 12. Trigger typed commands through natural language
+### 13. Trigger typed commands through natural language
 
 The `/natural_language_command` action accepts one request such as `search the
 map for a red chair`, `go to the red chair`, `start exploring`, `run the
@@ -377,11 +461,11 @@ ros2 action send_goal /natural_language_command \
 ```
 
 The VLM is a classifier, not a ROS executor. It must return one strict JSON
-object whose command is one of `find_object`, `find_something`, `go_to_object`,
-`start_exploration`, `stop_exploration`, `explore_and_record`,
-`save_map`, `cancel_active_command`, or `unsupported`. The command router
-independently checks the exact object shape, argument types, and configured
-numeric bounds.
+object whose command is one of `find_object`, `find_something`,
+`look_for_object`, `go_to_object`, `start_exploration`, `stop_exploration`,
+`explore_and_record`, `save_map`, `cancel_active_command`, or `unsupported`.
+The command router independently checks the exact object shape, argument types,
+and configured numeric bounds.
 It then dispatches only the corresponding compiled action or service client;
 model-provided ROS names, arbitrary parameters, and code cannot reach the ROS
 graph.
@@ -390,12 +474,19 @@ Object descriptions sent to `go_to_object` are resolved through
 `/find_object`. Exactly one persistent registry ID must match before the router
 calls `/go_to_object`. This pipeline assumes mapped objects remain static.
 
-Registry-only `find_object` waits for its result. Active search, navigation,
-and explore-and-record return from the natural-language action after the typed
-child accepts the goal, while the router retains the child handle. A subsequent
-natural-language cancel can therefore stop the long-running command.
+Registry-only `find_object` waits for its result. Deterministic active search,
+model-supervised search, navigation, and explore-and-record return from the
+natural-language action after the typed child accepts the goal, while the router
+retains the child handle. A subsequent natural-language cancel can therefore
+stop the long-running command. Call `/look_for_object` directly when the caller
+must wait for its terminal result.
 
-### 13. Use the VLM bridge directly
+Exact, unambiguous cancellation phrases are recognized locally before VLM
+classification. They can therefore cancel a router-owned model mission while
+the single-request VLM socket is occupied. Ambiguous or compound phrases still
+use the normal validated interpretation path.
+
+### 14. Use the VLM bridge directly
 
 The launch also exposes the general `/vlm/generate` action. Other ROS nodes may
 send one ordered message containing text and/or JPEG parts and may optionally
@@ -413,6 +504,8 @@ or ROS parameters.
 | `/natural_language_command` | Action: `muto_command_layer/action/NaturalLanguageCommand` | Validate one VLM-classified request and dispatch a fixed typed command. |
 | `/find_object` | Action: `muto_command_layer/action/FindObject` | Select registered objects from a natural-language prompt. |
 | `/find_something` | Action: `muto_command_layer/action/FindSomething` | Search the registry, then compose exploration and recording until a static-object match appears or predictive coverage completes. |
+| `/look_for_object` | Action: `muto_command_layer/action/LookForObject` | Persistently monitor, schedule bounded existing commands, and replan until a described static object is found or the mission ends. |
+| `/model_commander/status` | Topic: `std_msgs/msg/String` | Transient-local bounded JSON heartbeat for the current or most recent model-supervised mission. |
 | `/go_to_object` | Action: `muto_command_layer/action/GoToObject` | Approach and face one exact object ID through Nav2. |
 | `/global_costmap/get_costmap` | Service: `nav2_msgs/srv/GetCostmap` | Current Nav2 master costmap used for object approach and visibility traversal. |
 | `/explore_and_record` | Action: `muto_command_layer/action/ExploreAndRecord` | Alternate frontier exploration with six-step scans, then pursue predicted 2-D visibility coverage and checkpoint static objects. |
@@ -439,10 +532,10 @@ Topic and action names shown above are defaults. The endpoints routed through
 
 | Missing dependency | Effect |
 | --- | --- |
-| RGB camera | No YOLO/SAM processing or new observations. |
+| RGB camera | No YOLO/SAM processing or new observations. Existing registry matches can still be returned, but `/look_for_object` cannot make a new VLM scheduling decision and aborts after bounded no-motion retries. |
 | Depth image, valid intrinsics, or depth-to-color TF | 2D outputs continue, but no instance point cloud or new 3D registry entries. |
 | TF into `target_frame` | The registry retries the exact observation time for a bounded window, then skips observations it still cannot transform. |
-| VLM endpoint or credential | `/find_object` fails; perception, registry queries, visualization, and `/go_to_object` remain usable. |
+| VLM endpoint or credential | `/find_object` fails and `/look_for_object` defers then aborts after bounded retries; perception, registry queries, visualization, and `/go_to_object` remain usable. |
 | Nav2 global-costmap service | `/go_to_object` cannot select an approach cell and post-frontier predicted-visibility coverage cannot start; object search and registry functions remain usable. |
 | Nav2 or global/base TF | `/go_to_object` fails; perception, registry, and `/find_object` remain usable. |
 | Nav2 Spin behavior | `/explore_and_record` aborts before rotating; ordinary exploration and object commands remain available. |
@@ -451,11 +544,15 @@ Topic and action names shown above are defaults. The endpoints routed through
 | Stored candidate JPEGs | Metadata search works; ambiguous visual refinement normally aborts. |
 
 Each high-level action accepts only one active goal at a time and uses bounded
-dependency waits. `/find_object` and `/go_to_object` are separate servers, so
-one of each can be active concurrently. The VLM socket itself remains
-single-request. The natural-language router serializes interpretation and
-short operations, but releases its action after a long motion goal is accepted
-so a later natural-language cancel can be interpreted.
+dependency waits. The model commander owns at most one child and invokes
+`/find_object`, model planning, and `/explore_and_record` sequentially. The VLM
+socket itself remains single-request, so unrelated direct `/vlm/generate`
+clients can still cause bounded deferral or failure. There is not yet a global
+motion lease across every ROS client: direct Nav2, frontier, or command-action
+clients can compete with a commander-owned motion. Operators should send motion
+through one high-level owner at a time. The natural-language router serializes
+interpretation and short operations, but releases its action after a long
+motion goal is accepted so a later natural-language cancel can be interpreted.
 
 ## Main launch controls
 
@@ -468,10 +565,12 @@ The top-level launch exposes the controls most likely to vary by deployment:
 - registry: `registry_output_yaml`, `registry_image_directory`,
   `registry_store_images`, `registry_tf_retry_window`,
   `registry_tf_retry_rate`, and `global_frame`;
-- VLM: `vlm_params_file`, `vlm_action`, `vlm_base_url`, `vlm_wire_api`, and
-  `vlm_model`; and
+- VLM: `vlm_params_file`, `vlm_action`, `vlm_base_url`, `vlm_wire_api`,
+  `vlm_model`, `object_search_vlm_model`, `natural_language_vlm_model`, and
+  `model_commander_vlm_model`; and
 - commands: `natural_language_command_action`,
-  `launch_natural_language_command`, `action_name`,
+  `launch_natural_language_command`, `launch_model_commander`,
+  `look_for_object_action`, `model_commander_status_topic`, `action_name`,
   `find_object_action`, `object_match_topic`, `navigate_to_pose_action`,
   `global_costmap_service`, `robot_base_frame`, `approach_distance`,
   `approach_robot_radius`, `approach_start_snap_distance`,

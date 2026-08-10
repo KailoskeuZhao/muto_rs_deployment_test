@@ -1,0 +1,38 @@
+# Natural-language description of the static object to look for.
+string prompt
+
+# Zero selects the model commander's configured finite safety budget.
+float32 max_duration
+uint32 max_planning_steps
+---
+# success means the supervised mission ran without an infrastructure failure;
+# found distinguishes a match from a completed or budget-limited no-match run.
+uint8 OUTCOME_FOUND=1
+uint8 OUTCOME_NOT_FOUND=2
+uint8 OUTCOME_BUDGET_EXHAUSTED=3
+uint8 OUTCOME_FAILED=4
+uint8 OUTCOME_CANCELED=5
+
+bool success
+bool found
+uint8 outcome
+string message
+muto_command_layer/ObjectMatch[] matches
+uint32 planning_steps
+uint32 commands_dispatched
+---
+uint8 PHASE_MONITORING=1
+uint8 PHASE_THINKING=2
+uint8 PHASE_CHECKING_REGISTRY=3
+uint8 PHASE_EXECUTING=4
+uint8 PHASE_DEFERRED=5
+uint8 PHASE_REPLANNING=6
+uint8 PHASE_CANCELING=7
+uint8 PHASE_INSPECTING=8
+
+uint8 phase
+string status
+string current_command
+uint32 planning_steps
+uint32 commands_dispatched
+uint32 confirmed_object_count

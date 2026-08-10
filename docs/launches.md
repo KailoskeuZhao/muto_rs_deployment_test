@@ -34,7 +34,7 @@ files use the installed Humble or Jazzy `ekf_node`; this workspace does not keep
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
 | `muto_slam_mapping/launch/frontier_exploration_launch.py` | Starts the submodule's `frontier_explorer` with the Muto-specific map, costmap, TF, Nav2 action, QoS, and bounded-DP configuration. | Optional autonomous exploration client. Start only after mapping and Nav2 are ready; it is not included by the one-shot Nav2 launch. |
-| `muto_command_layer/launch/command_layer_launch.py` | Starts the lower object pipeline, typed object commands, validated natural-language router, standalone exploration recorder, and the Muto frontier explorer in cold idle. | Independent command stack. Motion delegates to already-running Nav2 actions. |
+| `muto_command_layer/launch/command_layer_launch.py` | Starts the lower object pipeline, typed object commands, persistent event-driven model commander, validated natural-language router, standalone exploration recorder, and the Muto frontier explorer in cold idle. | Independent command stack. Motion delegates to already-running Nav2 actions. |
 | `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, and VLM socket. | Lower object-identification layer; it does not start command actions or exploration. |
 | `yahboomcar_ctrl/launch/yahboomcar_joy_launch.py` | Starts `joy_node` and `yahboom_joy`. | Joystick teleop. |
 
@@ -75,7 +75,9 @@ command_layer_launch.py                       (independent process group)
   -> object_pipeline_launch.py
      -> YOLO/SAM2 -> instance cloud -> object registry
      -> VLM socket -> /vlm/generate
-  -> /find_object and /find_something
+  -> /find_object and deterministic /find_something
+  -> model commander -> /look_for_object
+       -> check registry, schedule one bounded command, monitor, replan
   -> /go_to_object through Nav2 /navigate_to_pose
   -> /natural_language_command -> validated typed command dispatch
   -> cold-idle frontier explorer -> /explore -> /navigate_to_pose
@@ -229,6 +231,9 @@ ros2 launch muto_command_layer command_layer_launch.py
 
 The checked-in object-pipeline VLM profile uses a plain-HTTP provider. Keep it
 on a trusted network, VPN, or tunnel, or replace it with an HTTPS endpoint.
+`/look_for_object` sends fresh full-camera JPEGs through this connection for
+each model scheduling decision and for slow periodic inspections while a
+bounded exploration or wait command is active.
 
 ## Example Sequences
 
@@ -360,6 +365,8 @@ Expected high-level interfaces include:
 - `/vlm/generate`
 - `/find_object`
 - `/find_something`
+- `/look_for_object`
+- `/model_commander/status`
 - `/go_to_object`
 - `/explore`
 - `/explore_and_record`
@@ -370,6 +377,35 @@ independently of Nav2. `/go_to_object` requires the separate
 `/find_something` first performs the same no-motion registry query, then uses
 the existing `/explore_and_record` action until a newly confirmed static object
 matches or predicted coverage completes.
+
+`/look_for_object` is the persistent highest-level alternative. Its resident
+commander first checks `/find_object`, then asks the model at scheduling points
+to inspect a newly received bounded RGB frame plus mission state and choose a
+registry recheck, a bounded `/explore_and_record` program, a bounded wait, or a
+valid no-match finish. During a long exploration or wait, a fresh snapshot is
+inspected after a 20-second cooldown by default; inference latency is additional.
+That restricted monitor can only leave
+the owned command running or request that local code stop it, confirm the stop,
+check the registry, and replan. Changed confirmed-object identities interrupt
+stale decisions or child work. The raw camera subscription is snapshot-scoped;
+frames do not invoke the model at camera rate. The model cannot name ROS
+interfaces or declare that an object was found; visual evidence remains
+advisory until `/find_object` confirms a registry match. Possible or likely
+evidence forces that check before further motion. Nav2 remains responsible for
+real-time collision handling. A single periodic frame is not a batch of all six
+scan headings.
+
+```bash
+ros2 action send_goal /look_for_object \
+  muto_command_layer/action/LookForObject \
+  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0}" \
+  --feedback
+```
+
+A zero duration or planning-step value selects the finite configured defaults
+of 1800 seconds and 64 decisions. `/find_something` remains the deterministic
+rollback command. The stack does not yet enforce a graph-wide motion lease, so
+do not send competing direct Nav2 or exploration goals during either mission.
 
 ### Frontier Exploration
 

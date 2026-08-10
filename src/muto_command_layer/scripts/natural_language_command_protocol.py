@@ -13,6 +13,7 @@ class CommandProtocolError(ValueError):
 SUPPORTED_COMMANDS = (
     'find_object',
     'find_something',
+    'look_for_object',
     'go_to_object',
     'start_exploration',
     'stop_exploration',
@@ -31,6 +32,41 @@ _EXPECTED_KEYS = {
     'scan_step_count',
     'max_cycles',
 }
+
+_LOCAL_CANCEL_QUERIES = frozenset({
+    'cancel',
+    'cancel active command',
+    'cancel the active command',
+    'cancel current command',
+    'cancel the current command',
+    'abort active command',
+    'abort the active command',
+    'abort current command',
+    'abort the current command',
+})
+
+_LOCAL_SIMPLE_QUERIES = {
+    'start exploration': 'start_exploration',
+    'start exploring': 'start_exploration',
+    'explore': 'start_exploration',
+    'stop exploration': 'stop_exploration',
+    'stop exploring': 'stop_exploration',
+    'run exploration and record': 'explore_and_record',
+    'explore and record': 'explore_and_record',
+    'explore, scan, and record': 'explore_and_record',
+    'explore scan and record': 'explore_and_record',
+    'scan and record': 'explore_and_record',
+    'save map': 'save_map',
+    'save the map': 'save_map',
+}
+
+_LOCAL_OBJECT_PREFIXES = (
+    ('look for ', 'look_for_object'),
+    ('search for ', 'look_for_object'),
+    ('find ', 'find_object'),
+    ('go to ', 'go_to_object'),
+    ('navigate to ', 'go_to_object'),
+)
 
 
 @dataclass(frozen=True)
@@ -57,6 +93,72 @@ class CommandIntent:
         }, separators=(',', ':'), sort_keys=True)
 
 
+def parse_explicit_local_cancel(query):
+    """Recognize only unambiguous cancellation without occupying the VLM."""
+    normalized = ' '.join(query.strip().casefold().split())
+    normalized = normalized.rstrip('.!?').rstrip()
+    if normalized not in _LOCAL_CANCEL_QUERIES:
+        return None
+    return CommandIntent(
+        command='cancel_active_command',
+        object_query='',
+        map_name='',
+        exploration_duration=0.0,
+        observation_duration=0.0,
+        scan_step_count=0,
+        max_cycles=0,
+    )
+
+
+def parse_explicit_local_command(query):
+    """Recognize common single-command phrases without using the VLM."""
+    normalized = ' '.join(query.strip().casefold().split())
+    normalized = normalized.rstrip('.!?').rstrip()
+    cancel_intent = parse_explicit_local_cancel(normalized)
+    if cancel_intent is not None:
+        return cancel_intent
+    command = _LOCAL_SIMPLE_QUERIES.get(normalized)
+    if command is not None:
+        return CommandIntent(
+            command=command,
+            object_query='',
+            map_name='',
+            exploration_duration=0.0,
+            observation_duration=0.0,
+            scan_step_count=0,
+            max_cycles=0,
+        )
+    if normalized.startswith('save map as '):
+        map_name = normalized.removeprefix('save map as ').strip()
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', map_name) is None:
+            return None
+        return CommandIntent(
+            command='save_map',
+            object_query='',
+            map_name=map_name,
+            exploration_duration=0.0,
+            observation_duration=0.0,
+            scan_step_count=0,
+            max_cycles=0,
+        )
+    for prefix, command in _LOCAL_OBJECT_PREFIXES:
+        if not normalized.startswith(prefix):
+            continue
+        object_query = normalized.removeprefix(prefix).strip()
+        if not object_query or ' and ' in object_query:
+            return None
+        return CommandIntent(
+            command=command,
+            object_query=object_query,
+            map_name='',
+            exploration_duration=0.0,
+            observation_duration=0.0,
+            scan_step_count=0,
+            max_cycles=0,
+        )
+    return None
+
+
 def build_command_prompt(query):
     """Build instructions that keep the user query inside a fixed command set."""
     encoded_query = json.dumps(query, ensure_ascii=True)
@@ -73,6 +175,10 @@ def build_command_prompt(query):
         'registry first, then explore, scan, and record until a match is found '
         'or the predictive search mission finishes. Put the requested object '
         'description in object_query.\n'
+        '- look_for_object: preferred highest-level command for a persistent, '
+        'model-supervised search. The commander monitors the registry and '
+        'schedules, defers, or reschedules bounded existing search commands. '
+        'Put the requested object description in object_query.\n'
         '- go_to_object: resolve one static registered object from '
         'object_query and navigate to it.\n'
         '- start_exploration: start manually controlled frontier exploration.\n'
@@ -86,15 +192,16 @@ def build_command_prompt(query):
         'default. Use only ASCII letters, numbers, dot, underscore, and '
         'hyphen, starting with a letter or number. Never put a directory or '
         'path in map_name.\n'
-        '- cancel_active_command: cancel active object search, navigation, or '
-        'an autonomous explore-and-record mission previously dispatched by '
-        'this router.\n'
+        '- cancel_active_command: cancel active object search, model-supervised '
+        'search, navigation, or an autonomous explore-and-record mission '
+        'previously dispatched by this router.\n'
         '- unsupported: the request is not exactly one allowed command.\n\n'
         'Only save_map may use map_name; every other command must return an '
         'empty map_name. For commands other than find_object, find_something, '
-        'go_to_object, and explore_and_record, return an empty object_query '
-        'and zero numeric fields. For find_object, find_something, and '
-        'go_to_object, return zero numeric fields. '
+        'look_for_object, go_to_object, and explore_and_record, return an '
+        'empty object_query '
+        'and zero numeric fields. For find_object, find_something, '
+        'look_for_object, and go_to_object, return zero numeric fields. '
         'Do not infer a registry ID; preserve the user description in '
         'object_query. If the user requests multiple commands, return '
         'unsupported.\n\n'
@@ -205,8 +312,9 @@ def parse_command_intent(
     if len(map_name) > max_map_name_characters:
         raise CommandProtocolError('map_name exceeds its size limit')
     if map_name and (
-            '..' in map_name or
-            re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', map_name) is None):
+            '..' in map_name
+            or re.fullmatch(
+                r'[A-Za-z0-9][A-Za-z0-9_.-]*', map_name) is None):
         raise CommandProtocolError('map_name must be a safe basename')
 
     intent = CommandIntent(
@@ -238,7 +346,9 @@ def parse_command_intent(
         intent.scan_step_count,
         intent.max_cycles,
     )
-    if command in ('find_object', 'find_something', 'go_to_object'):
+    if command in (
+            'find_object', 'find_something', 'look_for_object',
+            'go_to_object'):
         if not object_query:
             raise CommandProtocolError(
                 f'{command} requires a non-empty object_query')

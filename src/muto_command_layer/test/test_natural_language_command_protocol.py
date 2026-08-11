@@ -18,7 +18,7 @@ from natural_language_command_protocol import (  # noqa: E402
 import pytest  # noqa: E402
 
 
-LIMITS = (64, 128, 120.0, 30.0, 16, 20)
+LIMITS = (64, 128)
 
 
 def response(command, object_query='', **overrides):
@@ -26,10 +26,6 @@ def response(command, object_query='', **overrides):
         'command': command,
         'object_query': object_query,
         'map_name': '',
-        'exploration_duration': 0.0,
-        'observation_duration': 0.0,
-        'scan_step_count': 0,
-        'max_cycles': 0,
     }
     payload.update(overrides)
     return json.dumps(payload)
@@ -60,10 +56,6 @@ def test_schema_matches_local_command_and_argument_bounds():
         list(SUPPORTED_COMMANDS)
     assert schema['properties']['object_query']['maxLength'] == 64
     assert schema['properties']['map_name']['maxLength'] == 128
-    assert schema['properties']['exploration_duration']['maximum'] == 120.0
-    assert schema['properties']['observation_duration']['maximum'] == 30.0
-    assert schema['properties']['scan_step_count']['maximum'] == 16
-    assert schema['properties']['max_cycles']['maximum'] == 20
 
 
 @pytest.mark.parametrize('query', [
@@ -76,23 +68,20 @@ def test_unambiguous_cancel_can_bypass_a_busy_vlm(query):
 
     assert intent.command == 'cancel_active_command'
     assert intent.object_query == ''
-    assert not any((
-        intent.exploration_duration,
-        intent.observation_duration,
-        intent.scan_step_count,
-        intent.max_cycles,
-    ))
+    assert json.loads(intent.arguments_json()) == {
+        'map_name': '', 'object_query': ''}
 
 
 @pytest.mark.parametrize('query, command, object_query', [
     ('look for the red mug', 'look_for_object', 'the red mug'),
     ('search for chair near desk', 'look_for_object', 'chair near desk'),
-    ('find blue bottle', 'find_object', 'blue bottle'),
+    ('find blue bottle', 'look_for_object', 'blue bottle'),
+    ('check registry for blue bottle', 'find_object', 'blue bottle'),
+    ('query registry for chair', 'find_object', 'chair'),
     ('go to marker_3', 'go_to_object', 'marker_3'),
     ('navigate to the yellow cone', 'go_to_object', 'the yellow cone'),
     ('start exploration', 'start_exploration', ''),
     ('stop exploring', 'stop_exploration', ''),
-    ('explore, scan, and record', 'explore_and_record', ''),
     ('save the map', 'save_map', ''),
     ('save map as lab_run_01', 'save_map', ''),
 ])
@@ -105,12 +94,6 @@ def test_common_single_commands_bypass_vlm(query, command, object_query):
         assert intent.map_name == 'lab_run_01'
     else:
         assert intent.map_name == ''
-    assert not any((
-        intent.exploration_duration,
-        intent.observation_duration,
-        intent.scan_step_count,
-        intent.max_cycles,
-    ))
 
 
 @pytest.mark.parametrize('query', [
@@ -127,6 +110,7 @@ def test_ambiguous_or_compound_cancel_still_requires_interpretation(query):
 
 @pytest.mark.parametrize('query', [
     'find chair and go to it',
+    'explore, scan, and record',
     'look for',
     'save map as ../bad',
     'please find the mug',
@@ -149,33 +133,16 @@ def test_argumentless_commands_accept_only_zeroed_arguments(command):
 @pytest.mark.parametrize(
     'command', [
         'find_object',
-        'find_something',
         'look_for_object',
         'go_to_object',
     ])
-def test_object_commands_preserve_description_and_reject_motion_arguments(
+def test_object_commands_preserve_description_and_reject_extra_arguments(
         command):
     intent = parse(response(command, '  red chair near the desk  '))
 
     assert intent.object_query == 'red chair near the desk'
     with pytest.raises(CommandProtocolError):
-        parse(response(command, 'chair', scan_step_count=8))
-
-
-def test_explore_and_record_accepts_bounded_overrides():
-    intent = parse(response(
-        'explore_and_record',
-        exploration_duration=15.5,
-        observation_duration=2,
-        scan_step_count=8,
-        max_cycles=4,
-    ))
-
-    assert intent.exploration_duration == 15.5
-    assert intent.observation_duration == 2.0
-    assert intent.scan_step_count == 8
-    assert intent.max_cycles == 4
-    assert json.loads(intent.arguments_json())['scan_step_count'] == 8
+        parse(response(command, 'chair', rotation_radians=1.0))
 
 
 @pytest.mark.parametrize('map_name', ['', 'warehouse', 'floor-2.v1'])
@@ -196,15 +163,11 @@ def test_save_map_accepts_empty_default_or_safe_basename(map_name):
     response('find_object'),
     response('start_exploration', object_query='chair'),
     response('start_exploration', map_name='warehouse'),
-    response('stop_exploration', max_cycles=1),
-    response('explore_and_record', object_query='chair'),
-    response('explore_and_record', exploration_duration=-1),
-    response('explore_and_record', observation_duration=31),
-    response('explore_and_record', scan_step_count=17),
-    response('explore_and_record', max_cycles=21),
-    response('explore_and_record', scan_step_count=True),
+    response('stop_exploration', unexpected=1),
+    response('find_something', object_query='chair'),
+    response('explore_and_record'),
     response('save_map', object_query='warehouse'),
-    response('save_map', max_cycles=1),
+    response('save_map', unexpected=1),
     response('save_map', map_name='../warehouse'),
     response('save_map', map_name='/tmp/warehouse'),
     response('save_map', map_name='warehouse map'),

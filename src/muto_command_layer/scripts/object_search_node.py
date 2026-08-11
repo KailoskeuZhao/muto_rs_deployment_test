@@ -97,7 +97,7 @@ class ObjectSearchNode(Node):
         self.declare_parameter('cancel_timeout', 2.0)
         self.declare_parameter('max_prompt_characters', 8192)
         self.declare_parameter('max_registry_objects', 256)
-        self.declare_parameter('max_shortlist_size', 8)
+        self.declare_parameter('max_shortlist_size', 7)
         self.declare_parameter('max_description_characters', 4096)
         self.declare_parameter('max_candidate_jpeg_bytes', 8388608)
         self.declare_parameter('log_vlm_judgements', True)

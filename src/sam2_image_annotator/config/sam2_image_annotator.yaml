@@ -6,6 +6,7 @@ sam2_image_annotator:
     instance_mask_topic: /sam2/instance_mask
     segments_topic: /sam2/segments
     detections_topic: /sam2/detections
+    detection_heartbeat_topic: /sam2/detection_heartbeat
     depth_topic: /camera/depth/image_raw
     depth_camera_info_topic: /camera/depth/camera_info
     color_camera_info_topic: /camera/color/camera_info

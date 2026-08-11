@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import json
 import math
 import threading
-import traceback
 import time
+import traceback
 
 from action_msgs.msg import GoalStatus
 import cv2
@@ -27,15 +27,18 @@ from muto_command_layer.action import (
 )
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
+from nav2_msgs.action import Spin
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sam2_object_registry.msg import StoredObjectArray
-from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from sensor_msgs.msg import CompressedImage, Image
+from std_msgs.msg import Header, String
+from std_srvs.srv import Trigger
 
 
 class CommanderCanceled(RuntimeError):
@@ -112,10 +115,21 @@ class ModelCommanderNode(Node):
             self.find_object_action,
             callback_group=self._callback_group,
         )
-        self._program_client = ActionClient(
+        self._explore_frontier_client = ActionClient(
             self,
             ExploreAndRecord,
-            self.explore_and_record_action,
+            self.explore_frontier_action,
+            callback_group=self._callback_group,
+        )
+        self._spin_client = ActionClient(
+            self,
+            Spin,
+            self.spin_action,
+            callback_group=self._callback_group,
+        )
+        self._checkpoint_client = self.create_client(
+            Trigger,
+            self.registry_save_service,
             callback_group=self._callback_group,
         )
 
@@ -128,6 +142,10 @@ class ModelCommanderNode(Node):
         self._registry_signature = None
         self._registry_revision = 0
         self._confirmed_object_count = 0
+        self._latest_command_bag_status_event = ''
+        self._latest_command_bag_status_goal_id = ''
+        self._latest_command_bag_status_path = ''
+        self._latest_command_bag_status_detail = ''
         self._cv_bridge = CvBridge()
         self._camera_subscription = None
         self._camera_qos = QoSProfile(
@@ -140,7 +158,7 @@ class ModelCommanderNode(Node):
         self._camera_sequence = 0
         self._last_inspected_camera_sequence = 0
         self._status = {
-            'schema_version': 1,
+            'schema_version': 2,
             'active': False,
             'ownership_uncertain': False,
             'mission_id': '',
@@ -182,6 +200,29 @@ class ModelCommanderNode(Node):
         )
         self._status_publisher = self.create_publisher(
             String, self.status_topic, status_qos)
+        self._command_bag_lifecycle_publisher = self.create_publisher(
+            String, self.command_bag_event_topic, status_qos)
+        self._command_bag_status_subscription = self.create_subscription(
+            String,
+            self.command_bag_status_topic,
+            self._command_bag_status_callback,
+            status_qos,
+            callback_group=self._callback_group,
+        )
+        trace_qos = QoSProfile(
+            depth=100,
+            durability=DurabilityPolicy.VOLATILE,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._decision_event_publisher = self.create_publisher(
+            String, self.decision_event_topic, trace_qos)
+        image_trace_qos = QoSProfile(
+            depth=4,
+            durability=DurabilityPolicy.VOLATILE,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._inspected_image_publisher = self.create_publisher(
+            CompressedImage, self.inspected_image_topic, image_trace_qos)
         self._status_timer = self.create_timer(
             self.status_publish_period,
             self._publish_status,
@@ -201,18 +242,36 @@ class ModelCommanderNode(Node):
             f'Model commander ready: action={self.action_name} '
             f'planner={self.vlm_action} '
             f'camera={self.visual_observation_topic} '
-            f'status={self.status_topic}')
+            f'status={self.status_topic} '
+            f'decisions={self.decision_event_topic}')
 
     def _declare_parameters(self):
         self.declare_parameter('action_name', '/look_for_object')
         self.declare_parameter('vlm_action', '/vlm/generate')
         self.declare_parameter('find_object_action', '/find_object')
         self.declare_parameter(
-            'explore_and_record_action', '/explore_and_record')
+            'explore_frontier_action',
+            '/command_primitives/explore_frontier')
+        self.declare_parameter('spin_action', '/spin')
+        self.declare_parameter(
+            'registry_save_service', '/sam2/save_stored_objects')
+        self.declare_parameter(
+            'detection_heartbeat_topic', '/sam2/detection_heartbeat')
         self.declare_parameter('registry_topic', '/sam2/stored_objects')
         self.declare_parameter(
             'visual_observation_topic', '/camera/color/image_raw')
         self.declare_parameter('status_topic', '/model_commander/status')
+        self.declare_parameter('command_bag_enabled', True)
+        self.declare_parameter('command_bag_required', False)
+        self.declare_parameter('command_bag_start_timeout', 2.0)
+        self.declare_parameter(
+            'command_bag_event_topic', '/model_commander/recording_event')
+        self.declare_parameter(
+            'command_bag_status_topic', '/model_commander/bag_status')
+        self.declare_parameter(
+            'decision_event_topic', '/model_commander/decision_event')
+        self.declare_parameter(
+            'inspected_image_topic', '/model_commander/inspected_image')
         self.declare_parameter('vlm_model', 'gpt-5.6-luna')
         self.declare_parameter('endpoint_timeout', 5.0)
         self.declare_parameter('vlm_result_timeout', 60.0)
@@ -228,7 +287,18 @@ class ModelCommanderNode(Node):
         self.declare_parameter('max_visual_observation_characters', 512)
         self.declare_parameter('max_state_message_characters', 512)
         self.declare_parameter('max_wait_seconds', 60.0)
-        self.declare_parameter('max_exploration_cycles', 3)
+        self.declare_parameter('max_exploration_seconds', 60.0)
+        self.declare_parameter('max_rotation_radians', 6.283185307179586)
+        self.declare_parameter('max_observation_seconds', 30.0)
+        self.declare_parameter('spin_time_allowance', 15.0)
+        self.declare_parameter('checkpoint_timeout', 10.0)
+        self.declare_parameter('observation_min_detection_frames', 3)
+        self.declare_parameter(
+            'minimum_no_match_exploration_seconds', 10.0)
+        self.declare_parameter('minimum_no_match_observations', 4)
+        self.declare_parameter('minimum_no_match_checkpoints', 1)
+        self.declare_parameter(
+            'minimum_no_match_rotation_radians', 6.283185307179586)
         self.declare_parameter('planner_retry_initial_delay', 2.0)
         self.declare_parameter('planner_retry_max_delay', 30.0)
         self.declare_parameter('command_retry_initial_delay', 1.0)
@@ -262,10 +332,20 @@ class ModelCommanderNode(Node):
             'action_name',
             'vlm_action',
             'find_object_action',
-            'explore_and_record_action',
+            'explore_frontier_action',
+            'spin_action',
+            'registry_save_service',
+            'detection_heartbeat_topic',
             'registry_topic',
             'visual_observation_topic',
             'status_topic',
+            'command_bag_enabled',
+            'command_bag_required',
+            'command_bag_start_timeout',
+            'command_bag_event_topic',
+            'command_bag_status_topic',
+            'decision_event_topic',
+            'inspected_image_topic',
             'vlm_model',
             'endpoint_timeout',
             'vlm_result_timeout',
@@ -281,7 +361,16 @@ class ModelCommanderNode(Node):
             'max_visual_observation_characters',
             'max_state_message_characters',
             'max_wait_seconds',
-            'max_exploration_cycles',
+            'max_exploration_seconds',
+            'max_rotation_radians',
+            'max_observation_seconds',
+            'spin_time_allowance',
+            'checkpoint_timeout',
+            'minimum_no_match_exploration_seconds',
+            'minimum_no_match_rotation_radians',
+            'minimum_no_match_observations',
+            'minimum_no_match_checkpoints',
+            'observation_min_detection_frames',
             'planner_retry_initial_delay',
             'planner_retry_max_delay',
             'command_retry_initial_delay',
@@ -313,21 +402,30 @@ class ModelCommanderNode(Node):
     def _validate_parameters(self):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
-                'explore_and_record_action', 'registry_topic',
-                'visual_observation_topic', 'status_topic'):
+                'explore_frontier_action', 'spin_action',
+                'registry_save_service', 'detection_heartbeat_topic',
+                'registry_topic',
+                'visual_observation_topic', 'status_topic',
+                'command_bag_event_topic', 'command_bag_status_topic',
+                'decision_event_topic', 'inspected_image_topic'):
             if not getattr(self, name):
                 raise ValueError(f'{name} must not be empty')
         for name in (
                 'endpoint_timeout', 'vlm_result_timeout',
                 'find_result_timeout', 'child_stop_timeout',
                 'default_max_duration', 'maximum_mission_duration',
-                'max_wait_seconds', 'planner_retry_initial_delay',
+                'max_wait_seconds', 'max_exploration_seconds',
+                'max_rotation_radians', 'max_observation_seconds',
+                'spin_time_allowance', 'checkpoint_timeout',
+                'minimum_no_match_exploration_seconds',
+                'minimum_no_match_rotation_radians',
+                'planner_retry_initial_delay',
                 'planner_retry_max_delay', 'command_retry_initial_delay',
                 'command_retry_max_delay', 'visual_observation_timeout',
                 'visual_observation_max_age', 'active_inspection_period',
                 'active_inspection_timeout',
                 'active_inspection_max_decision_age', 'monitor_period',
-                'status_publish_period'):
+                'status_publish_period', 'command_bag_start_timeout'):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) \
                     or not math.isfinite(value) or value <= 0.0:
@@ -347,7 +445,9 @@ class ModelCommanderNode(Node):
                 'max_reason_characters',
                 'max_visual_observation_characters',
                 'max_state_message_characters',
-                'max_exploration_cycles',
+                'minimum_no_match_observations',
+                'minimum_no_match_checkpoints',
+                'observation_min_detection_frames',
                 'max_consecutive_planner_failures',
                 'max_consecutive_command_failures',
                 'max_repeated_no_progress_decisions',
@@ -370,8 +470,15 @@ class ModelCommanderNode(Node):
         if not 1 <= self.visual_observation_jpeg_quality <= 100:
             raise ValueError(
                 'visual_observation_jpeg_quality must be in [1, 100]')
-        if not isinstance(self.active_visual_monitoring, bool):
-            raise ValueError('active_visual_monitoring must be boolean')
+        for name in (
+                'active_visual_monitoring', 'command_bag_enabled',
+                'command_bag_required'):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f'{name} must be boolean')
+        if self.command_bag_required and not self.command_bag_enabled:
+            raise ValueError(
+                'command_bag_required cannot be true when recording is '
+                'disabled')
 
     @staticmethod
     def _registry_object_signature(item):
@@ -404,6 +511,132 @@ class ModelCommanderNode(Node):
                 self._confirmed_object_count,
                 self._registry_signature is not None,
             )
+
+    def _command_bag_status_callback(self, message):
+        try:
+            payload = json.loads(message.data)
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning(
+                'Ignoring malformed command-bag status JSON')
+            return
+        event = payload.get('event')
+        goal_id = payload.get('goal_id')
+        if not isinstance(event, str) or not isinstance(goal_id, str):
+            self.get_logger().warning(
+                'Ignoring command-bag status without event and goal_id')
+            return
+        with self._state_lock:
+            self._latest_command_bag_status_event = event
+            self._latest_command_bag_status_goal_id = goal_id
+            self._latest_command_bag_status_path = str(
+                payload.get('bag_path', ''))
+            self._latest_command_bag_status_detail = str(
+                payload.get('detail', ''))
+
+    def _publish_command_lifecycle_event(
+            self, event, mission_id, objective, duration, planning_limit,
+            result=None):
+        payload = {
+            'schema': 'muto_command_lifecycle_v1',
+            'event': event,
+            'action_name': self.action_name,
+            'goal_id': mission_id,
+            'objective': objective,
+            'model': self.vlm_model,
+            'max_duration_seconds': round(duration, 3),
+            'max_planning_steps': planning_limit,
+        }
+        if result is not None:
+            payload.update({
+                'outcome': int(result.outcome),
+                'success': bool(result.success),
+                'found': bool(result.found),
+                'message': result.message[
+                    :self.max_state_message_characters],
+                'planning_steps': int(result.planning_steps),
+                'commands_dispatched': int(result.commands_dispatched),
+                'matched_object_ids': [
+                    match.object_id for match in result.matches
+                ],
+            })
+        message = String()
+        message.data = json.dumps(
+            payload, ensure_ascii=True, separators=(',', ':'), sort_keys=True)
+        self._command_bag_lifecycle_publisher.publish(message)
+
+    def _announce_command_bag_start(
+            self, mission_id, objective, duration, planning_limit,
+            goal_handle, deadline):
+        with self._state_lock:
+            self._latest_command_bag_status_event = ''
+            self._latest_command_bag_status_goal_id = ''
+            self._latest_command_bag_status_path = ''
+            self._latest_command_bag_status_detail = ''
+        self._publish_command_lifecycle_event(
+            'mission_started', mission_id, objective, duration,
+            planning_limit)
+        if not self.command_bag_enabled:
+            return True
+
+        start_deadline = min(
+            deadline, time.monotonic() + self.command_bag_start_timeout)
+        while time.monotonic() < start_deadline:
+            self._check_parent_state(goal_handle, deadline)
+            with self._state_lock:
+                status_matches = (
+                    self._latest_command_bag_status_goal_id == mission_id
+                )
+                event = self._latest_command_bag_status_event
+                path = self._latest_command_bag_status_path
+                detail = self._latest_command_bag_status_detail
+            if status_matches and event == 'recording_ready':
+                self.get_logger().info(
+                    f'Command mission recorder is ready: {path}')
+                return True
+            if status_matches and event == 'recording_error':
+                self.get_logger().error(
+                    f'Command mission recorder reported an error: {detail}')
+                return False
+            time.sleep(self.monitor_period)
+        self.get_logger().error(
+            'Timed out waiting for the command mission recorder')
+        return False
+
+    def _publish_trace_event(self, event, mission_id, **fields):
+        payload = {
+            'schema': 'muto_command_decision_trace_v1',
+            'event': event,
+            'mission_id': mission_id,
+            'ros_time_nanoseconds': self.get_clock().now().nanoseconds,
+        }
+        payload.update(fields)
+        message = String()
+        message.data = json.dumps(
+            payload, ensure_ascii=True, separators=(',', ':'), sort_keys=True)
+        self._decision_event_publisher.publish(message)
+
+    def _publish_inspected_image(
+            self, observation, mission_id, planning_step, inspection_mode):
+        image = CompressedImage()
+        image.header.stamp = self.get_clock().now().to_msg()
+        image.header.frame_id = observation.frame_id
+        image.format = 'jpeg'
+        image.data = observation.jpeg_data
+        self._inspected_image_publisher.publish(image)
+        return {
+            'topic': self.inspected_image_topic,
+            'mission_id': mission_id,
+            'planning_step': planning_step,
+            'inspection_mode': inspection_mode,
+            'camera_sequence': observation.sequence,
+            'source_stamp_seconds': round(observation.stamp_seconds, 9),
+            'frame_id': observation.frame_id,
+            'source_width': observation.source_width,
+            'source_height': observation.source_height,
+            'encoded_width': observation.encoded_width,
+            'encoded_height': observation.encoded_height,
+            'jpeg_bytes': len(observation.jpeg_data),
+        }
 
     def _camera_callback(self, message):
         """Retain only the newest raw frame; encoding happens on demand."""
@@ -998,7 +1231,9 @@ class ModelCommanderNode(Node):
             self.max_reason_characters,
             self.max_visual_observation_characters,
             self.max_wait_seconds,
-            self.max_exploration_cycles,
+            self.max_exploration_seconds,
+            self.max_rotation_radians,
+            self.max_observation_seconds,
         )
         try:
             child_handle = self._send_goal(
@@ -1078,7 +1313,9 @@ class ModelCommanderNode(Node):
                 self.max_reason_characters,
                 self.max_visual_observation_characters,
                 self.max_wait_seconds,
-                self.max_exploration_cycles,
+                self.max_exploration_seconds,
+                self.max_rotation_radians,
+                self.max_observation_seconds,
             )
         except ModelCommanderProtocolError as error:
             raise PlannerFailure(str(error)) from error
@@ -1239,7 +1476,7 @@ class ModelCommanderNode(Node):
             goal_handle,
             LookForObject.Feedback.PHASE_CHECKING_REGISTRY,
             'checking the confirmed-object registry',
-            'find_object',
+            'verify_registry',
             planning_steps,
             commands_dispatched,
         )
@@ -1284,26 +1521,9 @@ class ModelCommanderNode(Node):
                 wrapped.result.message or 'registry object search failed')
         return list(wrapped.result.matches), wrapped.result.message
 
-    def _program_feedback(
-            self, child_token, goal_handle, planning_steps,
-            commands_dispatched, message):
-        with self._state_lock:
-            if self._active_child_token is not child_token:
-                return
-        feedback = message.feedback
-        status = feedback.status or 'explore-and-record command is active'
-        self._publish_feedback(
-            goal_handle,
-            LookForObject.Feedback.PHASE_EXECUTING,
-            status,
-            'explore_and_record',
-            planning_steps,
-            commands_dispatched,
-            child_token=child_token,
-        )
-
-    def _run_program(
-            self, cycles, expected_revision, goal_handle, deadline,
+    def _run_primitive(
+            self, primitive_name, exploration_seconds, rotation_radians,
+            expected_revision, goal_handle, deadline,
             planning_steps, commands_dispatched,
             inspection_callback=None):
         current_revision, _, _ = self._registry_state()
@@ -1314,13 +1534,26 @@ class ModelCommanderNode(Node):
                 'completed_cycles': 0,
             }
         child_goal = ExploreAndRecord.Goal()
-        child_goal.max_cycles = cycles
+        if primitive_name == 'explore_frontier':
+            child_goal.exploration_duration = exploration_seconds
+            primitive_client = self._explore_frontier_client
+            endpoint_name = 'ExploreFrontier primitive action server'
+        elif primitive_name == 'rotate':
+            child_goal = Spin.Goal()
+            child_goal.target_yaw = rotation_radians
+            child_goal.time_allowance = Duration(
+                seconds=self.spin_time_allowance).to_msg()
+            primitive_client = self._spin_client
+            endpoint_name = 'Nav2 Spin action server'
+        else:
+            raise CommanderFailure(
+                f'unsupported local primitive: {primitive_name}')
         child_token = object()
         monitor_state_lock = threading.Lock()
         monitor_state = {
-            'command': 'explore_and_record',
+            'command': primitive_name,
             'phase': 'starting',
-            'status': 'explore-and-record command is starting',
+            'status': f'{primitive_name} primitive is starting',
             'completed_cycles': 0,
             'expected_world_revision': expected_revision,
             'inspection_deadline': deadline,
@@ -1330,23 +1563,31 @@ class ModelCommanderNode(Node):
         def feedback_callback(message):
             feedback = message.feedback
             with monitor_state_lock:
-                monitor_state['phase'] = int(feedback.phase)
-                monitor_state['status'] = feedback.status
-                monitor_state['completed_cycles'] = int(
-                    feedback.completed_cycles)
-            self._program_feedback(
-                child_token,
+                if primitive_name == 'explore_frontier':
+                    monitor_state['phase'] = int(feedback.phase)
+                    monitor_state['status'] = feedback.status
+                    monitor_state['completed_cycles'] = int(
+                        feedback.completed_cycles)
+                    status = feedback.status
+                else:
+                    monitor_state['phase'] = 'spinning'
+                    monitor_state['status'] = 'Nav2 is rotating in place'
+                    status = monitor_state['status']
+            self._publish_feedback(
                 goal_handle,
+                LookForObject.Feedback.PHASE_EXECUTING,
+                status or f'{primitive_name} primitive is active',
+                primitive_name,
                 planning_steps,
                 commands_dispatched,
-                message,
+                child_token=child_token,
             )
 
         self._publish_feedback(
             goal_handle,
             LookForObject.Feedback.PHASE_EXECUTING,
-            f'running {cycles} bounded exploration-and-scan cycle(s)',
-            'explore_and_record',
+            f'running bounded {primitive_name} primitive',
+            primitive_name,
             planning_steps,
             commands_dispatched,
         )
@@ -1354,16 +1595,16 @@ class ModelCommanderNode(Node):
             self._active_child_token = child_token
         try:
             child_handle = self._send_goal(
-                self._program_client,
+                primitive_client,
                 child_goal,
                 goal_handle,
                 deadline,
-                'ExploreAndRecord action server',
+                endpoint_name,
                 feedback_callback=feedback_callback,
             )
         except OwnedGoalStateUnknown:
             self._mark_ownership_uncertain(
-                'exploration goal dispatch state is unknown; model commander '
+                f'{primitive_name} dispatch state is unknown; model commander '
                 'is latched closed until restart')
             raise
         except Exception:
@@ -1378,10 +1619,10 @@ class ModelCommanderNode(Node):
         except Exception as error:
             self._cancel_goal_best_effort(child_handle)
             self._mark_ownership_uncertain(
-                'accepted exploration child cannot be monitored; model '
+                f'accepted {primitive_name} child cannot be monitored; model '
                 'commander is latched closed until restart')
             raise OwnedGoalStateUnknown(
-                'could not monitor the accepted exploration goal'
+                f'could not monitor the accepted {primitive_name} goal'
             ) from error
         child_terminal_confirmed = False
 
@@ -1396,7 +1637,7 @@ class ModelCommanderNode(Node):
                 self._cancel_goal_and_wait(child_handle, result_future)
             except OwnedGoalStateUnknown:
                 self._mark_ownership_uncertain(
-                    'exploration child stop could not be confirmed; model '
+                    f'{primitive_name} child stop could not be confirmed; model '
                     'commander is latched closed until restart')
                 raise
             child_terminal_confirmed = True
@@ -1413,7 +1654,7 @@ class ModelCommanderNode(Node):
                         goal_handle,
                         LookForObject.Feedback.PHASE_REPLANNING,
                         'registry changed; pausing the current search step',
-                        'explore_and_record',
+                        primitive_name,
                         planning_steps,
                         commands_dispatched,
                     )
@@ -1449,7 +1690,7 @@ class ModelCommanderNode(Node):
                             goal_handle,
                             LookForObject.Feedback.PHASE_REPLANNING,
                             'VLM inspection requested a safe stop and replan',
-                            'explore_and_record',
+                            primitive_name,
                             planning_steps,
                             commands_dispatched,
                             decision_reason=inspection.reason,
@@ -1485,7 +1726,7 @@ class ModelCommanderNode(Node):
         except Exception as error:
             stop_child_or_latch()
             raise CommanderFailure(
-                'explore-and-record result failed') from error
+                f'{primitive_name} result failed') from error
         finally:
             if child_terminal_confirmed:
                 with self._state_lock:
@@ -1494,29 +1735,115 @@ class ModelCommanderNode(Node):
                     if self._active_child_token is child_token:
                         self._active_child_token = None
 
-        if not (
-                wrapped.status == GoalStatus.STATUS_SUCCEEDED and
-                wrapped.result.success):
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise CommanderFailure(f'{primitive_name} did not succeed')
+        if primitive_name == 'rotate':
+            return {
+                'outcome': 'completed',
+                'message': 'bounded in-place rotation completed',
+                'completed_cycles': 1,
+            }
+        if not wrapped.result.success:
             raise CommanderFailure(
                 wrapped.result.message
-                or 'explore-and-record command did not succeed')
+                or 'frontier command did not succeed')
         return {
             'outcome': 'completed',
             'message': wrapped.result.message,
             'completed_cycles': int(wrapped.result.completed_cycles),
+            'objects_before': int(wrapped.result.objects_before),
+            'objects_after': int(wrapped.result.objects_after),
+        }
+
+    def _run_observe(
+            self, observation_seconds, expected_revision, goal_handle,
+            deadline, planning_steps, commands_dispatched):
+        heartbeat_state = {'frames': 0}
+        heartbeat_lock = threading.Lock()
+
+        def heartbeat_callback(_message):
+            with heartbeat_lock:
+                heartbeat_state['frames'] += 1
+
+        heartbeat_subscription = self.create_subscription(
+            Header,
+            self.detection_heartbeat_topic,
+            heartbeat_callback,
+            10,
+            callback_group=self._callback_group,
+        )
+        try:
+            outcome = self._wait_while_monitoring(
+                observation_seconds,
+                expected_revision,
+                goal_handle,
+                deadline,
+                planning_steps,
+                commands_dispatched,
+                'stationary detector observation is active',
+                command='observe',
+            )
+        finally:
+            self.destroy_subscription(heartbeat_subscription)
+        with heartbeat_lock:
+            detection_frames = heartbeat_state['frames']
+        if outcome != 'wait_complete':
+            return {
+                'outcome': outcome,
+                'message': 'stationary observation ended before completion',
+                'detection_frames': detection_frames,
+            }
+        if detection_frames < self.observation_min_detection_frames:
+            raise CommanderFailure(
+                'stationary observation received only '
+                f'{detection_frames} detector frames; '
+                f'{self.observation_min_detection_frames} required')
+        return {
+            'outcome': 'completed',
+            'message': 'stationary detector observation completed',
+            'detection_frames': detection_frames,
+        }
+
+    def _run_checkpoint_registry(
+            self, expected_revision, goal_handle, deadline):
+        revision, _, _ = self._registry_state()
+        if revision != expected_revision:
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before checkpoint dispatch',
+            }
+        self._wait_for_endpoint(
+            self._checkpoint_client.service_is_ready,
+            goal_handle,
+            deadline,
+            'registry checkpoint service',
+        )
+        response = self._wait_for_future(
+            self._checkpoint_client.call_async(Trigger.Request()),
+            goal_handle,
+            deadline,
+            self.checkpoint_timeout,
+            'registry checkpoint',
+        )
+        if not response.success:
+            raise CommanderFailure(
+                response.message or 'registry checkpoint was rejected')
+        return {
+            'outcome': 'completed',
+            'message': response.message or 'registry checkpoint completed',
         }
 
     def _wait_while_monitoring(
             self, wait_seconds, start_revision, goal_handle, deadline,
             planning_steps, commands_dispatched, status,
-            inspection_callback=None):
+            inspection_callback=None, command='wait'):
         wait_deadline = min(deadline, time.monotonic() + wait_seconds)
         next_inspection_time = time.monotonic() + self.active_inspection_period
         self._publish_feedback(
             goal_handle,
             LookForObject.Feedback.PHASE_DEFERRED,
             status,
-            'wait',
+            command,
             planning_steps,
             commands_dispatched,
         )
@@ -1533,7 +1860,7 @@ class ModelCommanderNode(Node):
                         None,
                         None,
                         {
-                            'command': 'wait',
+                            'command': command,
                             'phase': 'deferred',
                             'status': status,
                             'completed_cycles': 0,
@@ -1559,9 +1886,12 @@ class ModelCommanderNode(Node):
     def _planning_state(
             self, start_time, deadline, planning_steps,
             commands_dispatched, registry_checked_revision,
-            exploration_commands_completed, consecutive_command_failures,
+            completed_primitives, consecutive_command_failures,
             last_command, last_outcome, last_message, observation,
-            last_visual_observation, last_target_evidence):
+            last_visual_observation, last_target_evidence,
+            primitive_history, completed_exploration_seconds,
+            completed_observations, completed_rotation_radians,
+            completed_checkpoints, frontier_exhausted):
         revision, object_count, _ = self._registry_state()
         return {
             'schema_version': 1,
@@ -1573,8 +1903,26 @@ class ModelCommanderNode(Node):
             'world_revision': revision,
             'confirmed_object_count': object_count,
             'registry_checked_revision': registry_checked_revision,
-            'exploration_commands_completed': (
-                exploration_commands_completed
+            'search_primitives_completed': completed_primitives,
+            'primitive_history': primitive_history[-12:],
+            'completed_exploration_seconds': round(
+                completed_exploration_seconds, 3),
+            'completed_observations': completed_observations,
+            'completed_rotation_radians': round(
+                completed_rotation_radians, 6),
+            'completed_checkpoints': completed_checkpoints,
+            'frontier_exhausted': frontier_exhausted,
+            'minimum_no_match_exploration_seconds': (
+                self.minimum_no_match_exploration_seconds
+            ),
+            'minimum_no_match_observations': (
+                self.minimum_no_match_observations
+            ),
+            'minimum_no_match_rotation_radians': (
+                self.minimum_no_match_rotation_radians
+            ),
+            'minimum_no_match_checkpoints': (
+                self.minimum_no_match_checkpoints
             ),
             'consecutive_command_failures': consecutive_command_failures,
             'last_command': last_command,
@@ -1617,7 +1965,7 @@ class ModelCommanderNode(Node):
         planning_steps = 0
         commands_dispatched = 0
         registry_checked_revision = -1
-        exploration_commands_completed = 0
+        completed_primitives = 0
         consecutive_planner_failures = 0
         consecutive_command_failures = 0
         consecutive_active_inspection_failures = 0
@@ -1630,7 +1978,14 @@ class ModelCommanderNode(Node):
         last_target_evidence = 'unclear'
         repeated_decision = None
         repeated_decision_count = 0
+        primitive_history = []
+        completed_exploration_seconds = 0.0
+        completed_observations = 0
+        completed_rotation_radians = 0.0
+        completed_checkpoints = 0
+        frontier_exhausted = False
         matches = []
+        result = None
 
         def dispatch_budget_available():
             return commands_dispatched < self.maximum_command_dispatches
@@ -1660,9 +2015,19 @@ class ModelCommanderNode(Node):
                     raise
                 except CommanderFailure as error:
                     consecutive_command_failures += 1
-                    last_command = 'find_object'
+                    last_command = 'verify_registry'
                     last_outcome = 'command_failure'
                     last_message = str(error)
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='verify_registry',
+                        outcome=last_outcome,
+                        message=last_message[
+                            :self.max_state_message_characters],
+                        world_revision=start_revision,
+                        matched_object_ids=[],
+                    )
                     if consecutive_command_failures >= \
                             self.max_consecutive_command_failures:
                         raise CommanderFailure(
@@ -1686,21 +2051,52 @@ class ModelCommanderNode(Node):
                     continue
                 revision, _, _ = self._registry_state()
                 consecutive_command_failures = 0
-                last_command = 'find_object'
+                last_command = 'verify_registry'
                 last_message = message
                 if found_matches and revision == start_revision:
                     registry_checked_revision = revision
                     last_outcome = 'match_found'
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='verify_registry',
+                        outcome=last_outcome,
+                        message=message[
+                            :self.max_state_message_characters],
+                        world_revision=revision,
+                        matched_object_ids=[
+                            match.object_id for match in found_matches
+                        ],
+                    )
                     return found_matches
                 if revision == start_revision:
                     registry_checked_revision = revision
                     last_outcome = 'no_match'
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='verify_registry',
+                        outcome=last_outcome,
+                        message=message[
+                            :self.max_state_message_characters],
+                        world_revision=revision,
+                        matched_object_ids=[],
+                    )
                     return []
                 registry_checked_revision = start_revision
                 last_outcome = 'registry_changed_during_check'
                 last_message = (
                     'registry changed during semantic lookup; checking the '
                     'new snapshot before replanning'
+                )
+                self._publish_trace_event(
+                    'command_result', mission_id,
+                    planning_step=planning_steps,
+                    command='verify_registry',
+                    outcome=last_outcome,
+                    message=last_message,
+                    world_revision=revision,
+                    matched_object_ids=[],
                 )
 
         def inspect_active_command(
@@ -1731,6 +2127,8 @@ class ModelCommanderNode(Node):
                 commands_dispatched,
                 child_token=child_token,
             )
+            inspection_step = planning_steps + 1
+            inspection_started = None
             try:
                 observation = self._capture_visual_observation(
                     last_visual_sequence,
@@ -1747,7 +2145,7 @@ class ModelCommanderNode(Node):
                     planning_steps,
                     commands_dispatched,
                     registry_checked_revision,
-                    exploration_commands_completed,
+                    completed_primitives,
                     consecutive_command_failures,
                     last_command,
                     last_outcome,
@@ -1755,6 +2153,12 @@ class ModelCommanderNode(Node):
                     observation,
                     last_visual_observation,
                     last_target_evidence,
+                    primitive_history,
+                    completed_exploration_seconds,
+                    completed_observations,
+                    completed_rotation_radians,
+                    completed_checkpoints,
+                    frontier_exhausted,
                 )
                 state.update({
                     'inspection_mode': 'active_command_monitor',
@@ -1777,6 +2181,21 @@ class ModelCommanderNode(Node):
                     commands_dispatched,
                     child_token=child_token,
                 )
+                image_context = self._publish_inspected_image(
+                    observation,
+                    mission_id,
+                    inspection_step,
+                    'active_command_monitor',
+                )
+                self._publish_trace_event(
+                    'active_inspection_request', mission_id,
+                    planning_step=inspection_step,
+                    objective=objective,
+                    model=self.vlm_model,
+                    state=state,
+                    image=image_context,
+                )
+                inspection_started = time.monotonic()
                 decision = self._inspect_active_command(
                     objective,
                     state,
@@ -1800,6 +2219,19 @@ class ModelCommanderNode(Node):
                 last_command = 'active_visual_monitor'
                 last_outcome = 'active_inspection_failure'
                 last_message = str(error)
+                trace_fields = {
+                    'planning_step': inspection_step,
+                    'model': self.vlm_model,
+                    'failure_type': type(error).__name__,
+                    'message': last_message[
+                        :self.max_state_message_characters],
+                    'active_command': active_command,
+                }
+                if inspection_started is not None:
+                    trace_fields['latency_seconds'] = round(
+                        time.monotonic() - inspection_started, 3)
+                self._publish_trace_event(
+                    'active_inspection_failure', mission_id, **trace_fields)
                 self._publish_feedback(
                     goal_handle,
                     LookForObject.Feedback.PHASE_DEFERRED,
@@ -1820,6 +2252,18 @@ class ModelCommanderNode(Node):
 
             consecutive_active_inspection_failures = 0
             planning_steps += 1
+            self._publish_trace_event(
+                'active_inspection_decision', mission_id,
+                planning_step=planning_steps,
+                model=self.vlm_model,
+                latency_seconds=round(
+                    time.monotonic() - inspection_started, 3),
+                directive=decision.directive,
+                reason=decision.reason,
+                visual_observation=decision.visual_observation,
+                target_evidence=decision.target_evidence,
+                active_command=active_command,
+            )
             last_visual_observation = decision.visual_observation
             last_target_evidence = decision.target_evidence
             last_command = 'active_visual_monitor'
@@ -1871,6 +2315,18 @@ class ModelCommanderNode(Node):
                 active=True,
                 mission_id=mission_id,
             )
+            bag_ready = self._announce_command_bag_start(
+                mission_id,
+                objective,
+                duration,
+                planning_limit,
+                goal_handle,
+                deadline,
+            )
+            if not bag_ready and self.command_bag_required:
+                raise CommanderFailure(
+                    'command mission recording is required but could not '
+                    'start')
             self._wait_for_registry_snapshot(goal_handle, deadline)
             matches = check_registry()
             if matches:
@@ -1931,7 +2387,7 @@ class ModelCommanderNode(Node):
                         planning_steps,
                         commands_dispatched,
                         registry_checked_revision,
-                        exploration_commands_completed,
+                        completed_primitives,
                         consecutive_command_failures,
                         last_command,
                         last_outcome,
@@ -1939,6 +2395,12 @@ class ModelCommanderNode(Node):
                         observation,
                         last_visual_observation,
                         last_target_evidence,
+                        primitive_history,
+                        completed_exploration_seconds,
+                        completed_observations,
+                        completed_rotation_radians,
+                        completed_checkpoints,
+                        frontier_exhausted,
                     )
                     self._publish_feedback(
                         goal_handle,
@@ -1948,13 +2410,58 @@ class ModelCommanderNode(Node):
                         planning_steps,
                         commands_dispatched,
                     )
-                    decision, decision_revision = self._plan(
-                        objective,
-                        state,
+                    decision_step = planning_steps + 1
+                    image_context = self._publish_inspected_image(
                         observation,
-                        capture_revision,
-                        goal_handle,
-                        deadline,
+                        mission_id,
+                        decision_step,
+                        'mission_planning',
+                    )
+                    self._publish_trace_event(
+                        'planning_request', mission_id,
+                        planning_step=decision_step,
+                        objective=objective,
+                        model=self.vlm_model,
+                        state=state,
+                        image=image_context,
+                    )
+                    planning_started = time.monotonic()
+                    try:
+                        decision, decision_revision = self._plan(
+                            objective,
+                            state,
+                            observation,
+                            capture_revision,
+                            goal_handle,
+                            deadline,
+                        )
+                    except (PlannerFailure, StalePlan) as error:
+                        self._publish_trace_event(
+                            'planning_failure', mission_id,
+                            planning_step=decision_step,
+                            model=self.vlm_model,
+                            latency_seconds=round(
+                                time.monotonic() - planning_started, 3),
+                            failure_type=type(error).__name__,
+                            message=str(error)[
+                                :self.max_state_message_characters],
+                        )
+                        raise
+                    self._publish_trace_event(
+                        'planning_decision', mission_id,
+                        planning_step=decision_step,
+                        model=self.vlm_model,
+                        latency_seconds=round(
+                            time.monotonic() - planning_started, 3),
+                        decision=decision.decision,
+                        reason=decision.reason,
+                        wait_seconds=decision.wait_seconds,
+                        exploration_seconds=decision.exploration_seconds,
+                        rotation_radians=decision.rotation_radians,
+                        observation_seconds=decision.observation_seconds,
+                        visual_observation=decision.visual_observation,
+                        target_evidence=decision.target_evidence,
+                        decision_world_revision=decision_revision,
                     )
                 except StalePlan:
                     last_command = 'planner'
@@ -2022,7 +2529,7 @@ class ModelCommanderNode(Node):
                 consecutive_planner_failures = 0
                 planning_steps += 1
                 current_revision, _, _ = self._registry_state()
-                if decision.decision != 'find_object' and \
+                if decision.decision != 'verify_registry' and \
                         current_revision != decision_revision:
                     last_command = 'planner'
                     last_outcome = 'stale_world_revision'
@@ -2049,7 +2556,9 @@ class ModelCommanderNode(Node):
                 progress_key = (
                     decision.decision,
                     current_revision,
-                    exploration_commands_completed,
+                    completed_primitives,
+                    completed_observations,
+                    round(completed_rotation_radians, 3),
                     last_outcome,
                 )
                 if decision.decision != 'wait' and \
@@ -2076,7 +2585,7 @@ class ModelCommanderNode(Node):
                 )
 
                 if decision.target_evidence in ('possible', 'likely') and \
-                        decision.decision != 'find_object':
+                        decision.decision != 'verify_registry':
                     last_command = decision.decision
                     last_outcome = 'visual_evidence_requires_registry_check'
                     last_message = (
@@ -2098,8 +2607,13 @@ class ModelCommanderNode(Node):
                         return result
                     continue
 
-                if decision.decision == 'find_object':
+                if decision.decision == 'verify_registry':
                     matches = check_registry()
+                    primitive_history.append({
+                        'primitive': 'verify_registry',
+                        'outcome': 'match_found' if matches else 'no_match',
+                        'world_revision': decision_revision,
+                    })
                     if matches:
                         result = self._fill_result(
                             LookForObject.Result.OUTCOME_FOUND,
@@ -2128,6 +2642,19 @@ class ModelCommanderNode(Node):
                     last_command = 'wait'
                     last_outcome = wait_outcome
                     last_message = decision.reason
+                    primitive_history.append({
+                        'primitive': 'wait',
+                        'outcome': wait_outcome,
+                        'world_revision': decision_revision,
+                    })
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='wait',
+                        outcome=wait_outcome,
+                        message=decision.reason,
+                        world_revision=decision_revision,
+                    )
                     if wait_outcome in (
                             'registry_changed', 'visual_interrupt'):
                         matches = check_registry()
@@ -2146,14 +2673,36 @@ class ModelCommanderNode(Node):
                     continue
 
                 if decision.decision == 'finish_not_found':
-                    if exploration_commands_completed < 1 or \
+                    no_match_search_evidence = (
+                        completed_observations >=
+                        self.minimum_no_match_observations and
+                        completed_rotation_radians >=
+                        self.minimum_no_match_rotation_radians and
+                        completed_checkpoints >=
+                        self.minimum_no_match_checkpoints and
+                        (
+                            frontier_exhausted or
+                            completed_exploration_seconds >=
+                            self.minimum_no_match_exploration_seconds
+                        )
+                    )
+                    if not no_match_search_evidence or \
                             registry_checked_revision != decision_revision:
                         last_command = 'finish_not_found'
                         last_outcome = 'premature_finish_rejected'
                         last_message = (
-                            'local policy requires a completed search program '
-                            'and a current registry check before no-match '
-                            'finish'
+                            'local policy requires enough stationary '
+                            'observations, rotation coverage, frontier-search '
+                            'evidence, and a current registry check before '
+                            'no-match finish'
+                        )
+                        self._publish_trace_event(
+                            'command_result', mission_id,
+                            planning_step=planning_steps,
+                            command='finish_not_found',
+                            outcome=last_outcome,
+                            message=last_message,
+                            world_revision=decision_revision,
                         )
                         continue
                     result = self._fill_result(
@@ -2193,21 +2742,43 @@ class ModelCommanderNode(Node):
                         continue
                     return result
 
-                if decision.decision == 'explore_and_record':
+                if decision.decision in (
+                        'explore_frontier', 'rotate', 'observe',
+                        'checkpoint_registry'):
                     if not dispatch_budget_available():
                         raise MissionBudgetExhausted(
                             'command-dispatch budget exhausted')
                     commands_dispatched += 1
                     try:
-                        program = self._run_program(
-                            decision.exploration_cycles,
-                            decision_revision,
-                            goal_handle,
-                            deadline,
-                            planning_steps,
-                            commands_dispatched,
-                            inspection_callback=inspect_active_command,
-                        )
+                        if decision.decision in (
+                                'explore_frontier', 'rotate'):
+                            program = self._run_primitive(
+                                decision.decision,
+                                decision.exploration_seconds,
+                                decision.rotation_radians,
+                                decision_revision,
+                                goal_handle,
+                                deadline,
+                                planning_steps,
+                                commands_dispatched,
+                                inspection_callback=(
+                                    inspect_active_command
+                                    if decision.decision ==
+                                    'explore_frontier' else None
+                                ),
+                            )
+                        elif decision.decision == 'observe':
+                            program = self._run_observe(
+                                decision.observation_seconds,
+                                decision_revision,
+                                goal_handle,
+                                deadline,
+                                planning_steps,
+                                commands_dispatched,
+                            )
+                        else:
+                            program = self._run_checkpoint_registry(
+                                decision_revision, goal_handle, deadline)
                         consecutive_command_failures = 0
                     except OwnedGoalStateUnknown:
                         raise
@@ -2215,23 +2786,76 @@ class ModelCommanderNode(Node):
                         raise
                     except CommanderFailure as error:
                         consecutive_command_failures += 1
-                        last_command = 'explore_and_record'
+                        last_command = decision.decision
                         last_outcome = 'command_failure'
                         last_message = str(error)
+                        primitive_history.append({
+                            'primitive': decision.decision,
+                            'outcome': 'command_failure',
+                            'message': last_message[
+                                :self.max_state_message_characters],
+                            'world_revision': decision_revision,
+                        })
+                        self._publish_trace_event(
+                            'command_result', mission_id,
+                            planning_step=planning_steps,
+                            command=decision.decision,
+                            outcome=last_outcome,
+                            message=last_message[
+                                :self.max_state_message_characters],
+                            world_revision=decision_revision,
+                        )
                         if consecutive_command_failures >= \
                                 self.max_consecutive_command_failures:
                             raise CommanderFailure(
-                                'search command repeatedly failed') from error
+                                'search primitive repeatedly failed') from error
                         continue
-                    last_command = 'explore_and_record'
+                    last_command = decision.decision
                     last_outcome = program['outcome']
                     last_message = program['message']
+                    primitive_history.append({
+                        'primitive': decision.decision,
+                        'outcome': program['outcome'],
+                        'message': program['message'][
+                            :self.max_state_message_characters],
+                        'world_revision': decision_revision,
+                        'objects_before': program.get('objects_before'),
+                        'objects_after': program.get('objects_after'),
+                        'detection_frames': program.get('detection_frames'),
+                    })
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command=decision.decision,
+                        outcome=program['outcome'],
+                        message=program['message'][
+                            :self.max_state_message_characters],
+                        world_revision=decision_revision,
+                        objects_before=program.get('objects_before'),
+                        objects_after=program.get('objects_after'),
+                        detection_frames=program.get('detection_frames'),
+                    )
                     if program['outcome'] == 'visual_interrupt':
                         last_visual_observation = program[
                             'visual_observation']
                         last_target_evidence = program['target_evidence']
                     if program['outcome'] == 'completed':
-                        exploration_commands_completed += 1
+                        completed_primitives += 1
+                        if decision.decision == 'explore_frontier':
+                            completed_exploration_seconds += (
+                                decision.exploration_seconds
+                            )
+                            frontier_exhausted = (
+                                frontier_exhausted or
+                                'exhausted' in program['message'].casefold()
+                            )
+                        elif decision.decision == 'rotate':
+                            completed_rotation_radians += abs(
+                                decision.rotation_radians)
+                        elif decision.decision == 'observe':
+                            completed_observations += 1
+                        elif decision.decision == 'checkpoint_registry':
+                            completed_checkpoints += 1
                     matches = check_registry()
                     if matches:
                         result = self._fill_result(
@@ -2315,12 +2939,29 @@ class ModelCommanderNode(Node):
                     self._active_child_goal = None
                     self._active_child_token = None
                     self._busy = False
+            if result is not None:
+                if ownership_uncertain:
+                    terminal_event = 'ownership_uncertain'
+                elif result.outcome == LookForObject.Result.OUTCOME_CANCELED:
+                    terminal_event = 'canceled'
+                elif result.success:
+                    terminal_event = 'succeeded'
+                else:
+                    terminal_event = 'aborted'
+                self._publish_command_lifecycle_event(
+                    terminal_event,
+                    mission_id,
+                    objective,
+                    duration,
+                    planning_limit,
+                    result=result,
+                )
             if ownership_uncertain:
                 self._set_status(
                     'ownership_uncertain',
                     'owned child stop is unconfirmed; restart the commander '
                     'before accepting another mission',
-                    current_command='explore_and_record',
+                    current_command='owned_motion_primitive',
                     planning_steps=planning_steps,
                     commands_dispatched=commands_dispatched,
                     decision_reason='',

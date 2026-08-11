@@ -11,9 +11,7 @@ import uuid
 
 from action_msgs.msg import GoalStatus
 from muto_command_layer.action import (
-    ExploreAndRecord,
     FindObject,
-    FindSomething,
     GoToObject,
     LookForObject,
     NaturalLanguageCommand,
@@ -30,7 +28,9 @@ from rclpy.action import (
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from slam_toolbox.srv import SaveMap
+from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
 
@@ -54,10 +54,6 @@ def intent_response(command, object_query='', **overrides):
         'command': command,
         'object_query': object_query,
         'map_name': '',
-        'exploration_duration': 0.0,
-        'observation_duration': 0.0,
-        'scan_step_count': 0,
-        'max_cycles': 0,
     }
     response.update(overrides)
     return json.dumps(response)
@@ -69,13 +65,12 @@ class FakeCommandBackends(Node):
         prefix = f'/test/{test_id}'
         self.vlm_action = f'{prefix}/vlm'
         self.find_action = f'{prefix}/find_object'
-        self.find_something_action = f'{prefix}/find_something'
         self.look_for_object_action = f'{prefix}/look_for_object'
         self.go_action = f'{prefix}/go_to_object'
-        self.program_action = f'{prefix}/explore_and_record'
         self.explore_service_name = f'{prefix}/explore'
         self.save_map_service_name = f'{prefix}/save_map'
         self.router_action = f'{prefix}/natural_language_command'
+        self.decision_topic = f'{prefix}/natural_language_decisions'
         self._lock = threading.Lock()
         self._callback_group = ReentrantCallbackGroup()
         self._vlm_responses = deque()
@@ -84,10 +79,10 @@ class FakeCommandBackends(Node):
         self.find_prompts = []
         self.model_search_prompts = []
         self.go_object_ids = []
-        self.program_goals = []
         self.explore_requests = []
         self.save_map_requests = []
         self.motion_cancellations = []
+        self.decision_events = []
 
         self.vlm_server = ActionServer(
             self,
@@ -111,22 +106,6 @@ class FakeCommandBackends(Node):
             cancel_callback=self.accept_cancel,
             callback_group=self._callback_group,
         )
-        self.program_server = ActionServer(
-            self,
-            ExploreAndRecord,
-            self.program_action,
-            execute_callback=self.execute_program,
-            cancel_callback=self.accept_cancel,
-            callback_group=self._callback_group,
-        )
-        self.active_search_server = ActionServer(
-            self,
-            FindSomething,
-            self.find_something_action,
-            execute_callback=self.execute_active_search,
-            cancel_callback=self.accept_cancel,
-            callback_group=self._callback_group,
-        )
         self.model_search_server = ActionServer(
             self,
             LookForObject,
@@ -146,6 +125,18 @@ class FakeCommandBackends(Node):
             self.save_map_service_name,
             self.handle_save_map,
             callback_group=self._callback_group,
+        )
+        trace_qos = QoSProfile(
+            depth=10,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.decision_subscription = self.create_subscription(
+            String,
+            self.decision_topic,
+            lambda message: self.decision_events.append(
+                json.loads(message.data)),
+            trace_qos,
         )
 
     def queue_intent(self, command, object_query='', **overrides):
@@ -201,28 +192,6 @@ class FakeCommandBackends(Node):
         result.message = 'fake navigation completed or canceled'
         return result
 
-    def execute_program(self, goal_handle):
-        request = goal_handle.request
-        self.program_goals.append((
-            request.exploration_duration,
-            request.observation_duration,
-            request.scan_step_count,
-            request.max_cycles,
-        ))
-        succeeded = self._wait_for_motion(goal_handle, 'explore_and_record')
-        result = ExploreAndRecord.Result()
-        result.success = succeeded
-        result.message = 'fake mission completed or canceled'
-        return result
-
-    def execute_active_search(self, goal_handle):
-        self.find_prompts.append(goal_handle.request.prompt)
-        succeeded = self._wait_for_motion(goal_handle, 'find_something')
-        result = FindSomething.Result()
-        result.success = succeeded
-        result.message = 'fake active search completed or canceled'
-        return result
-
     def execute_model_search(self, goal_handle):
         self.model_search_prompts.append(goal_handle.request.prompt)
         succeeded = self._wait_for_motion(goal_handle, 'look_for_object')
@@ -271,12 +240,11 @@ def running_router():
             '-p', f'action_name:={backend.router_action}',
             '-p', f'vlm_action:={backend.vlm_action}',
             '-p', f'find_object_action:={backend.find_action}',
-            '-p', f'find_something_action:={backend.find_something_action}',
             '-p', f'look_for_object_action:={backend.look_for_object_action}',
             '-p', f'go_to_object_action:={backend.go_action}',
             '-p', f'explore_service:={backend.explore_service_name}',
             '-p', f'save_map_service:={backend.save_map_service_name}',
-            '-p', f'explore_and_record_action:={backend.program_action}',
+            '-p', f'decision_event_topic:={backend.decision_topic}',
             '-p', 'endpoint_timeout:=1.0',
             '-p', 'cancel_timeout:=1.0',
         ],
@@ -363,43 +331,45 @@ def test_go_to_object_dispatches_exact_id_then_natural_cancel(
     assert len(backend.schemas) == 0
 
 
-def test_explore_and_record_forwards_only_bounded_arguments(running_router):
-    backend, client = running_router
-
-    backend.queue_intent(
-        'explore_and_record',
-        exploration_duration=12.0,
-        observation_duration=2.5,
-        scan_step_count=8,
-        max_cycles=3,
-    )
-    dispatched = send_command(
-        client, 'explore, scan in eight steps, and record objects')
-    wait_until(lambda: len(backend.program_goals) == 1)
-    backend.queue_intent('cancel_active_command')
-    canceled = send_command(client, 'stop the autonomous mission')
-    wait_until(
-        lambda: backend.motion_cancellations == ['explore_and_record'])
-
-    assert dispatched.status == GoalStatus.STATUS_SUCCEEDED
-    assert backend.program_goals[0] == pytest.approx((12.0, 2.5, 8, 3))
-    assert canceled.status == GoalStatus.STATUS_SUCCEEDED
-
-
-def test_find_something_dispatches_active_search_and_supports_cancel(
+def test_plain_find_dispatches_model_commander_and_supports_cancel(
         running_router):
     backend, client = running_router
 
-    backend.queue_intent('find_something', 'the red mug')
-    dispatched = send_command(client, 'go search for the red mug')
-    wait_until(lambda: backend.find_prompts == ['the red mug'])
+    dispatched = send_command(client, 'find the red mug')
+    wait_until(lambda: backend.model_search_prompts == ['the red mug'])
     canceled = send_command(client, 'cancel the active command')
-    wait_until(lambda: backend.motion_cancellations == ['find_something'])
+    wait_until(
+        lambda: backend.motion_cancellations == ['look_for_object'])
 
     assert dispatched.status == GoalStatus.STATUS_SUCCEEDED
-    assert dispatched.result.command == 'find_something'
+    assert dispatched.result.command == 'look_for_object'
     assert canceled.status == GoalStatus.STATUS_SUCCEEDED
-    assert len(backend.schemas) == 1
+    assert len(backend.schemas) == 0
+    wait_until(lambda: any(
+        event['event'] == 'validated_intent' and
+        event['query'] == 'find the red mug' and
+        event['command'] == 'look_for_object'
+        for event in backend.decision_events
+    ))
+    assert any(
+        event['event'] == 'validated_intent' and
+        event['query'] == 'find the red mug' and
+        event['command'] == 'look_for_object'
+        for event in backend.decision_events
+    )
+
+
+def test_explicit_registry_query_remains_stationary(
+        running_router):
+    backend, client = running_router
+
+    found = send_command(client, 'check registry for the red chair')
+
+    assert found.status == GoalStatus.STATUS_SUCCEEDED
+    assert found.result.command == 'find_object'
+    assert backend.find_prompts == ['the red chair']
+    assert backend.motion_cancellations == []
+    assert len(backend.schemas) == 0
 
 
 def test_look_for_object_dispatches_persistent_model_mission_and_cancel(

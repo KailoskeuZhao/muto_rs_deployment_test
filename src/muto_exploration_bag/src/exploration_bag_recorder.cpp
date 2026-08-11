@@ -120,7 +120,8 @@ std::optional<std::string> json_string_field(
   return std::nullopt;
 }
 
-std::string timestamped_bag_name(const std::string & goal_id)
+std::string timestamped_bag_name(
+  const std::string & goal_id, const std::string & bag_prefix)
 {
   const auto now = std::chrono::system_clock::now();
   const std::time_t wall_time = std::chrono::system_clock::to_time_t(now);
@@ -138,7 +139,7 @@ std::string timestamped_bag_name(const std::string & goal_id)
   }
 
   std::ostringstream name;
-  name << "muto_explore_" << std::put_time(&local_time, "%Y%m%d_%H%M%S") <<
+  name << bag_prefix << "_" << std::put_time(&local_time, "%Y%m%d_%H%M%S") <<
     "_" << safe_goal_id.substr(0U, 8U);
   return name.str();
 }
@@ -202,6 +203,14 @@ public:
       "path_topic", "/explore_and_record/last_bag_path");
     operator_event_topic_ = declare_parameter<std::string>(
       "operator_event_topic", "/explore_and_record/operator_event");
+    bag_prefix_ = declare_parameter<std::string>(
+      "bag_prefix", "muto_explore");
+    manifest_schema_ = declare_parameter<std::string>(
+      "manifest_schema", "explore_and_record_v1");
+    status_schema_ = declare_parameter<std::string>(
+      "status_schema", "muto_exploration_bag_status_v1");
+    recording_label_ = declare_parameter<std::string>(
+      "recording_label", "exploration");
     include_hidden_topics_ =
       declare_parameter<bool>("include_hidden_topics", true);
     record_all_services_ =
@@ -239,8 +248,8 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Armed for %s; bags=%s operator_events=%s status=%s",
-      lifecycle_event_topic_.c_str(), output_directory_.c_str(),
+      "Armed for %s %s; bags=%s operator_events=%s status=%s",
+      recording_label_.c_str(), lifecycle_event_topic_.c_str(), output_directory_.c_str(),
       operator_event_topic_.c_str(), status_topic_.c_str());
   }
 
@@ -286,6 +295,18 @@ private:
     {
       throw std::invalid_argument("recorder topic names must not be empty");
     }
+    if (bag_prefix_.empty() || !std::all_of(
+        bag_prefix_.begin(), bag_prefix_.end(), [](const unsigned char character) {
+          return std::isalnum(character) != 0 || character == '_' || character == '-';
+        }))
+    {
+      throw std::invalid_argument(
+              "bag_prefix must contain only letters, digits, '_' or '-'");
+    }
+    if (manifest_schema_.empty() || status_schema_.empty() || recording_label_.empty()) {
+      throw std::invalid_argument(
+              "manifest_schema, status_schema and recording_label must not be empty");
+    }
   }
 
   void handle_lifecycle_event(const std_msgs::msg::String::ConstSharedPtr message)
@@ -294,8 +315,8 @@ private:
     const auto goal_id = json_string_field(message->data, "goal_id");
     if (!event || !goal_id) {
       RCLCPP_WARN(
-        get_logger(), "Ignoring malformed exploration lifecycle event: %s",
-        message->data.c_str());
+        get_logger(), "Ignoring malformed %s lifecycle event: %s",
+        recording_label_.c_str(), message->data.c_str());
       return;
     }
 
@@ -336,13 +357,13 @@ private:
     }
     if (transport_->active()) {
       RCLCPP_WARN(
-        get_logger(), "New exploration goal arrived before goal %s finalized",
-        active_goal_id_.c_str());
+        get_logger(), "New %s goal arrived before goal %s finalized",
+        recording_label_.c_str(), active_goal_id_.c_str());
       finalize_recording("superseded");
     }
 
     const auto bag_path = std::filesystem::path(output_directory_) /
-      timestamped_bag_name(goal_id);
+      timestamped_bag_name(goal_id, bag_prefix_);
     bool use_sim_time = false;
     get_parameter("use_sim_time", use_sim_time);
 
@@ -369,7 +390,8 @@ private:
     }
     const char * ros_distro = std::getenv("ROS_DISTRO");
     options.custom_data = {
-      {"muto_schema", "explore_and_record_v1"},
+      {"muto_schema", manifest_schema_},
+      {"recording_label", recording_label_},
       {"goal_id", goal_id},
       {"start_event", start_event},
       {"bag_path", bag_path.string()},
@@ -388,15 +410,15 @@ private:
       write_recording_manifest(bag_path, options.custom_data);
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
-        get_logger(), "Could not prepare exploration bag for goal %s: %s",
-        goal_id.c_str(), error.what());
+        get_logger(), "Could not prepare %s bag for goal %s: %s",
+        recording_label_.c_str(), goal_id.c_str(), error.what());
       if (transport_->active()) {
         try {
           transport_->stop();
         } catch (const std::exception & stop_error) {
           RCLCPP_ERROR(
-            get_logger(), "Could not close incomplete exploration bag: %s",
-            stop_error.what());
+            get_logger(), "Could not close incomplete %s bag: %s",
+            recording_label_.c_str(), stop_error.what());
         }
       }
       publish_status("recording_error", goal_id, error.what());
@@ -410,8 +432,8 @@ private:
     path_publisher_->publish(path_message);
     publish_status("recording_ready", active_goal_id_, "");
     RCLCPP_INFO(
-      get_logger(), "Recording exploration goal %s to %s",
-      active_goal_id_.c_str(), transport_->path().c_str());
+      get_logger(), "Recording %s goal %s to %s",
+      recording_label_.c_str(), active_goal_id_.c_str(), transport_->path().c_str());
   }
 
   void handle_operator_event(const std_msgs::msg::String::ConstSharedPtr message)
@@ -421,8 +443,8 @@ private:
         get_logger(), "Operator event recorded: %s", message->data.c_str());
     } else {
       RCLCPP_WARN(
-        get_logger(), "Operator event was not recorded because no mission bag is active: %s",
-        message->data.c_str());
+        get_logger(), "Operator event was not recorded because no %s bag is active: %s",
+        recording_label_.c_str(), message->data.c_str());
     }
   }
 
@@ -452,8 +474,8 @@ private:
     try {
       transport_->stop();
       RCLCPP_INFO(
-        get_logger(), "Finalized exploration bag after %s: %s",
-        reason.c_str(), finalized_path.c_str());
+        get_logger(), "Finalized %s bag after %s: %s",
+        recording_label_.c_str(), reason.c_str(), finalized_path.c_str());
       publish_status("recording_finalized", finalized_goal, "");
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
@@ -470,7 +492,7 @@ private:
   {
     std_msgs::msg::String message;
     message.data =
-      "{\"schema\":\"muto_exploration_bag_status_v1\",\"event\":\"" +
+      "{\"schema\":\"" + json_escape(status_schema_) + "\",\"event\":\"" +
       json_escape(event) + "\",\"goal_id\":\"" + json_escape(goal_id) +
       "\",\"bag_path\":\"" +
       json_escape(transport_ ? transport_->path() : "") +
@@ -491,6 +513,10 @@ private:
   std::string status_topic_;
   std::string path_topic_;
   std::string operator_event_topic_;
+  std::string bag_prefix_;
+  std::string manifest_schema_;
+  std::string status_schema_;
+  std::string recording_label_;
   bool include_hidden_topics_{true};
   bool record_all_services_{true};
   std::string active_goal_id_;

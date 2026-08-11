@@ -78,6 +78,11 @@ def generate_launch_description():
             description='Typed detections and representative JPEG crops.',
         ),
         DeclareLaunchArgument(
+            'detection_heartbeat_topic',
+            default_value='/sam2/detection_heartbeat',
+            description='Crop-free completion heartbeat for detector frames.',
+        ),
+        DeclareLaunchArgument(
             'instance_pointcloud_topic',
             default_value='/sam2/instance_pointcloud',
             description='Per-instance point cloud consumed by the registry.',
@@ -182,6 +187,8 @@ def generate_launch_description():
             'color_camera_info_topic': LaunchConfiguration(
                 'color_camera_info_topic'),
             'detections_topic': LaunchConfiguration('detections_topic'),
+            'detection_heartbeat_topic': LaunchConfiguration(
+                'detection_heartbeat_topic'),
             'instance_pointcloud_topic': LaunchConfiguration(
                 'instance_pointcloud_topic'),
             'yolo_model': LaunchConfiguration('yolo_model'),

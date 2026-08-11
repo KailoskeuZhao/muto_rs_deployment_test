@@ -18,6 +18,7 @@ from muto_command_layer.action import (
 from muto_command_layer.msg import ObjectMatch
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
+from nav2_msgs.action import Spin
 import pytest
 import rclpy
 from rclpy.action import (
@@ -30,9 +31,14 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sam2_object_registry.msg import StoredObject, StoredObjectArray
-from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from sam2_object_registry.msg import (
+    DetectedObjectArray,
+    StoredObject,
+    StoredObjectArray,
+)
+from sensor_msgs.msg import CompressedImage, Image
+from std_msgs.msg import Header, String
+from std_srvs.srv import Trigger
 
 
 def wait_future(future, timeout=8.0):
@@ -52,14 +58,17 @@ def wait_until(predicate, timeout=8.0):
 
 def decision_response(
         decision, reason='bounded test decision',
-        wait_seconds=0.0, exploration_cycles=0,
+        wait_seconds=0.0, exploration_seconds=0.0,
+        rotation_radians=0.0, observation_seconds=0.0,
         visual_observation='synthetic camera view is clear',
         target_evidence='not_visible'):
     return json.dumps({
         'decision': decision,
         'reason': reason,
         'wait_seconds': wait_seconds,
-        'exploration_cycles': exploration_cycles,
+        'exploration_seconds': exploration_seconds,
+        'rotation_radians': rotation_radians,
+        'observation_seconds': observation_seconds,
         'visual_observation': visual_observation,
         'target_evidence': target_evidence,
     })
@@ -84,11 +93,18 @@ class FakeCommanderBackends(Node):
         prefix = f'/test/{test_id}'
         self.vlm_action = f'{prefix}/vlm'
         self.find_action = f'{prefix}/find_object'
-        self.program_action = f'{prefix}/explore_and_record'
+        self.explore_action = f'{prefix}/explore_frontier'
+        self.spin_action = f'{prefix}/spin'
+        self.checkpoint_service = f'{prefix}/save_stored_objects'
+        self.detection_heartbeat_topic = f'{prefix}/detection_heartbeat'
+        self.detections_topic = f'{prefix}/detections'
         self.registry_topic = f'{prefix}/stored_objects'
         self.image_topic = f'{prefix}/camera/color/image_raw'
         self.commander_action = f'{prefix}/look_for_object'
         self.status_topic = f'{prefix}/model_commander_status'
+        self.decision_topic = f'{prefix}/model_commander_decisions'
+        self.inspected_image_topic = f'{prefix}/inspected_image'
+        self.bag_event_topic = f'{prefix}/command_bag_lifecycle'
         self._callback_group = ReentrantCallbackGroup()
         self._lock = threading.Lock()
         self._decisions = deque()
@@ -106,8 +122,13 @@ class FakeCommanderBackends(Node):
         self.ignore_vlm_cancel = False
         self.find_prompts = []
         self.program_cycles = []
+        self.primitive_names = []
         self.program_cancellations = 0
+        self.checkpoint_requests = 0
         self.statuses = []
+        self.trace_events = []
+        self.inspected_images = []
+        self.lifecycle_events = []
         self.camera_sequence = 0
 
         self.vlm_server = ActionServer(
@@ -126,12 +147,26 @@ class FakeCommanderBackends(Node):
             execute_callback=self.execute_find,
             callback_group=self._callback_group,
         )
-        self.program_server = ActionServer(
+        self.explore_server = ActionServer(
             self,
             ExploreAndRecord,
-            self.program_action,
-            execute_callback=self.execute_program,
+            self.explore_action,
+            execute_callback=self.execute_explore,
             cancel_callback=self.accept_cancel,
+            callback_group=self._callback_group,
+        )
+        self.spin_server = ActionServer(
+            self,
+            Spin,
+            self.spin_action,
+            execute_callback=self.execute_spin,
+            cancel_callback=self.accept_cancel,
+            callback_group=self._callback_group,
+        )
+        self.checkpoint_server = self.create_service(
+            Trigger,
+            self.checkpoint_service,
+            self.handle_checkpoint,
             callback_group=self._callback_group,
         )
         qos = QoSProfile(
@@ -149,8 +184,36 @@ class FakeCommanderBackends(Node):
         self.camera_publisher = self.create_publisher(
             Image, self.image_topic, camera_qos)
         self.camera_timer = self.create_timer(0.03, self.publish_camera)
+        self.detection_heartbeat_publisher = self.create_publisher(
+            Header, self.detection_heartbeat_topic, 10)
+        self.detections_publisher = self.create_publisher(
+            DetectedObjectArray, self.detections_topic, 10)
+        self.detection_heartbeat_timer = self.create_timer(
+            0.02,
+            lambda: self.detection_heartbeat_publisher.publish(Header()),
+        )
         self.status_subscription = self.create_subscription(
             String, self.status_topic, self.status_callback, qos)
+        self.lifecycle_subscription = self.create_subscription(
+            String,
+            self.bag_event_topic,
+            lambda message: self.lifecycle_events.append(
+                json.loads(message.data)),
+            qos,
+        )
+        trace_qos = QoSProfile(
+            depth=100,
+            durability=DurabilityPolicy.VOLATILE,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.trace_subscription = self.create_subscription(
+            String, self.decision_topic, self.trace_callback, trace_qos)
+        self.inspected_image_subscription = self.create_subscription(
+            CompressedImage,
+            self.inspected_image_topic,
+            self.inspected_image_callback,
+            trace_qos,
+        )
         self.publish_registry()
 
     @staticmethod
@@ -166,7 +229,9 @@ class FakeCommanderBackends(Node):
 
     def queue_decision(
             self, decision, reason='bounded test decision',
-            wait_seconds=0.0, exploration_cycles=0, release_event=None,
+            wait_seconds=0.0, exploration_seconds=0.0,
+            rotation_radians=0.0, observation_seconds=0.0,
+            release_event=None,
             visual_observation='synthetic camera view is clear',
             target_evidence='not_visible'):
         with self._lock:
@@ -175,7 +240,9 @@ class FakeCommanderBackends(Node):
                     decision,
                     reason=reason,
                     wait_seconds=wait_seconds,
-                    exploration_cycles=exploration_cycles,
+                    exploration_seconds=exploration_seconds,
+                    rotation_radians=rotation_radians,
+                    observation_seconds=observation_seconds,
                     visual_observation=visual_observation,
                     target_evidence=target_evidence,
                 ),
@@ -276,8 +343,33 @@ class FakeCommanderBackends(Node):
         goal_handle.succeed()
         return result
 
+    def execute_explore(self, goal_handle):
+        self.primitive_names.append('explore_frontier')
+        return self.execute_program(goal_handle)
+
+    def execute_spin(self, goal_handle):
+        self.primitive_names.append('rotate')
+        self.program_cycles.append(1)
+        while not goal_handle.is_cancel_requested and \
+                not self.release_program.is_set():
+            time.sleep(0.01)
+        result = Spin.Result()
+        if goal_handle.is_cancel_requested:
+            self.program_cancellations += 1
+            goal_handle.canceled()
+            return result
+        goal_handle.succeed()
+        return result
+
+    def handle_checkpoint(self, _request, response):
+        self.primitive_names.append('checkpoint_registry')
+        self.checkpoint_requests += 1
+        response.success = True
+        response.message = 'fake registry checkpoint completed'
+        return response
+
     def execute_program(self, goal_handle):
-        self.program_cycles.append(goal_handle.request.max_cycles)
+        self.program_cycles.append(1)
         feedback = ExploreAndRecord.Feedback()
         feedback.phase = ExploreAndRecord.Feedback.PHASE_EXPLORING
         feedback.status = 'fake bounded exploration is active'
@@ -294,7 +386,7 @@ class FakeCommanderBackends(Node):
             return result
         result.success = True
         result.message = 'fake bounded exploration completed'
-        result.completed_cycles = goal_handle.request.max_cycles
+        result.completed_cycles = 1
         goal_handle.succeed()
         return result
 
@@ -355,6 +447,12 @@ class FakeCommanderBackends(Node):
     def status_callback(self, message):
         self.statuses.append(json.loads(message.data))
 
+    def trace_callback(self, message):
+        self.trace_events.append(json.loads(message.data))
+
+    def inspected_image_callback(self, message):
+        self.inspected_images.append(bytes(message.data))
+
 
 @pytest.fixture
 def running_commander():
@@ -375,10 +473,18 @@ def running_commander():
             '-p', f'action_name:={backend.commander_action}',
             '-p', f'vlm_action:={backend.vlm_action}',
             '-p', f'find_object_action:={backend.find_action}',
-            '-p', f'explore_and_record_action:={backend.program_action}',
+            '-p', f'explore_frontier_action:={backend.explore_action}',
+            '-p', f'spin_action:={backend.spin_action}',
+            '-p', f'registry_save_service:={backend.checkpoint_service}',
+            '-p', ('detection_heartbeat_topic:='
+                   f'{backend.detection_heartbeat_topic}'),
             '-p', f'registry_topic:={backend.registry_topic}',
             '-p', f'visual_observation_topic:={backend.image_topic}',
             '-p', f'status_topic:={backend.status_topic}',
+            '-p', f'decision_event_topic:={backend.decision_topic}',
+            '-p', f'inspected_image_topic:={backend.inspected_image_topic}',
+            '-p', f'command_bag_event_topic:={backend.bag_event_topic}',
+            '-p', 'command_bag_enabled:=false',
             '-p', 'endpoint_timeout:=1.0',
             '-p', 'vlm_result_timeout:=3.0',
             '-p', 'find_result_timeout:=3.0',
@@ -394,6 +500,9 @@ def running_commander():
             '-p', 'active_inspection_period:=0.5',
             '-p', 'active_inspection_timeout:=2.0',
             '-p', 'active_inspection_max_decision_age:=3.0',
+            '-p', 'minimum_no_match_observations:=1',
+            '-p', 'minimum_no_match_rotation_radians:=1.0',
+            '-p', 'observation_min_detection_frames:=1',
             '-p', 'monitor_period:=0.01',
             '-p', 'status_publish_period:=0.05',
         ],
@@ -445,6 +554,13 @@ def test_existing_match_finishes_without_planning_or_motion(
     assert [item.object_id for item in wrapped.result.matches] == ['red_mug_2']
     assert backend.vlm_requests == 0
     assert backend.program_cycles == []
+    wait_until(lambda: any(
+        event['event'] == 'succeeded'
+        for event in backend.lifecycle_events
+    ))
+    assert [event['event'] for event in backend.lifecycle_events] == [
+        'mission_started', 'succeeded']
+    assert backend.lifecycle_events[-1]['matched_object_ids'] == ['red_mug_2']
 
 
 def test_transient_registry_search_failure_retries_without_motion(
@@ -491,7 +607,7 @@ def test_stale_find_match_is_discarded_when_object_set_changes(
 def test_registry_change_cancels_bounded_step_and_returns_match(
         running_commander):
     backend, client = running_commander
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
     goal_handle = send_mission(client)
     wait_until(lambda: backend.program_cycles == [1])
 
@@ -504,11 +620,55 @@ def test_registry_change_cancels_bounded_step_and_returns_match(
     assert backend.find_prompts == ['the red mug', 'the red mug']
 
 
+def test_commander_schedules_rotate_observe_and_checkpoint_independently(
+        running_commander):
+    backend, client = running_commander
+    backend.queue_decision('rotate', rotation_radians=1.57)
+    backend.queue_decision('observe', observation_seconds=0.3)
+    backend.queue_decision('checkpoint_registry')
+    backend.queue_decision(
+        'wait', reason='await more evidence', wait_seconds=10.0)
+    backend.release_program.set()
+
+    assert backend.detection_heartbeat_publisher.get_subscription_count() == 0
+    assert backend.detections_publisher.get_subscription_count() == 0
+    goal_handle = send_mission(client)
+    wait_until(
+        lambda: backend.detection_heartbeat_publisher
+        .get_subscription_count() == 1)
+    assert backend.detections_publisher.get_subscription_count() == 0
+    wait_until(lambda: backend.primitive_names == [
+        'rotate', 'checkpoint_registry'])
+    wait_until(lambda: backend.vlm_requests == 4)
+    wait_until(
+        lambda: backend.detection_heartbeat_publisher
+        .get_subscription_count() == 0)
+    assert backend.detections_publisher.get_subscription_count() == 0
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+    assert not wrapped.result.found
+    assert backend.primitive_names == ['rotate', 'checkpoint_registry']
+    assert any(
+        event.get('command') == 'observe' and
+        event.get('outcome') == 'completed'
+        for event in backend.trace_events
+    )
+    event_names = [event['event'] for event in backend.trace_events]
+    assert 'planning_request' in event_names
+    assert 'planning_decision' in event_names
+    assert 'command_result' in event_names
+    assert backend.inspected_images
+    assert all(image.startswith(b'\xff\xd8') for image in
+               backend.inspected_images)
+
+
 def test_unresponsive_inspector_cancellation_still_stops_moving_child(
         running_commander):
     backend, client = running_commander
     hold_inspector = threading.Event()
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
     backend.queue_active_inspection(
         'continue_current_command', release_event=hold_inspector)
     backend.ignore_vlm_cancel = True
@@ -605,7 +765,10 @@ def test_premature_finish_is_rejected_until_search_evidence_is_current(
         running_commander):
     backend, client = running_commander
     backend.queue_decision('finish_not_found')
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
+    backend.queue_decision('rotate', rotation_radians=1.57)
+    backend.queue_decision('observe', observation_seconds=0.3)
+    backend.queue_decision('checkpoint_registry')
     backend.queue_decision(
         'finish_not_found',
         reason='possible target remains in the current view',
@@ -623,8 +786,8 @@ def test_premature_finish_is_rejected_until_search_evidence_is_current(
     assert not wrapped.result.found
     assert wrapped.result.outcome == \
         LookForObject.Result.OUTCOME_NOT_FOUND
-    assert backend.program_cycles == [1]
-    assert backend.vlm_requests == 4
+    assert backend.program_cycles == [1, 1]
+    assert backend.vlm_requests == 7
 
 
 def test_registry_revision_discards_inflight_model_decision(
@@ -632,8 +795,8 @@ def test_registry_revision_discards_inflight_model_decision(
     backend, client = running_commander
     release_model = threading.Event()
     backend.queue_decision(
-        'explore_and_record',
-        exploration_cycles=1,
+        'explore_frontier',
+        exploration_seconds=10.0,
         release_event=release_model,
     )
     goal_handle = send_mission(client)
@@ -669,8 +832,8 @@ def test_vlm_inspects_jpeg_and_camera_churn_does_not_cancel_inference(
     backend, client = running_commander
     release_model = threading.Event()
     backend.queue_decision(
-        'explore_and_record',
-        exploration_cycles=1,
+        'explore_frontier',
+        exploration_seconds=10.0,
         release_event=release_model,
         visual_observation='a red-colored area is unclear near the doorway',
         target_evidence='unclear',
@@ -702,8 +865,8 @@ def test_possible_planner_evidence_forces_registry_check_before_motion(
         running_commander):
     backend, client = running_commander
     backend.queue_decision(
-        'explore_and_record',
-        exploration_cycles=1,
+        'explore_frontier',
+        exploration_seconds=10.0,
         visual_observation='a red mug-like object may be visible',
         target_evidence='possible',
     )
@@ -723,7 +886,7 @@ def test_possible_planner_evidence_forces_registry_check_before_motion(
 def test_vlm_actively_monitors_and_can_interrupt_running_exploration(
         running_commander):
     backend, client = running_commander
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
     backend.queue_active_inspection('continue_current_command')
     backend.queue_active_inspection(
         'interrupt_and_replan',
@@ -771,7 +934,7 @@ def test_vlm_actively_monitors_and_can_interrupt_running_exploration(
 def test_repeated_active_monitor_failure_stops_motion_and_aborts(
         running_commander):
     backend, client = running_commander
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
     backend.queue_model_failure('active monitor failure one')
     backend.queue_model_failure('active monitor failure two')
     backend.queue_model_failure('active monitor failure three')
@@ -805,7 +968,10 @@ def test_transient_model_failure_defers_then_replans_without_blind_motion(
     backend, client = running_commander
     backend.queue_model_failure()
     backend.queue_decision('wait', wait_seconds=0.05)
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
+    backend.queue_decision('rotate', rotation_radians=1.57)
+    backend.queue_decision('observe', observation_seconds=0.3)
+    backend.queue_decision('checkpoint_registry')
     backend.queue_decision('finish_not_found')
     backend.release_program.set()
 
@@ -814,15 +980,18 @@ def test_transient_model_failure_defers_then_replans_without_blind_motion(
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.success
     assert not wrapped.result.found
-    assert backend.vlm_requests == 4
-    assert backend.program_cycles == [1]
+    assert backend.vlm_requests == 7
+    assert backend.program_cycles == [1, 1]
 
 
 def test_rejected_model_goal_defers_then_retries(running_commander):
     backend, client = running_commander
     with backend._lock:
         backend.vlm_rejections_remaining = 1
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
+    backend.queue_decision('rotate', rotation_radians=1.57)
+    backend.queue_decision('observe', observation_seconds=0.3)
+    backend.queue_decision('checkpoint_registry')
     backend.queue_decision('finish_not_found')
     backend.release_program.set()
 
@@ -830,15 +999,30 @@ def test_rejected_model_goal_defers_then_retries(running_commander):
 
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.outcome == LookForObject.Result.OUTCOME_NOT_FOUND
-    assert backend.vlm_requests == 2
-    assert backend.program_cycles == [1]
+    assert backend.vlm_requests == 5
+    assert backend.program_cycles == [1, 1]
 
 
 def test_parent_cancel_stops_owned_exploration(running_commander):
     backend, client = running_commander
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
     goal_handle = send_mission(client)
     wait_until(lambda: backend.program_cycles == [1])
+
+    cancel_response = wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+
+    assert cancel_response.goals_canceling
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+    assert wrapped.result.outcome == LookForObject.Result.OUTCOME_CANCELED
+    assert backend.program_cancellations == 1
+
+
+def test_parent_cancel_stops_owned_rotation(running_commander):
+    backend, client = running_commander
+    backend.queue_decision('rotate', rotation_radians=1.57)
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.primitive_names == ['rotate'])
 
     cancel_response = wait_future(goal_handle.cancel_goal_async())
     wrapped = wait_future(goal_handle.get_result_async())
@@ -852,7 +1036,7 @@ def test_parent_cancel_stops_owned_exploration(running_commander):
 def test_concurrent_goal_is_rejected_and_slot_reopens_after_cancel(
         running_commander):
     backend, client = running_commander
-    backend.queue_decision('explore_and_record', exploration_cycles=1)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
     first = send_mission(client)
     wait_until(lambda: backend.program_cycles == [1])
 

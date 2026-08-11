@@ -1,0 +1,24 @@
+command_bag_recorder:
+  ros__parameters:
+    output_directory: "/opt/muto_rs_ws/bags"
+    storage_id: mcap
+    storage_preset: none
+
+    # Record the complete command mission while excluding continuous raw image
+    # and point-cloud streams. The exact bounded JPEG inspected by the model is
+    # republished on /model_commander/inspected_image and remains included.
+    topics_regex: ""
+    exclude_regex: "^(/camera/[^/]+/(image_raw|points)(/.*)?|/sam2/(annotated_image|mask|instance_mask|instance_pointcloud)(/.*)?|/lidar/PointCloud.*)$"
+    include_hidden_topics: true
+    record_all_services: true
+    max_cache_size: 104857600
+    post_terminal_delay: 0.5
+
+    lifecycle_event_topic: /model_commander/recording_event
+    status_topic: /model_commander/bag_status
+    path_topic: /model_commander/last_bag_path
+    operator_event_topic: /model_commander/operator_event
+    bag_prefix: muto_command
+    manifest_schema: command_mission_v1
+    status_schema: muto_command_bag_status_v1
+    recording_label: command_mission

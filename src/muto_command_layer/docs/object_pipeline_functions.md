@@ -7,7 +7,8 @@ runtime contracts.
 
 ## Scope and process graph
 
-The launch starts ten ROS nodes from six packages:
+The launch starts the following cooperating nodes (the legacy
+`active_object_search` node is opt-in):
 
 ```text
 RGB + depth + CameraInfo + TF
@@ -33,17 +34,24 @@ RGB + depth + CameraInfo + TF
   muto_exploration_bag
     mission lifecycle -> one action-scoped diagnostic MCAP
 
-  active_object_search
+  muto_command_bag
+    /look_for_object lifecycle -> one parent decision/context MCAP
+
+  active_object_search (disabled compatibility node)
     /find_object + /explore_and_record + /sam2/stored_objects
                |
                v
        /find_something
 
   model_commander
-    event-driven model decisions + bounded existing commands
+    event-driven decisions + primitive history/blackboard
                |
                v
        /look_for_object
+       |-- /command_primitives/explore_frontier
+       |-- /spin
+       |-- /sam2/detection_heartbeat (only while observing)
+       `-- /sam2/save_stored_objects
 
   vlm_socket provides /vlm/generate to object_search
                natural_language_command_router, and model_commander
@@ -94,9 +102,11 @@ ros2 launch muto_command_layer command_layer_launch.py
 ```
 
 The Nav2 pipeline does not start the annotator, registry, VLM socket, or command
-layer. The object pipeline owns `/find_object`, `/find_something`,
-`/look_for_object`, and `/go_to_object`; its active-search and go-to-object
+layer. The object pipeline owns `/find_object`, `/look_for_object`, and
+`/go_to_object`; its active-search and go-to-object
 commands consume the independent Nav2 stack through existing command actions.
+`/find_something` is available only when its compatibility launch option is
+enabled.
 
 ## Functions enabled by the pipeline
 
@@ -116,6 +126,7 @@ The annotator publishes:
 | `/sam2/instance_mask` | `sensor_msgs/msg/Image` | 16UC1 mask whose nonzero pixels are instance IDs. |
 | `/sam2/segments` | `std_msgs/msg/String` | JSON segmentation metadata for inspection. |
 | `/sam2/detections` | `sam2_object_registry/msg/DetectedObjectArray` | Typed detections, confidence, boxes, mask statistics, and JPEG crops. |
+| `/sam2/detection_heartbeat` | `std_msgs/msg/Header` | Crop-free completion signal for each published detector frame. |
 
 Processing starts at no more than `max_publish_rate` (`7 Hz` by default). The
 camera may publish faster; only the newest pending RGB work item is retained.
@@ -247,8 +258,8 @@ Selection is performed in two bounded stages:
 
 1. A text-only VLM request receives the prompt plus registered IDs, labels, and
    class IDs. It produces a shortlist.
-2. When more than one candidate remains, the pipeline loads their stored JPEGs
-   and asks the VLM to compare the images with the original prompt.
+2. When one or more candidates remain, the pipeline loads every shortlisted
+   JPEG and asks the VLM to verify the images against the original prompt.
 
 Both stages use strict JSON Schemas whose ID enums contain only the eligible
 registry IDs. The command layer also validates the returned JSON and exact IDs
@@ -264,11 +275,11 @@ ros2 topic echo /object_search/matches \
   muto_command_layer/msg/ObjectMatch
 ```
 
-Zero candidates is a successful no-match result. When metadata produces exactly
-one candidate, visual refinement is skipped and the description is based on
-registry metadata rather than image evidence.
+Zero candidates is a successful no-match result. Exactly one candidate still
+receives visual verification, so requested attributes such as color are not
+accepted from class metadata alone.
 
-### 8. Actively find a static object
+### 8. Legacy active-search compatibility
 
 `/find_something` wires together `/find_object`, `/explore_and_record`, and the
 transient-local `/sam2/stored_objects` snapshot. It first searches without
@@ -289,14 +300,28 @@ existing ID does not trigger another VLM query. The command assumes registered
 objects are static, does not pursue moving targets, and does not automatically
 approach a match.
 
+This compatibility node is disabled by default. New object-search clients
+should use `/look_for_object`, whose commander schedules smaller primitives.
+
 ### 9. Run a persistent model-supervised object search
 
 `/look_for_object` is an always-available mission server above the existing
 typed commands. For each goal it first calls `/find_object` without moving. If
 there is no match, it waits for a new color-camera frame, converts it to a
 bounded JPEG, and asks the VLM to inspect that frame plus compact mission state.
-The VLM then chooses exactly one locally validated next step: `find_object`,
-bounded `explore_and_record`, bounded `wait`, or `finish_not_found`.
+The VLM then chooses exactly one locally validated next primitive:
+`verify_registry`, bounded `explore_frontier`, in-place `rotate`, stationary
+`observe`, `checkpoint_registry`, bounded `wait`, or `finish_not_found`.
+
+`explore_frontier` runs frontier travel for a bounded interval and stops without
+rotating. `rotate` owns one bounded Nav2 Spin goal. `observe` creates a
+temporary `/sam2/detection_heartbeat` subscription and waits for fresh crop-free
+frame completions without motion. The subscription is destroyed when the
+primitive ends. `checkpoint_registry` atomically saves
+the current registry. Their outcomes are appended to the mission blackboard
+before replanning, so their order is not fixed. The legacy
+`/explore_and_record` endpoint remains available for compatibility but is no
+longer visible to the commander.
 
 ```bash
 ros2 action send_goal /look_for_object \
@@ -313,7 +338,7 @@ same identity deliberately do not churn this revision. This prevents a decision
 made against an older object inventory from being executed.
 
 The VLM also inspects a fresh forward-camera frame after a 20-second cooldown by
-default while `explore_and_record` or a model-directed wait remains active.
+default while an exploration primitive or a model-directed wait remains active.
 Inference time is additional; this is strategic periodic monitoring, not a
 real-time camera loop. This
 restricted monitor can only continue the current bounded command or request a
@@ -336,8 +361,10 @@ parameters, or code. Its response must report a bounded visual summary and
 target evidence (`not_visible`, `possible`, `likely`, or `unclear`). A model
 cannot declare an object found: only an exact `/find_object` result can do that.
 `possible` or `likely` evidence forces a registry check before any further
-motion. It also cannot end a no-match mission until a bounded exploration
-program has completed and the current identity-set revision has been checked.
+motion. It also cannot end a no-match mission until the configured stationary
+observation count, cumulative completed rotation, registry checkpoint count,
+and frontier evidence have been followed by a current identity-set check.
+Primitive order is not fixed.
 An object that never enters the YOLO/SAM registry therefore cannot be returned
 as found from VLM pixels alone.
 
@@ -359,10 +386,14 @@ ros2 topic echo /model_commander/status --once \
 The direct action remains active until it finds a match, reaches a valid
 no-match decision, exhausts a budget, fails, or is canceled. A zero goal budget
 selects the configured finite defaults of 1800 seconds and 64 planning steps.
-`/find_something` remains the deterministic fixed-sequence fallback.
-Each model-dispatched `/explore_and_record` step keeps its existing
-action-scoped MCAP, so a multi-step model mission can produce multiple bags.
-There is not yet a single parent bag covering deferred and planning periods.
+`/find_something` remains an opt-in deterministic compatibility fallback.
+Each model-dispatched frontier primitive keeps the existing action-scoped MCAP
+handshake, so a multi-step model mission can produce multiple child bags.
+The separate `muto_command_bag` recorder also keeps one continuous parent bag
+from the accepted `/look_for_object` goal through terminal status. It records
+planning inputs, validated decisions, command outcomes, sampled inspected
+JPEGs, waits, registry checks, primitive traffic, and manual operator events.
+The parent path is published on `/model_commander/last_bag_path`.
 
 ### 10. Explore and record with predicted visibility
 
@@ -502,13 +533,23 @@ or ROS parameters.
 | Name | Kind and type | Purpose |
 | --- | --- | --- |
 | `/natural_language_command` | Action: `muto_command_layer/action/NaturalLanguageCommand` | Validate one VLM-classified request and dispatch a fixed typed command. |
+| `/natural_language_command/decision_event` | Topic: `std_msgs/msg/String` | Transient-local original query, interpretation source, validated intent, and dispatch result for command-bag correlation. |
 | `/find_object` | Action: `muto_command_layer/action/FindObject` | Select registered objects from a natural-language prompt. |
-| `/find_something` | Action: `muto_command_layer/action/FindSomething` | Search the registry, then compose exploration and recording until a static-object match appears or predictive coverage completes. |
-| `/look_for_object` | Action: `muto_command_layer/action/LookForObject` | Persistently monitor, schedule bounded existing commands, and replan until a described static object is found or the mission ends. |
+| `/find_something` | Compatibility action: `muto_command_layer/action/FindSomething` | Opt-in fixed search sequence retained for rollback. |
+| `/look_for_object` | Action: `muto_command_layer/action/LookForObject` | Persistently schedule bounded primitives and replan until a described static object is found or the mission ends. |
+| `/command_primitives/explore_frontier` | Internal action: `muto_command_layer/action/ExploreAndRecord` | Run bounded frontier travel, stop, and return its outcome without scanning. |
+| `/spin` | Internal action: `nav2_msgs/action/Spin` | Execute one model-selected bounded in-place rotation; owned and canceled by the commander. |
+| `/sam2/detection_heartbeat` | Topic: `std_msgs/msg/Header` | Crop-free detector-frame clock subscribed only during the stationary `observe` primitive. |
 | `/model_commander/status` | Topic: `std_msgs/msg/String` | Transient-local bounded JSON heartbeat for the current or most recent model-supervised mission. |
+| `/model_commander/decision_event` | Topic: `std_msgs/msg/String` | Append-only planning request, validated decision, and command-result context retained by the parent command bag. |
+| `/model_commander/inspected_image` | Topic: `sensor_msgs/msg/CompressedImage` | Exact bounded JPEG supplied to each commander planning or active-monitoring request. |
+| `/model_commander/recording_event` | Topic: `std_msgs/msg/String` | Complete `/look_for_object` mission start and terminal lifecycle for `muto_command_bag`. |
+| `/model_commander/bag_status` | Topic: `std_msgs/msg/String` | Parent command-recorder ready, finishing, finalized, or error status. |
+| `/model_commander/last_bag_path` | Topic: `std_msgs/msg/String` | Latest `muto_command_*` mission directory. |
+| `/model_commander/operator_event` | Topic: `std_msgs/msg/String` | Manual high-level mission milestone retained in the active parent bag. |
 | `/go_to_object` | Action: `muto_command_layer/action/GoToObject` | Approach and face one exact object ID through Nav2. |
 | `/global_costmap/get_costmap` | Service: `nav2_msgs/srv/GetCostmap` | Current Nav2 master costmap used for object approach and visibility traversal. |
-| `/explore_and_record` | Action: `muto_command_layer/action/ExploreAndRecord` | Alternate frontier exploration with six-step scans, then pursue predicted 2-D visibility coverage and checkpoint static objects. |
+| `/explore_and_record` | Legacy action: `muto_command_layer/action/ExploreAndRecord` | Compatibility composite: alternate frontier exploration and scans, then pursue predicted visibility coverage. |
 | `/explore_and_record/recording_event` | Topic: `std_msgs/msg/String` | Command-layer JSON mission start and terminal events that control the standalone recorder. |
 | `/explore_and_record/bag_status` | Topic: `std_msgs/msg/String` | Transient recorder-ready, finishing, finalized, or error acknowledgement. |
 | `/explore_and_record/last_bag_path` | Topic: `std_msgs/msg/String` | Transient-local path of the latest per-mission MCAP bag. |
@@ -538,14 +579,14 @@ Topic and action names shown above are defaults. The endpoints routed through
 | VLM endpoint or credential | `/find_object` fails and `/look_for_object` defers then aborts after bounded retries; perception, registry queries, visualization, and `/go_to_object` remain usable. |
 | Nav2 global-costmap service | `/go_to_object` cannot select an approach cell and post-frontier predicted-visibility coverage cannot start; object search and registry functions remain usable. |
 | Nav2 or global/base TF | `/go_to_object` fails; perception, registry, and `/find_object` remain usable. |
-| Nav2 Spin behavior | `/explore_and_record` aborts before rotating; ordinary exploration and object commands remain available. |
+| Nav2 Spin behavior | `rotate` and legacy `/explore_and_record` abort before rotating; frontier-only exploration remains available. |
 | Frontier control service | `/explore` fails; object perception and commands remain usable. |
 | SLAM Toolbox save-map service | `/save_map` fails; navigation and other command-layer functions remain usable. |
 | Stored candidate JPEGs | Metadata search works; ambiguous visual refinement normally aborts. |
 
 Each high-level action accepts only one active goal at a time and uses bounded
 dependency waits. The model commander owns at most one child and invokes
-`/find_object`, model planning, and `/explore_and_record` sequentially. The VLM
+`/find_object`, model planning, and one bounded primitive sequentially. The VLM
 socket itself remains single-request, so unrelated direct `/vlm/generate`
 clients can still cause bounded deferral or failure. There is not yet a global
 motion lease across every ROS client: direct Nav2, frontier, or command-action

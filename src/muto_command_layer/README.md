@@ -2,10 +2,30 @@
 
 `muto_command_layer` exposes robot-level commands above perception, the object
 registry, the VLM socket, and Nav2. It provides `/find_object` registry lookup,
-deterministic `/find_something` active search, persistent model-supervised
-`/look_for_object` missions, `/go_to_object` navigation, `/explore` start/stop,
-a sanitized `/save_map` wrapper, and a validated `/natural_language_command`
-action that routes natural language to those typed interfaces.
+persistent model-supervised `/look_for_object` missions, `/go_to_object`
+navigation, `/explore` start/stop, a sanitized `/save_map` wrapper, and a
+validated `/natural_language_command` action. The older `/find_something` and
+`/explore_and_record` endpoints remain available as compatibility interfaces,
+but they are no longer normal natural-language or commander choices.
+
+The command reform is now active. The commander schedules independent bounded
+primitives instead of one fixed exploration program:
+
+```text
+verify_registry | explore_frontier | rotate | observe
+checkpoint_registry | wait | finish_not_found
+        -> record result -> update mission state -> choose again
+```
+
+`/command_primitives/explore_frontier` performs bounded frontier travel and
+confirms it stopped. `rotate` owns one bounded Nav2 `/spin` goal, `observe`
+holds the robot stationary while fresh `/sam2/detection_heartbeat` messages
+arrive, and
+`checkpoint_registry` calls `/sam2/save_stored_objects`. Rotation, observation,
+and persistence are no longer hidden inside one model-visible scan command.
+The heartbeat contains only the detector frame header. The commander subscribes
+to it only for the lifetime of `observe`, so it never deserializes JPEG-bearing
+`/sam2/detections` messages and has no detector subscription while idle.
 
 See [Object pipeline functions](docs/object_pipeline_functions.md) for the
 complete functional interface, runtime dependencies, operator commands, and
@@ -122,8 +142,8 @@ and object collection. Its default cycle is:
 3. Wait 0.25 seconds for the robot to settle.
 4. Perform six positive 60-degree in-place turns through Nav2 `/spin`, for a
    complete 360-degree scan.
-5. After every step, wait for three fresh `/sam2/detections` messages. Three
-   seconds remains the timeout if perception is slow or unavailable.
+5. After every step, wait for three fresh `/sam2/detection_heartbeat` messages.
+   Three seconds remains the timeout if perception is slow or unavailable.
 6. Checkpoint confirmed objects through `/sam2/save_stored_objects`.
 7. Resume exploration and repeat.
 8. When frontier exploration reports exhaustion, snapshot `/map`, request the
@@ -338,12 +358,10 @@ service/action.
 Supported commands are:
 
 - `find_object`
-- `find_something`
 - `look_for_object`
 - `go_to_object`
 - `start_exploration`
 - `stop_exploration`
-- `explore_and_record`
 - `save_map`
 - `cancel_active_command`
 - `unsupported`, which never dispatches anything
@@ -361,8 +379,8 @@ description. Navigation is dispatched only when exactly one static registry ID
 matches; no VLM-generated ID is sent directly to navigation. For
 `find_object`, the action waits for search completion and returns the exact IDs.
 
-Long-running `find_something`, `look_for_object`, `go_to_object`, and
-`explore_and_record` commands return once the typed child action accepts the
+Long-running `look_for_object` and `go_to_object` commands return once the typed
+child action accepts the
 goal. This leaves the router available for a later request such as `cancel the
 active command`; the child result is tracked asynchronously. To wait for the
 complete model-supervised outcome, call `/look_for_object` directly. Manual
@@ -371,7 +389,10 @@ saving waits for a bounded `/save_map` result. The router uses a two-thread
 executor so one thread can wait on a bounded child operation while the other
 processes ROS progress and cancel responses.
 
-Unambiguous phrases such as `cancel the active command` are recognized locally
+Plain `find X`, `look for X`, and `search for X` all enter
+`/look_for_object`. Registry-only lookup is deliberately explicit:
+`check registry for X` or `query registry for X`. Unambiguous phrases such as
+`cancel the active command` are recognized locally
 and do not use the single-request VLM socket. This keeps cancellation available
 while the model commander is planning. Ambiguous or compound requests still go
 through strict model classification.
@@ -389,9 +410,7 @@ VLM pass 1: text only, return an exact-ID shortlist
        |
        +-- zero candidates --> successful no-match result
        |
-       +-- one candidate ---> publish ID + metadata-based description
-       |
-       +-- multiple candidates
+       +-- one or more candidates
                   |
                   v
         load each candidate's stored JPEG
@@ -410,11 +429,13 @@ whose ID enum contains only the current registry IDs. It then requires the
 response to be exactly one JSON object and checks every returned ID against the
 same registry snapshot before it can proceed.
 
-Visual refinement happens only when the shortlist contains more than one
-candidate. The command layer reads the representative `image_path` stored by
+Visual refinement happens for every non-empty shortlist, including exactly one
+candidate. This prevents an attribute-rich request such as a color from being
+accepted from class metadata alone. The command layer reads each representative
+`image_path` stored by
 the registry and sends ordered `candidate ID tag -> JPEG` pairs through
 `muto_vlm_socket`. By default, a missing, oversized, or invalid candidate JPEG
-aborts an ambiguous search so candidates are not silently discarded.
+aborts the search so candidates are not silently discarded.
 This pass receives a separate strict schema limited to the IDs whose JPEGs were
 actually included.
 
@@ -445,7 +466,7 @@ ros2 topic echo /object_search/matches \
 The registry and VLM socket remain separate dependency nodes. If either is
 unavailable, the action aborts with a bounded error instead of waiting forever.
 
-## Active find-something pipeline
+## Legacy find-something compatibility pipeline
 
 `/find_something` composes the existing registry search and autonomous mission;
 it does not add another detector or navigation algorithm:
@@ -473,6 +494,10 @@ so repeated observations of the same object do not repeatedly invoke the VLM.
 Finding and approaching are separate operations; use `/go_to_object` with one
 returned ID when movement to the object is wanted.
 
+This compatibility node is disabled by default
+(`launch_active_object_search:=false`). New callers should use
+`/look_for_object`.
+
 ## Persistent model-supervised search
 
 `/look_for_object` is the highest command-layer object-search mission. The
@@ -489,8 +514,9 @@ check the current registry
 capture a newly received bounded RGB frame
           |
           v
-VLM inspects frame + state and selects one bounded next step
-  find_object | explore_and_record | wait | finish_not_found
+VLM inspects frame + state and selects one bounded next primitive
+  verify_registry | explore_frontier | rotate | observe
+  checkpoint_registry | wait | finish_not_found
           |
           v
 monitor the child result and confirmed-object set
@@ -503,13 +529,21 @@ monitor the child result and confirmed-object set
                                       | stop, verify stopped, recheck, replan
 ```
 
-The planner selects only from that fixed enum. Every scheduling request contains
+The planner selects only from that bounded primitive enum. Each operation has
+one purpose: frontier travel, in-place rotation, stationary detector dwell, or
+registry persistence. The recent primitive history and outcome are returned in
+the next mission-state request so the model may change order, defer, retry, or
+choose another primitive. Every scheduling request contains
 a newly received `/camera/color/image_raw` frame encoded as a bounded JPEG. The
 strict response must include a short visual observation and one of
 `not_visible`, `possible`, `likely`, or `unclear`. Local code owns every action
 client, limits duration and planning/dispatch counts, and rejects
-  `finish_not_found` until at least one bounded exploration program has completed
-  followed by a fresh registry check. `possible` or `likely` target evidence
+  `finish_not_found` until the configured counts of stationary observations,
+  completed rotation, registry checkpoints, and frontier evidence are followed
+  by a fresh registry check. The defaults are four observations, one full turn,
+  one checkpoint, and either frontier exhaustion or 10 seconds of completed
+  exploration. The primitive order remains unrestricted. `possible`
+  or `likely` target evidence
   forces another registry check before any further motion or no-match finish.
   Visual evidence never sets `found`; only `/find_object` can confirm a registry
   match. Therefore a target that never enters the YOLO/SAM registry cannot
@@ -517,7 +551,7 @@ client, limits duration and planning/dispatch counts, and rejects
   names, poses, parameters, or code. Only one commander mission and one owned
   child command run at a time.
 
-While `explore_and_record` or a model-directed wait remains active, the VLM also
+While a motion primitive or a model-directed wait remains active, the VLM also
 inspects a fresh forward-camera snapshot after each
 `active_inspection_period` cooldown (20 seconds by default). Model latency is
 additional; this is not a real-time 20 Hz/20-second control guarantee. Its
@@ -567,13 +601,34 @@ ros2 topic echo /model_commander/status --once \
   --qos-durability transient_local
 ```
 
-`/find_something` remains available as the deterministic rollback path. It
+`/find_something` remains available as an opt-in deterministic rollback path. It
 always runs one fixed registry-search then explore-and-record sequence and does
 not ask the model to schedule steps.
 
-Every dispatched `/explore_and_record` step retains its existing action-scoped
-bag. A mission that schedules several steps therefore produces several bags;
-there is not yet one parent bag spanning model decisions and deferred periods.
+Every dispatched frontier primitive retains the existing action-scoped
+bag handshake. In addition, the standalone `muto_command_bag` recorder opens
+one parent `muto_command_<timestamp>_<mission-id>` MCAP before the initial
+registry check and closes it only when the complete `/look_for_object` mission
+finishes. It therefore spans planning, waits, registry checks, all scheduled
+primitives, replanning, cancellation, and terminal status.
+
+The parent bag retains append-only JSON on
+`/model_commander/decision_event`, the exact bounded JPEG supplied for each
+inspection on `/model_commander/inspected_image`, commander status, primitive
+and object-search action traffic, registry changes, navigation context, and
+logs. The decision trace includes the mission blackboard given to the model,
+the validated response, model latency, command outcomes, and the original
+natural-language decision event when the mission came through the router.
+Continuous raw camera images and high-bandwidth point-cloud/mask products stay
+excluded. The latest parent path is published on
+`/model_commander/last_bag_path`.
+
+Add a manual mission observation with:
+
+```bash
+ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
+  "{data: 'observation: target-like chair visible beside the white desk'}"
+```
 
 ## Important parameters
 
@@ -639,7 +694,7 @@ there is not yet one parent bag spanning model decisions and deferred periods.
 - `active_visual_monitoring`, `active_inspection_period`,
   `active_inspection_timeout`, and `active_inspection_max_decision_age`: enable
   strategic visual checks during long commands and bound their rate, inference
-  time, and result age; defaults are `true`, `20`, `60`, and `90` seconds.
+  time, and result age; defaults are `true`, `20`, `30`, and `90` seconds.
 - `max_consecutive_active_inspection_failures` and `max_visual_interrupts`:
   stop unmonitored motion after three consecutive monitor failures and bound a
   mission to eight model-requested stop/replan cycles.
@@ -650,11 +705,16 @@ there is not yet one parent bag spanning model decisions and deferred periods.
 - `max_query_characters`, `max_object_query_characters`, and
   `max_map_name_characters`: local input/output limits for natural-language
   routing; defaults `4096`, `1024`, and `128`.
-- `max_exploration_duration`, `max_observation_duration`,
-  `max_scan_step_count`, and `max_cycles`: bounds applied both in the VLM JSON
-  Schema and again by the local command parser.
+- `max_rotation_radians`, `max_observation_seconds`, `spin_time_allowance`,
+  `checkpoint_timeout`, and `observation_min_detection_frames`: local bounds
+  for the separated rotate, observe, and checkpoint primitives.
+- `minimum_no_match_observations`, `minimum_no_match_rotation_radians`,
+  `minimum_no_match_checkpoints`, and
+  `minimum_no_match_exploration_seconds`: evidence gates enforced before a
+  model-requested no-match finish.
 - `max_shortlist_size`: maximum number of metadata candidates allowed into
-  visual refinement; default `8`.
+  visual refinement; default `7`. This keeps the tagged JPEG request within the
+  VLM socket's 16-part limit.
 - `require_all_candidate_images`: abort refinement when any shortlisted image
   is unavailable; default `true`.
 - `vlm_result_timeout`: upper bound for VLM inference. Object search defaults

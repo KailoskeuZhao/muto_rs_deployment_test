@@ -18,7 +18,7 @@ from rclpy.time import Time
 from sam2_image_annotator.paths import resolve_checkpoint_path
 from sam2_object_registry.msg import DetectedObject, DetectedObjectArray
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
-from std_msgs.msg import String
+from std_msgs.msg import Header, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -37,6 +37,9 @@ class Sam2ImageAnnotatorNode(Node):
             "segments_topic", "/sam2/segments").value
         self.detections_topic = self.declare_parameter(
             "detections_topic", "/sam2/detections").value
+        self.detection_heartbeat_topic = self.declare_parameter(
+            "detection_heartbeat_topic",
+            "/sam2/detection_heartbeat").value
         self.depth_topic = self.declare_parameter(
             "depth_topic", "/camera/depth/image_raw").value
         self.depth_camera_info_topic = self.declare_parameter(
@@ -202,6 +205,8 @@ class Sam2ImageAnnotatorNode(Node):
             String, self.segments_topic, output_qos)
         self.detections_pub = self.create_publisher(
             DetectedObjectArray, self.detections_topic, output_qos)
+        self.detection_heartbeat_pub = self.create_publisher(
+            Header, self.detection_heartbeat_topic, output_qos)
         self.instance_pointcloud_pub = self.create_publisher(
             PointCloud2, self.instance_pointcloud_topic, output_qos)
         self.image_sub = self.create_subscription(
@@ -230,7 +235,8 @@ class Sam2ImageAnnotatorNode(Node):
         self.get_logger().info(
             f"Subscribing to {self.image_topic} in {self.prompt_mode} mode; "
             f"publishing annotations on {self.annotated_topic}, masks on "
-            f"{self.mask_topic}, typed detections on {self.detections_topic}, and "
+            f"{self.mask_topic}, typed detections on {self.detections_topic}, "
+            f"crop-free heartbeats on {self.detection_heartbeat_topic}, and "
             f"instance point clouds on {self.instance_pointcloud_topic}; "
             f"buffering {self.depth_buffer_size} timestamped depth frames")
 
@@ -883,6 +889,7 @@ class Sam2ImageAnnotatorNode(Node):
             detection.crop.data = item.get("crop_jpeg", b"")
             detections_msg.objects.append(detection)
         self.detections_pub.publish(detections_msg)
+        self.detection_heartbeat_pub.publish(input_msg.header)
 
     def publish_instance_pointcloud(
             self, color_msg, depth_msg, depth_camera_info,

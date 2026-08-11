@@ -127,6 +127,7 @@ Default topics:
 | `/sam2/instance_mask` | `sensor_msgs/Image` | 16UC1 image; each nonzero value is an object instance ID. |
 | `/sam2/segments` | `std_msgs/String` | JSON metadata for every refined object. |
 | `/sam2/detections` | `sam2_object_registry/msg/DetectedObjectArray` | Typed metadata consumed by the C++ registry. |
+| `/sam2/detection_heartbeat` | `std_msgs/Header` | Crop-free completion signal for each published detector frame. |
 | `/sam2/instance_pointcloud` | `sensor_msgs/PointCloud2` | Depth-frame XYZ points with `instance_id` and `rgb` fields. |
 
 Each object in `/sam2/segments` and `/sam2/detections` contains `instance_id`,
@@ -135,7 +136,9 @@ Each object in `/sam2/segments` and `/sam2/detections` contains `instance_id`,
 original color box; binary crops are omitted from JSON. The typed topic avoids
 JSON parsing in the C++ registry. The
 `instance_id` matches the pixel value in `/sam2/instance_mask` and the point
-cloud field.
+cloud field. The heartbeat copies the processed RGB frame header and is
+published immediately after its typed detection array, including for frames
+with zero objects. It carries no boxes, masks, or JPEG crops.
 
 For the instance point cloud, the node back-projects the raw depth image with
 the depth intrinsics, obtains the depth-optical to color-optical transform from

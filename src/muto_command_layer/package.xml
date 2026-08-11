@@ -31,6 +31,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>muto_exploration_bag</exec_depend>
+  <exec_depend>muto_command_bag</exec_depend>
   <exec_depend>muto_slam_mapping</exec_depend>
   <exec_depend>muto_vlm_socket</exec_depend>
   <exec_depend>python3-opencv</exec_depend>

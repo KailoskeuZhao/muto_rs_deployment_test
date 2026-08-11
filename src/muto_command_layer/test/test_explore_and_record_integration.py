@@ -1,5 +1,6 @@
 """Integration tests for the synthetic exploration and recording command."""
 
+import itertools
 import json
 import math
 import os
@@ -26,10 +27,13 @@ from rclpy.qos import qos_profile_action_status_default
 from sam2_object_registry.msg import DetectedObjectArray
 from sam2_object_registry.srv import GetStoredObjects
 from slam_toolbox.srv import SaveMap
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Empty, Header, String
 from std_srvs.srv import SetBool, Trigger
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 import yaml
+
+
+_TEST_DOMAIN_IDS = itertools.count(200)
 
 
 def wait_future(future, timeout=5.0):
@@ -72,6 +76,7 @@ class FakeProgramBackends(Node):
         self.navigate_poses = []
         self.spin_angles = []
         self.publish_detections_after_spin = True
+        self.stop_responses_before_idle = 0
         self.save_calls = 0
         self.map_save_prefixes = []
         self.map_save_directory = ''
@@ -122,6 +127,8 @@ class FakeProgramBackends(Node):
             OccupancyGrid, '/map', map_qos)
         self.completion_publisher = self.create_publisher(
             Empty, '/explore/exploration_complete', 1)
+        self.detection_heartbeat_publisher = self.create_publisher(
+            Header, '/sam2/detection_heartbeat', 10)
         self.detections_publisher = self.create_publisher(
             DetectedObjectArray, '/sam2/detections', 10)
         self.navigation_status_publisher = self.create_publisher(
@@ -172,6 +179,7 @@ class FakeProgramBackends(Node):
     def publish_detection_burst(self):
         for _ in range(3):
             self.detections_publisher.publish(DetectedObjectArray())
+            self.detection_heartbeat_publisher.publish(Header())
             time.sleep(0.01)
 
     def control_callback(self, request, response):
@@ -181,6 +189,10 @@ class FakeProgramBackends(Node):
         if request.action == ControlExploration.Request.ACTION_START:
             response.state = ControlExploration.Request.STATE_RUNNING
             response.message = 'fake exploration started'
+        elif self.stop_responses_before_idle > 0:
+            self.stop_responses_before_idle -= 1
+            response.state = ControlExploration.Request.STATE_STOPPING
+            response.message = 'fake exploration is still stopping'
         else:
             response.state = ControlExploration.Request.STATE_IDLE
             response.message = 'fake exploration stopped'
@@ -223,7 +235,11 @@ class FakeProgramBackends(Node):
         return Spin.Result()
 
     def _publish_delayed_detection_burst(self):
-        time.sleep(0.02)
+        wait_until(
+            lambda: self.detection_heartbeat_publisher
+            .get_subscription_count() >= 2,
+            timeout=0.5,
+        )
         self.publish_detection_burst()
 
     def execute_navigation(self, goal_handle):
@@ -234,7 +250,10 @@ class FakeProgramBackends(Node):
 
 @pytest.fixture
 def running_command_layer(tmp_path):
-    rclpy.init()
+    domain_id = next(_TEST_DOMAIN_IDS)
+    process_environment = os.environ.copy()
+    process_environment['ROS_DOMAIN_ID'] = str(domain_id)
+    rclpy.init(domain_id=domain_id)
     backend = FakeProgramBackends()
     backend.map_save_directory = str(tmp_path)
     backend.bag_output_directory = str(tmp_path / 'bags')
@@ -254,6 +273,7 @@ def running_command_layer(tmp_path):
         stderr=subprocess.STDOUT,
         text=True,
         start_new_session=True,
+        env=process_environment,
     )
     wait_until(
         lambda: backend.count_subscribers(
@@ -292,6 +312,7 @@ def running_command_layer(tmp_path):
         stderr=subprocess.STDOUT,
         text=True,
         start_new_session=True,
+        env=process_environment,
     )
     try:
         action_client = ActionClient(
@@ -391,6 +412,55 @@ def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
     assert '/camera/' in manifest['exclude_regex']
     assert '/sam2/' in manifest['exclude_regex']
     assert json.loads(manifest['start_event'])['event'] == 'mission_started'
+
+
+def test_frontier_primitive_travels_without_scanning_or_checkpointing(
+        running_command_layer):
+    backend, _ = running_command_layer
+    client = ActionClient(
+        backend,
+        ExploreAndRecord,
+        '/command_primitives/explore_frontier',
+    )
+    assert client.wait_for_server(timeout_sec=2.0)
+    goal = ExploreAndRecord.Goal()
+    goal.exploration_duration = 0.1
+
+    goal_handle = wait_future(client.send_goal_async(goal))
+    result_response = wait_future(goal_handle.get_result_async())
+
+    assert result_response.status == GoalStatus.STATUS_SUCCEEDED
+    assert result_response.result.success
+    assert backend.control_actions == [
+        ControlExploration.Request.ACTION_START,
+        ControlExploration.Request.ACTION_STOP,
+    ]
+    assert backend.spin_angles == []
+    assert backend.save_calls == 0
+
+
+def test_frontier_primitive_waits_for_idle_when_stop_is_still_pending(
+        running_command_layer):
+    backend, _ = running_command_layer
+    backend.stop_responses_before_idle = 1
+    client = ActionClient(
+        backend,
+        ExploreAndRecord,
+        '/command_primitives/explore_frontier',
+    )
+    assert client.wait_for_server(timeout_sec=2.0)
+    goal = ExploreAndRecord.Goal()
+    goal.exploration_duration = 0.1
+
+    goal_handle = wait_future(client.send_goal_async(goal))
+    result_response = wait_future(goal_handle.get_result_async())
+
+    assert result_response.status == GoalStatus.STATUS_SUCCEEDED
+    assert backend.control_actions == [
+        ControlExploration.Request.ACTION_START,
+        ControlExploration.Request.ACTION_STOP,
+        ControlExploration.Request.ACTION_STOP,
+    ]
 
 
 def test_minimum_interval_does_not_interrupt_active_frontier_travel(

@@ -67,6 +67,11 @@ def generate_launch_description():
         'config',
         'exploration_bag.yaml',
     )
+    default_command_bag_params = os.path.join(
+        get_package_share_directory('muto_command_bag'),
+        'config',
+        'command_bag.yaml',
+    )
 
     object_pipeline = include_launch(
         'muto_command_layer',
@@ -80,6 +85,8 @@ def generate_launch_description():
             'color_camera_info_topic': LaunchConfiguration(
                 'color_camera_info_topic'),
             'detections_topic': LaunchConfiguration('detections_topic'),
+            'detection_heartbeat_topic': LaunchConfiguration(
+                'detection_heartbeat_topic'),
             'instance_pointcloud_topic': LaunchConfiguration(
                 'instance_pointcloud_topic'),
             'yolo_model': LaunchConfiguration('yolo_model'),
@@ -143,6 +150,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'detections_topic',
             default_value='/sam2/detections',
+        ),
+        DeclareLaunchArgument(
+            'detection_heartbeat_topic',
+            default_value='/sam2/detection_heartbeat',
+            description='Crop-free completion heartbeat for detector frames.',
         ),
         DeclareLaunchArgument(
             'instance_pointcloud_topic',
@@ -280,7 +292,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'explore_and_record_action',
             default_value='/explore_and_record',
-            description='Synthetic exploration and object-recording action.',
+            description='Legacy composite exploration and recording action.',
+        ),
+        DeclareLaunchArgument(
+            'explore_frontier_action',
+            default_value='/command_primitives/explore_frontier',
+            description='Internal bounded frontier-exploration primitive.',
         ),
         DeclareLaunchArgument(
             'frontier_control_service',
@@ -448,6 +465,81 @@ def generate_launch_description():
             description='Plain-text manual observation and milestone topic.',
         ),
         DeclareLaunchArgument(
+            'command_bag_enabled',
+            default_value='true',
+            description=(
+                'Record one parent bag for each complete model-commander '
+                'mission.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'launch_command_bag_recorder',
+            default_value='true',
+            description=(
+                'Launch the command recorder here; false permits a '
+                'separately started recorder.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'command_bag_required',
+            default_value='false',
+            description='Abort the command mission if its bag cannot open.',
+        ),
+        DeclareLaunchArgument(
+            'command_bag_start_timeout',
+            default_value='2.0',
+            description='Command-recorder ready timeout in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'command_bag_params_file',
+            default_value=default_command_bag_params,
+            description='Command mission recorder parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'command_bag_output_directory',
+            default_value='/opt/muto_rs_ws/bags',
+        ),
+        DeclareLaunchArgument('command_bag_storage_id', default_value='mcap'),
+        DeclareLaunchArgument(
+            'command_bag_storage_preset', default_value='none'),
+        DeclareLaunchArgument('command_bag_topics_regex', default_value=''),
+        DeclareLaunchArgument(
+            'command_bag_exclude_regex',
+            default_value=DEFAULT_EXPLORATION_BAG_EXCLUDE_REGEX,
+        ),
+        DeclareLaunchArgument(
+            'command_bag_max_cache_size', default_value='104857600'),
+        DeclareLaunchArgument(
+            'command_bag_post_result_delay', default_value='0.5'),
+        DeclareLaunchArgument(
+            'command_bag_event_topic',
+            default_value='/model_commander/recording_event',
+        ),
+        DeclareLaunchArgument(
+            'command_bag_path_topic',
+            default_value='/model_commander/last_bag_path',
+        ),
+        DeclareLaunchArgument(
+            'command_bag_status_topic',
+            default_value='/model_commander/bag_status',
+        ),
+        DeclareLaunchArgument(
+            'command_operator_event_topic',
+            default_value='/model_commander/operator_event',
+        ),
+        DeclareLaunchArgument(
+            'model_commander_decision_event_topic',
+            default_value='/model_commander/decision_event',
+        ),
+        DeclareLaunchArgument(
+            'model_commander_inspected_image_topic',
+            default_value='/model_commander/inspected_image',
+        ),
+        DeclareLaunchArgument(
+            'natural_language_decision_event_topic',
+            default_value='/natural_language_command/decision_event',
+        ),
+        DeclareLaunchArgument(
             'visibility_coverage_enabled',
             default_value='true',
             description=(
@@ -509,8 +601,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'launch_active_object_search',
-            default_value='true',
-            description='Start the composed FindSomething action server.',
+            default_value='false',
+            description='Start the deprecated FindSomething compatibility server.',
         ),
         DeclareLaunchArgument(
             'find_something_action',
@@ -676,6 +768,66 @@ def generate_launch_description():
             ],
         ),
         Node(
+            package='muto_exploration_bag',
+            executable='exploration_bag_recorder',
+            name='command_bag_recorder',
+            output='screen',
+            condition=IfCondition(
+                AndSubstitution(
+                    LaunchConfiguration('command_bag_enabled'),
+                    LaunchConfiguration('launch_command_bag_recorder'),
+                )
+            ),
+            parameters=[
+                LaunchConfiguration('command_bag_params_file'),
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration('use_sim_time'),
+                        value_type=bool,
+                    ),
+                    'output_directory': LaunchConfiguration(
+                        'command_bag_output_directory'
+                    ),
+                    'storage_id': LaunchConfiguration(
+                        'command_bag_storage_id'
+                    ),
+                    'storage_preset': LaunchConfiguration(
+                        'command_bag_storage_preset'
+                    ),
+                    'topics_regex': LaunchConfiguration(
+                        'command_bag_topics_regex'
+                    ),
+                    'exclude_regex': LaunchConfiguration(
+                        'command_bag_exclude_regex'
+                    ),
+                    'max_cache_size': ParameterValue(
+                        LaunchConfiguration('command_bag_max_cache_size'),
+                        value_type=int,
+                    ),
+                    'post_terminal_delay': ParameterValue(
+                        LaunchConfiguration('command_bag_post_result_delay'),
+                        value_type=float,
+                    ),
+                    'lifecycle_event_topic': LaunchConfiguration(
+                        'command_bag_event_topic'
+                    ),
+                    'status_topic': LaunchConfiguration(
+                        'command_bag_status_topic'
+                    ),
+                    'path_topic': LaunchConfiguration(
+                        'command_bag_path_topic'
+                    ),
+                    'operator_event_topic': LaunchConfiguration(
+                        'command_operator_event_topic'
+                    ),
+                    'bag_prefix': 'muto_command',
+                    'manifest_schema': 'command_mission_v1',
+                    'status_schema': 'muto_command_bag_status_v1',
+                    'recording_label': 'command_mission',
+                },
+            ],
+        ),
+        Node(
             package='muto_command_layer',
             executable='command_layer_node',
             name='command_layer',
@@ -735,6 +887,9 @@ def generate_launch_description():
                     'explore_and_record_action': LaunchConfiguration(
                         'explore_and_record_action'
                     ),
+                    'explore_frontier_action': LaunchConfiguration(
+                        'explore_frontier_action'
+                    ),
                     'frontier_control_service': LaunchConfiguration(
                         'frontier_control_service'
                     ),
@@ -745,8 +900,8 @@ def generate_launch_description():
                     'exploration_completion_topic': LaunchConfiguration(
                         'exploration_completion_topic'
                     ),
-                    'detections_topic': LaunchConfiguration(
-                        'detections_topic'
+                    'detection_heartbeat_topic': LaunchConfiguration(
+                        'detection_heartbeat_topic'
                     ),
                     'exploration_service_timeout': LaunchConfiguration(
                         'exploration_service_timeout'
@@ -858,8 +1013,15 @@ def generate_launch_description():
                     'find_object_action': LaunchConfiguration(
                         'find_object_action'
                     ),
-                    'explore_and_record_action': LaunchConfiguration(
-                        'explore_and_record_action'
+                    'explore_frontier_action': LaunchConfiguration(
+                        'explore_frontier_action'
+                    ),
+                    'spin_action': LaunchConfiguration('spin_action'),
+                    'registry_save_service': LaunchConfiguration(
+                        'registry_save_service'
+                    ),
+                    'detection_heartbeat_topic': LaunchConfiguration(
+                        'detection_heartbeat_topic'
                     ),
                     'registry_topic': LaunchConfiguration('registry_topic'),
                     'visual_observation_topic': LaunchConfiguration(
@@ -867,6 +1029,30 @@ def generate_launch_description():
                     ),
                     'status_topic': LaunchConfiguration(
                         'model_commander_status_topic'
+                    ),
+                    'command_bag_enabled': ParameterValue(
+                        LaunchConfiguration('command_bag_enabled'),
+                        value_type=bool,
+                    ),
+                    'command_bag_required': ParameterValue(
+                        LaunchConfiguration('command_bag_required'),
+                        value_type=bool,
+                    ),
+                    'command_bag_start_timeout': ParameterValue(
+                        LaunchConfiguration('command_bag_start_timeout'),
+                        value_type=float,
+                    ),
+                    'command_bag_event_topic': LaunchConfiguration(
+                        'command_bag_event_topic'
+                    ),
+                    'command_bag_status_topic': LaunchConfiguration(
+                        'command_bag_status_topic'
+                    ),
+                    'decision_event_topic': LaunchConfiguration(
+                        'model_commander_decision_event_topic'
+                    ),
+                    'inspected_image_topic': LaunchConfiguration(
+                        'model_commander_inspected_image_topic'
                     ),
                     'vlm_model': LaunchConfiguration('model_commander_vlm_model'),
                 },
@@ -891,9 +1077,6 @@ def generate_launch_description():
                     'find_object_action': LaunchConfiguration(
                         'find_object_action'
                     ),
-                    'find_something_action': LaunchConfiguration(
-                        'find_something_action'
-                    ),
                     'look_for_object_action': LaunchConfiguration(
                         'look_for_object_action'
                     ),
@@ -902,11 +1085,11 @@ def generate_launch_description():
                     'save_map_service': LaunchConfiguration(
                         'save_map_service'
                     ),
+                    'decision_event_topic': LaunchConfiguration(
+                        'natural_language_decision_event_topic'
+                    ),
                     'save_map_result_timeout': LaunchConfiguration(
                         'save_map_result_timeout'
-                    ),
-                    'explore_and_record_action': LaunchConfiguration(
-                        'explore_and_record_action'
                     ),
                     'vlm_model': LaunchConfiguration('natural_language_vlm_model'),
                 },

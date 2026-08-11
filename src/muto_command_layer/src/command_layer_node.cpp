@@ -38,10 +38,10 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp_action/qos.hpp"
-#include "sam2_object_registry/msg/detected_object_array.hpp"
 #include "sam2_object_registry/srv/get_stored_objects.hpp"
 #include "slam_toolbox/srv/save_map.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/header.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -169,13 +169,6 @@ public:
           exploration_completed_.store(true);
         }
       });
-    detections_sub_ =
-      create_subscription<sam2_object_registry::msg::DetectedObjectArray>(
-      detections_topic_, rclcpp::QoS(10).reliable().durability_volatile(),
-      [this](sam2_object_registry::msg::DetectedObjectArray::ConstSharedPtr)
-      {
-        detection_frame_count_.fetch_add(1U, std::memory_order_relaxed);
-      });
     navigation_status_sub_ =
       create_subscription<action_msgs::msg::GoalStatusArray>(
       action_status_topic(navigate_action_),
@@ -229,30 +222,56 @@ public:
     program_server_ = rclcpp_action::create_server<ProgramAction>(
       this,
       program_action_name_,
-      std::bind(
-        &CommandLayerNode::handle_program_goal, this,
-        std::placeholders::_1, std::placeholders::_2),
+      [this](
+        const rclcpp_action::GoalUUID & goal_id,
+        std::shared_ptr<const ProgramAction::Goal> goal)
+      {
+        return handle_program_goal(
+          goal_id, std::move(goal), ProgramMode::legacy_composite,
+          program_action_name_);
+      },
       std::bind(
         &CommandLayerNode::handle_program_cancel, this,
         std::placeholders::_1),
+      [this](const std::shared_ptr<ProgramGoalHandle> goal_handle) {
+        handle_program_accepted(
+          goal_handle, ProgramMode::legacy_composite, program_action_name_);
+      });
+    explore_frontier_server_ = rclcpp_action::create_server<ProgramAction>(
+      this,
+      explore_frontier_action_name_,
+      [this](
+        const rclcpp_action::GoalUUID & goal_id,
+        std::shared_ptr<const ProgramAction::Goal> goal)
+      {
+        return handle_program_goal(
+          goal_id, std::move(goal), ProgramMode::explore_frontier,
+          explore_frontier_action_name_);
+      },
       std::bind(
-        &CommandLayerNode::handle_program_accepted, this,
-        std::placeholders::_1));
-
+        &CommandLayerNode::handle_program_cancel, this,
+        std::placeholders::_1),
+      [this](const std::shared_ptr<ProgramGoalHandle> goal_handle) {
+        handle_program_accepted(
+          goal_handle, ProgramMode::explore_frontier,
+          explore_frontier_action_name_);
+      });
     worker_ = std::thread(&CommandLayerNode::worker_loop, this);
     program_worker_ = std::thread(&CommandLayerNode::program_worker_loop, this);
 
     RCLCPP_INFO(
       get_logger(),
       "Object command layer ready: action=%s registry=%s nav2=%s "
-      "explore=%s program=%s spin=%s frontier_control=%s "
+      "explore=%s legacy_program=%s explore_primitive=%s "
+      "spin=%s frontier_control=%s "
       "save_map=%s->%s map_directory=%s "
       "coverage=%s visibility_map=%s global_costmap=%s "
       "bag_handshake=%s bag_status=%s "
       "minimum_approach_radius=%.2f m frames=%s<-%s",
       action_name_.c_str(), registry_service_.c_str(), navigate_action_.c_str(),
       explore_service_name_.c_str(), program_action_name_.c_str(),
-      spin_action_.c_str(), frontier_control_service_.c_str(),
+      explore_frontier_action_name_.c_str(), spin_action_.c_str(),
+      frontier_control_service_.c_str(),
       save_map_service_name_.c_str(),
       slam_toolbox_save_map_service_.c_str(), map_save_directory_.c_str(),
       visibility_coverage_enabled_ ? "on" : "off",
@@ -299,6 +318,12 @@ private:
     canceled,
     failed,
     stopping,
+  };
+
+  enum class ProgramMode
+  {
+    legacy_composite,
+    explore_frontier,
   };
 
   static constexpr uint8_t kLookupPhase = 1;
@@ -468,13 +493,16 @@ private:
     declare_parameter<std::string>(
       "explore_and_record_action", "/explore_and_record");
     declare_parameter<std::string>(
+      "explore_frontier_action", "/command_primitives/explore_frontier");
+    declare_parameter<std::string>(
       "frontier_control_service", "/control_exploration");
     declare_parameter<std::string>("spin_action", "/spin");
     declare_parameter<std::string>(
       "registry_save_service", "/sam2/save_stored_objects");
     declare_parameter<std::string>(
       "exploration_completion_topic", "/explore/exploration_complete");
-    declare_parameter<std::string>("detections_topic", "/sam2/detections");
+    declare_parameter<std::string>(
+      "detection_heartbeat_topic", "/sam2/detection_heartbeat");
     declare_parameter<bool>("visibility_coverage_enabled", true);
     declare_parameter<std::string>("visibility_map_topic", "/map");
     declare_parameter<std::string>(
@@ -554,6 +582,8 @@ private:
       std::filesystem::path(map_save_directory_).lexically_normal().string();
     program_action_name_ =
       get_parameter("explore_and_record_action").as_string();
+    explore_frontier_action_name_ =
+      get_parameter("explore_frontier_action").as_string();
     frontier_control_service_ =
       get_parameter("frontier_control_service").as_string();
     spin_action_ = get_parameter("spin_action").as_string();
@@ -561,7 +591,8 @@ private:
       get_parameter("registry_save_service").as_string();
     exploration_completion_topic_ =
       get_parameter("exploration_completion_topic").as_string();
-    detections_topic_ = get_parameter("detections_topic").as_string();
+    detection_heartbeat_topic_ =
+      get_parameter("detection_heartbeat_topic").as_string();
     visibility_coverage_enabled_ =
       get_parameter("visibility_coverage_enabled").as_bool();
     visibility_map_topic_ = get_parameter("visibility_map_topic").as_string();
@@ -660,12 +691,14 @@ private:
       slam_toolbox_save_map_service_, "slam_toolbox_save_map_service");
     require_name(map_save_directory_, "map_save_directory");
     require_name(program_action_name_, "explore_and_record_action");
+    require_name(explore_frontier_action_name_, "explore_frontier_action");
     require_name(frontier_control_service_, "frontier_control_service");
     require_name(spin_action_, "spin_action");
     require_name(registry_save_service_, "registry_save_service");
     require_name(
       exploration_completion_topic_, "exploration_completion_topic");
-    require_name(detections_topic_, "detections_topic");
+    require_name(
+      detection_heartbeat_topic_, "detection_heartbeat_topic");
     require_name(exploration_bag_event_topic_, "exploration_bag_event_topic");
     require_name(
       exploration_bag_status_topic_, "exploration_bag_status_topic");
@@ -1035,7 +1068,9 @@ private:
 
   rclcpp_action::GoalResponse handle_program_goal(
     const rclcpp_action::GoalUUID &,
-    std::shared_ptr<const ProgramAction::Goal> goal)
+    std::shared_ptr<const ProgramAction::Goal> goal,
+    const ProgramMode mode,
+    const std::string & action_name)
   {
     const bool durations_valid =
       std::isfinite(goal->exploration_duration) &&
@@ -1046,19 +1081,31 @@ private:
     if (!durations_valid || !scan_step_count_valid) {
       RCLCPP_WARN(
         get_logger(),
-        "Rejected explore-and-record goal with invalid duration or scan step count");
+        "Rejected program goal on %s with invalid duration or scan step count",
+        action_name.c_str());
       return rclcpp_action::GoalResponse::REJECT;
     }
-
+    if (mode == ProgramMode::explore_frontier &&
+      (goal->observation_duration != 0.0F || goal->scan_step_count != 0U ||
+      goal->max_cycles != 0U))
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "Rejected explore-frontier primitive with scan-only arguments");
+      return rclcpp_action::GoalResponse::REJECT;
+    }
     std::lock_guard<std::mutex> lock(worker_mutex_);
     if (busy_ || stopping_.load()) {
       RCLCPP_WARN(
         get_logger(),
-        "Rejected explore-and-record goal: command layer is busy");
+        "Rejected program goal on %s: command layer is busy",
+        action_name.c_str());
       return rclcpp_action::GoalResponse::REJECT;
     }
     busy_ = true;
     program_active_.store(true);
+    program_motion_stop_uncertain_.store(false);
+    program_frontier_owned_.store(false);
     exploration_completed_.store(false);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
@@ -1070,11 +1117,15 @@ private:
   }
 
   void handle_program_accepted(
-    const std::shared_ptr<ProgramGoalHandle> goal_handle)
+    const std::shared_ptr<ProgramGoalHandle> goal_handle,
+    const ProgramMode mode,
+    const std::string & action_name)
   {
     {
       std::lock_guard<std::mutex> lock(worker_mutex_);
       pending_program_goal_ = goal_handle;
+      pending_program_mode_ = mode;
+      pending_program_action_name_ = action_name;
     }
     program_condition_.notify_one();
   }
@@ -1113,26 +1164,34 @@ private:
     }
 
     const auto goal = goal_handle->get_goal();
-    const double exploration_duration = goal->exploration_duration > 0.0F ?
+    double exploration_duration = goal->exploration_duration > 0.0F ?
       static_cast<double>(goal->exploration_duration) :
       exploration_cycle_duration_;
-    const double observation_duration = goal->observation_duration > 0.0F ?
+    double observation_duration = goal->observation_duration > 0.0F ?
       static_cast<double>(goal->observation_duration) : observation_duration_;
-    const uint32_t scan_steps = goal->scan_step_count > 0U ?
+    uint32_t scan_steps = goal->scan_step_count > 0U ?
       goal->scan_step_count : static_cast<uint32_t>(scan_step_count_);
+    int64_t observation_frames = observation_min_detection_frames_;
     const std::string goal_id = goal_id_string(goal_handle->get_goal_id());
+    const std::string action_name = active_program_action_name_.empty() ?
+      program_action_name_ : active_program_action_name_;
+    if (action_name == explore_frontier_action_name_) {
+      observation_duration = 0.0;
+      scan_steps = 0U;
+      observation_frames = 0;
+    }
 
     std_msgs::msg::String message;
     message.data =
       "{\"schema\":\"muto_explore_lifecycle_v1\",\"event\":\"" +
       json_escape(event) + "\",\"action_name\":\"" +
-      json_escape(program_action_name_) + "\",\"goal_id\":\"" +
+      json_escape(action_name) + "\",\"goal_id\":\"" +
       goal_id + "\",\"exploration_duration_s\":" +
       std::to_string(exploration_duration) +
       ",\"observation_timeout_s\":" +
       std::to_string(observation_duration) +
       ",\"observation_detection_frames\":" +
-      std::to_string(observation_min_detection_frames_) +
+      std::to_string(observation_frames) +
       ",\"scan_step_count\":" + std::to_string(scan_steps) +
       ",\"max_cycles\":" + std::to_string(goal->max_cycles) +
       ",\"completed_cycles\":" + std::to_string(completed_cycles) +
@@ -1193,6 +1252,8 @@ private:
   {
     while (!stopping_.load()) {
       std::shared_ptr<ProgramGoalHandle> goal_handle;
+      ProgramMode mode = ProgramMode::legacy_composite;
+      std::string action_name;
       {
         std::unique_lock<std::mutex> lock(worker_mutex_);
         program_condition_.wait(
@@ -1204,6 +1265,9 @@ private:
           break;
         }
         goal_handle = std::move(pending_program_goal_);
+        mode = pending_program_mode_;
+        action_name = std::move(pending_program_action_name_);
+        active_program_action_name_ = action_name;
       }
 
       try {
@@ -1222,7 +1286,11 @@ private:
               "Continuing exploration without a confirmed bag: %s",
               bag_error.c_str());
           }
-          execute_program(goal_handle);
+          if (mode == ProgramMode::explore_frontier) {
+            execute_explore_frontier_primitive(goal_handle);
+          } else {
+            execute_program(goal_handle);
+          }
         }
       } catch (const std::exception & error) {
         RCLCPP_ERROR(
@@ -1233,10 +1301,18 @@ private:
           0U, 0U, 0U);
       }
 
+      if (program_motion_stop_uncertain_.load()) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Program child motion stop is unconfirmed; command layer remains "
+          "latched busy until restart");
+        continue;
+      }
       program_active_.store(false);
       exploration_completed_.store(false);
       {
         std::lock_guard<std::mutex> lock(worker_mutex_);
+        active_program_action_name_.clear();
         busy_ = false;
       }
     }
@@ -1404,8 +1480,17 @@ private:
         goal_handle, timeout_seconds, watch_exploration_completion);
     }
 
-    const uint64_t first_frame = detection_frame_count_.load(
-      std::memory_order_relaxed);
+    const auto detection_frame_count =
+      std::make_shared<std::atomic<uint64_t>>(0U);
+    const auto heartbeat_subscription =
+      create_subscription<std_msgs::msg::Header>(
+      detection_heartbeat_topic_,
+      rclcpp::QoS(10).reliable().durability_volatile(),
+      [detection_frame_count](std_msgs::msg::Header::ConstSharedPtr)
+      {
+        detection_frame_count->fetch_add(1U, std::memory_order_relaxed);
+      });
+    (void)heartbeat_subscription;
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(timeout_seconds);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -1418,8 +1503,8 @@ private:
       if (watch_exploration_completion && exploration_completed_.load()) {
         return ProgramDelayStatus::exploration_complete;
       }
-      const uint64_t received = detection_frame_count_.load(
-        std::memory_order_relaxed) - first_frame;
+      const uint64_t received = detection_frame_count->load(
+        std::memory_order_relaxed);
       if (received >=
         static_cast<uint64_t>(observation_min_detection_frames_))
       {
@@ -1428,8 +1513,8 @@ private:
       std::this_thread::sleep_for(20ms);
     }
 
-    const uint64_t received = detection_frame_count_.load(
-      std::memory_order_relaxed) - first_frame;
+    const uint64_t received = detection_frame_count->load(
+      std::memory_order_relaxed);
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 5000,
       "Detector observation timed out after %.2fs with %llu/%lld fresh frames",
@@ -1472,19 +1557,67 @@ private:
     return ProgramDelayStatus::elapsed;
   }
 
-  void best_effort_stop_exploration()
+  bool confirm_exploration_stopped()
   {
+    if (!program_frontier_owned_.load()) {
+      return true;
+    }
     if (!frontier_control_client_ || !rclcpp::ok()) {
-      return;
+      return false;
     }
     std::string message;
     uint8_t state = FrontierControlService::Request::STATE_IDLE;
     if (!set_exploration_enabled(
-        false, program_endpoint_timeout_, message, state))
+        false, cancel_timeout_, message, state))
     {
       RCLCPP_WARN(
-        get_logger(), "Could not stop exploration during program cleanup: %s",
+        get_logger(), "Could not stop exploration during cleanup: %s",
         message.c_str());
+      return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(cancel_timeout_);
+    while (navigation_active_.load(std::memory_order_relaxed) &&
+      std::chrono::steady_clock::now() < deadline && rclcpp::ok() &&
+      !stopping_.load())
+    {
+      std::this_thread::sleep_for(50ms);
+    }
+    if (state == FrontierControlService::Request::STATE_IDLE &&
+      !navigation_active_.load(std::memory_order_relaxed))
+    {
+      program_frontier_owned_.store(false);
+      return true;
+    }
+    if (!navigation_active_.load(std::memory_order_relaxed) &&
+      std::chrono::steady_clock::now() + 100ms < deadline)
+    {
+      std::this_thread::sleep_for(100ms);
+      const double remaining = std::max(
+        0.05,
+        std::chrono::duration<double>(
+          deadline - std::chrono::steady_clock::now()).count());
+      if (set_exploration_enabled(false, remaining, message, state) &&
+        state == FrontierControlService::Request::STATE_IDLE &&
+        !navigation_active_.load(std::memory_order_relaxed))
+      {
+        program_frontier_owned_.store(false);
+        return true;
+      }
+    }
+    RCLCPP_ERROR(
+      get_logger(),
+      "Frontier/Nav2 stop did not reach idle before the cancellation timeout");
+    return false;
+  }
+
+  void best_effort_stop_exploration()
+  {
+    if (!program_frontier_owned_.load()) {
+      return;
+    }
+    if (!confirm_exploration_stopped()) {
+      program_motion_stop_uncertain_.store(true);
     }
   }
 
@@ -1525,6 +1658,16 @@ private:
   {
     best_effort_stop_exploration();
     best_effort_checkpoint_registry();
+    if (program_motion_stop_uncertain_.load()) {
+      publish_program_lifecycle_event(
+        goal_handle, "ownership_uncertain", completed_cycles,
+        objects_before, objects_after);
+      RCLCPP_ERROR(
+        get_logger(),
+        "Not completing canceled program action because child motion stop is "
+        "unconfirmed");
+      return;
+    }
     auto result = std::make_shared<ProgramAction::Result>();
     result->success = false;
     result->message = message;
@@ -1547,6 +1690,16 @@ private:
   {
     best_effort_stop_exploration();
     best_effort_checkpoint_registry();
+    if (program_motion_stop_uncertain_.load()) {
+      publish_program_lifecycle_event(
+        goal_handle, "ownership_uncertain", completed_cycles,
+        objects_before, objects_after);
+      RCLCPP_ERROR(
+        get_logger(),
+        "Not completing aborted program action because child motion stop is "
+        "unconfirmed");
+      return;
+    }
     auto result = std::make_shared<ProgramAction::Result>();
     result->success = false;
     result->message = message;
@@ -1660,10 +1813,13 @@ private:
     return WaitStatus::ready;
   }
 
-  void cancel_spin_goal(const std::shared_ptr<SpinGoalHandle> & spin_goal)
+  template<typename ResultFutureT>
+  bool cancel_spin_goal_and_confirm(
+    const std::shared_ptr<SpinGoalHandle> & spin_goal,
+    ResultFutureT & result_future)
   {
     if (!spin_goal || !spin_client_ || !rclcpp::ok()) {
-      return;
+      return false;
     }
     auto cancel_future = spin_client_->async_cancel_goal(spin_goal);
     const auto deadline = std::chrono::steady_clock::now() +
@@ -1673,10 +1829,19 @@ private:
       std::chrono::steady_clock::now() < deadline)
     {
     }
+    if (cancel_future.wait_for(0ms) != std::future_status::ready) {
+      return false;
+    }
+    while (result_future.wait_for(50ms) != std::future_status::ready &&
+      rclcpp::ok() && !stopping_.load() &&
+      std::chrono::steady_clock::now() < deadline)
+    {
+    }
+    return result_future.wait_for(0ms) == std::future_status::ready;
   }
 
   template<typename FutureT>
-  void cancel_spin_goal_when_available(FutureT & spin_goal_future)
+  bool cancel_spin_goal_when_available(FutureT & spin_goal_future)
   {
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(cancel_timeout_);
@@ -1686,8 +1851,14 @@ private:
     {
     }
     if (spin_goal_future.wait_for(0ms) == std::future_status::ready) {
-      cancel_spin_goal(spin_goal_future.get());
+      const auto spin_goal = spin_goal_future.get();
+      if (!spin_goal) {
+        return true;
+      }
+      auto result_future = spin_client_->async_get_result(spin_goal);
+      return cancel_spin_goal_and_confirm(spin_goal, result_future);
     }
+    return false;
   }
 
   WaitStatus perform_program_spin(
@@ -1736,7 +1907,9 @@ private:
     const auto goal_status = wait_for_future(
       goal_future, goal_handle, program_endpoint_timeout_);
     if (goal_status != WaitStatus::ready) {
-      cancel_spin_goal_when_available(goal_future);
+      if (!cancel_spin_goal_when_available(goal_future)) {
+        program_motion_stop_uncertain_.store(true);
+      }
       error = goal_status == WaitStatus::timeout ?
         "Nav2 did not accept the spin goal in time" :
         "spin dispatch interrupted";
@@ -1754,7 +1927,9 @@ private:
       result_future, goal_handle,
       spin_time_allowance_ + cancel_timeout_);
     if (result_status != WaitStatus::ready) {
-      cancel_spin_goal(accepted_goal);
+      if (!cancel_spin_goal_and_confirm(accepted_goal, result_future)) {
+        program_motion_stop_uncertain_.store(true);
+      }
       error = result_status == WaitStatus::timeout ?
         "Nav2 spin timed out" : "spin execution interrupted";
       return result_status;
@@ -2517,6 +2692,104 @@ private:
     RCLCPP_WARN(get_logger(), "Go-to-object failed: %s", message.c_str());
   }
 
+  void execute_explore_frontier_primitive(
+    const std::shared_ptr<ProgramGoalHandle> & goal_handle)
+  {
+    const auto goal = goal_handle->get_goal();
+    const double exploration_duration = goal->exploration_duration > 0.0F ?
+      static_cast<double>(goal->exploration_duration) :
+      exploration_cycle_duration_;
+    uint32_t objects_before = 0U;
+    uint32_t objects_after = 0U;
+    std::string error;
+
+    auto count_status = query_program_object_count(
+      goal_handle, objects_before, error);
+    objects_after = objects_before;
+    if (count_status == WaitStatus::canceled) {
+      cancel_program(
+        goal_handle, "explore-frontier primitive canceled before startup",
+        0U, objects_before, objects_after);
+      return;
+    }
+    if (count_status == WaitStatus::stopping) {
+      return;
+    }
+    if (count_status != WaitStatus::ready) {
+      abort_program(goal_handle, error, 0U, objects_before, objects_after);
+      return;
+    }
+
+    exploration_completed_.store(false);
+    std::string control_message;
+    uint8_t frontier_state = FrontierControlService::Request::STATE_IDLE;
+    if (!set_exploration_enabled(
+        true, program_endpoint_timeout_, control_message, frontier_state))
+    {
+      abort_program(
+        goal_handle, "could not start frontier primitive: " + control_message,
+        0U, objects_before, objects_after);
+      return;
+    }
+    program_frontier_owned_.store(true);
+
+    publish_program_feedback(
+      goal_handle, kProgramExploringPhase,
+      "bounded frontier exploration primitive is running", 0U, objects_after);
+    const auto exploration_wait = wait_program_delay(
+      goal_handle, exploration_duration);
+    if (exploration_wait == ProgramDelayStatus::canceled) {
+      cancel_program(
+        goal_handle, "explore-frontier primitive canceled during travel",
+        0U, objects_before, objects_after);
+      return;
+    }
+    if (exploration_wait == ProgramDelayStatus::stopping) {
+      best_effort_stop_exploration();
+      return;
+    }
+
+    publish_program_feedback(
+      goal_handle, kProgramPausingPhase,
+      "stopping the bounded frontier primitive", 0U, objects_after);
+    if (!confirm_exploration_stopped()) {
+      program_motion_stop_uncertain_.store(true);
+      abort_program(
+        goal_handle,
+        "could not confirm that the frontier primitive stopped",
+        0U, objects_before, objects_after);
+      return;
+    }
+
+    if (goal_handle->is_canceling()) {
+      cancel_program(
+        goal_handle, "explore-frontier primitive canceled while stopping",
+        0U, objects_before, objects_after);
+      return;
+    }
+    count_status = query_program_object_count(
+      goal_handle, objects_after, error);
+    if (count_status == WaitStatus::canceled) {
+      cancel_program(
+        goal_handle, "explore-frontier primitive canceled during registry query",
+        0U, objects_before, objects_after);
+      return;
+    }
+    if (count_status == WaitStatus::stopping) {
+      return;
+    }
+    if (count_status != WaitStatus::ready) {
+      abort_program(goal_handle, error, 0U, objects_before, objects_after);
+      return;
+    }
+
+    const std::string outcome = exploration_completed_.load() ?
+      "frontier exploration exhausted" :
+      "bounded frontier exploration step completed";
+    succeed_program(
+      goal_handle, outcome, 1U, objects_before, objects_after);
+  }
+
   void execute_program(const std::shared_ptr<ProgramGoalHandle> & goal_handle)
   {
     const auto goal = goal_handle->get_goal();
@@ -2664,6 +2937,7 @@ private:
         completed_cycles, objects_before, objects_after);
       return;
     }
+    program_frontier_owned_.store(true);
     exploration_running = true;
 
     RCLCPP_INFO(
@@ -3104,11 +3378,12 @@ private:
   std::string map_save_directory_;
   std::string default_map_name_;
   std::string program_action_name_;
+  std::string explore_frontier_action_name_;
   std::string frontier_control_service_;
   std::string spin_action_;
   std::string registry_save_service_;
   std::string exploration_completion_topic_;
-  std::string detections_topic_;
+  std::string detection_heartbeat_topic_;
   std::string exploration_bag_event_topic_;
   std::string exploration_bag_status_topic_;
   std::string visibility_map_topic_;
@@ -3155,6 +3430,7 @@ private:
   rclcpp::Client<SaveMapService>::SharedPtr slam_toolbox_save_map_client_;
   rclcpp_action::Server<CommandAction>::SharedPtr command_server_;
   rclcpp_action::Server<ProgramAction>::SharedPtr program_server_;
+  rclcpp_action::Server<ProgramAction>::SharedPtr explore_frontier_server_;
   rclcpp::Service<ExploreService>::SharedPtr explore_service_;
   rclcpp::Service<SaveMapService>::SharedPtr save_map_service_;
   rclcpp::CallbackGroup::SharedPtr frontier_client_group_;
@@ -3171,8 +3447,6 @@ private:
     program_bag_status_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr
     exploration_completion_sub_;
-  rclcpp::Subscription<sam2_object_registry::msg::DetectedObjectArray>::SharedPtr
-    detections_sub_;
   rclcpp::Subscription<action_msgs::msg::GoalStatusArray>::SharedPtr
     navigation_status_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr
@@ -3182,9 +3456,10 @@ private:
 
   std::atomic<bool> stopping_{false};
   std::atomic<bool> program_active_{false};
+  std::atomic<bool> program_motion_stop_uncertain_{false};
+  std::atomic<bool> program_frontier_owned_{false};
   std::atomic<bool> exploration_completed_{false};
   std::atomic<bool> navigation_active_{false};
-  std::atomic<uint64_t> detection_frame_count_{0U};
   std::mutex frontier_request_mutex_;
   std::mutex visibility_map_mutex_;
   std::mutex program_bag_status_mutex_;
@@ -3197,6 +3472,9 @@ private:
   bool busy_{false};
   std::shared_ptr<CommandGoalHandle> pending_goal_;
   std::shared_ptr<ProgramGoalHandle> pending_program_goal_;
+  ProgramMode pending_program_mode_{ProgramMode::legacy_composite};
+  std::string pending_program_action_name_;
+  std::string active_program_action_name_;
   std::string latest_program_bag_status_event_;
   std::string latest_program_bag_status_goal_id_;
   std::string latest_program_bag_status_detail_;

@@ -12,6 +12,8 @@ command_layer:
     map_save_directory: ""
     default_map_name: muto_map
     explore_and_record_action: /explore_and_record
+    # Safety-wrapped frontier primitive scheduled by model_commander.
+    explore_frontier_action: /command_primitives/explore_frontier
     frontier_control_service: /control_exploration
     spin_action: /spin
     registry_save_service: /sam2/save_stored_objects
@@ -48,14 +50,15 @@ command_layer:
     # it elapses, finish that travel goal before pausing to scan.
     exploration_cycle_duration: 10.0
     # Per-step timeout; observation normally ends sooner after this many fresh
-    # detector result messages. Set the frame count to 0 for a fixed dwell.
+    # crop-free detector heartbeat messages. Set the frame count to 0 for a
+    # fixed dwell.
     observation_duration: 3.0
     observation_min_detection_frames: 3
     scan_step_count: 6
     spin_time_allowance: 15.0
     navigation_settle_time: 0.25
     finish_active_frontier_goal_before_scan: true
-    detections_topic: /sam2/detections
+    detection_heartbeat_topic: /sam2/detection_heartbeat
 
     # The standalone muto_exploration_bag process opens one MCAP per goal.
     # This command node only publishes lifecycle events and optionally waits
@@ -142,10 +145,22 @@ model_commander:
     action_name: /look_for_object
     vlm_action: /vlm/generate
     find_object_action: /find_object
-    explore_and_record_action: /explore_and_record
+    explore_frontier_action: /command_primitives/explore_frontier
+    spin_action: /spin
+    registry_save_service: /sam2/save_stored_objects
+    detection_heartbeat_topic: /sam2/detection_heartbeat
     registry_topic: /sam2/stored_objects
     visual_observation_topic: /camera/color/image_raw
     status_topic: /model_commander/status
+    # One parent bag spans the complete model-supervised mission, including
+    # registry-only checks, waits, planning decisions, and all primitives.
+    command_bag_enabled: true
+    command_bag_required: false
+    command_bag_start_timeout: 2.0
+    command_bag_event_topic: /model_commander/recording_event
+    command_bag_status_topic: /model_commander/bag_status
+    decision_event_topic: /model_commander/decision_event
+    inspected_image_topic: /model_commander/inspected_image
 
     # Empty selects the VLM socket's default model.
     # Command planning is latency-sensitive; use a faster model than object
@@ -169,7 +184,19 @@ model_commander:
     max_visual_observation_characters: 512
     max_state_message_characters: 512
     max_wait_seconds: 60.0
-    max_exploration_cycles: 3
+    max_exploration_seconds: 60.0
+    max_rotation_radians: 6.283185307179586
+    max_observation_seconds: 30.0
+    spin_time_allowance: 15.0
+    checkpoint_timeout: 10.0
+    observation_min_detection_frames: 3
+    # A no-match finish needs search-area change, stationary observations,
+    # enough completed in-place rotation, and a registry checkpoint. These may
+    # occur in any order.
+    minimum_no_match_exploration_seconds: 10.0
+    minimum_no_match_observations: 4
+    minimum_no_match_rotation_radians: 6.283185307179586
+    minimum_no_match_checkpoints: 1
 
     # Model/VLM failure defers without motion. Repeated failure aborts safely.
     planner_retry_initial_delay: 2.0
@@ -209,12 +236,11 @@ natural_language_command_router:
     action_name: /natural_language_command
     vlm_action: /vlm/generate
     find_object_action: /find_object
-    find_something_action: /find_something
     look_for_object_action: /look_for_object
     go_to_object_action: /go_to_object
     explore_service: /explore
     save_map_service: /save_map
-    explore_and_record_action: /explore_and_record
+    decision_event_topic: /natural_language_command/decision_event
 
     # Empty selects the VLM socket's default model.
     # Command routing is latency-sensitive and mostly strict enum
@@ -233,7 +259,3 @@ natural_language_command_router:
     max_query_characters: 4096
     max_object_query_characters: 1024
     max_map_name_characters: 128
-    max_exploration_duration: 3600.0
-    max_observation_duration: 600.0
-    max_scan_step_count: 360
-    max_cycles: 10000

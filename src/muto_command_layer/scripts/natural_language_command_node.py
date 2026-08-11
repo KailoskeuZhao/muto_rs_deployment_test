@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Validated natural-language router for the typed Muto command layer."""
 
+import json
 import math
 import threading
 import time
 
 from action_msgs.msg import GoalStatus
 from muto_command_layer.action import (
-    ExploreAndRecord,
     FindObject,
-    FindSomething,
     GoToObject,
     LookForObject,
     NaturalLanguageCommand,
@@ -28,7 +27,9 @@ from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalRespons
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from slam_toolbox.srv import SaveMap
+from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
 
@@ -68,22 +69,10 @@ class NaturalLanguageCommandNode(Node):
             self.go_to_object_action,
             callback_group=self._callback_group,
         )
-        self._active_search_client = ActionClient(
-            self,
-            FindSomething,
-            self.find_something_action,
-            callback_group=self._callback_group,
-        )
         self._model_commander_client = ActionClient(
             self,
             LookForObject,
             self.look_for_object_action,
-            callback_group=self._callback_group,
-        )
-        self._program_client = ActionClient(
-            self,
-            ExploreAndRecord,
-            self.explore_and_record_action,
             callback_group=self._callback_group,
         )
         self._explore_client = self.create_client(
@@ -104,6 +93,13 @@ class NaturalLanguageCommandNode(Node):
         self._active_motion_goal = None
         self._active_motion_command = ''
         self._manual_exploration_active = False
+        trace_qos = QoSProfile(
+            depth=10,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._decision_event_publisher = self.create_publisher(
+            String, self.decision_event_topic, trace_qos)
 
         self._action_server = ActionServer(
             self,
@@ -122,13 +118,13 @@ class NaturalLanguageCommandNode(Node):
         self.declare_parameter('action_name', '/natural_language_command')
         self.declare_parameter('vlm_action', '/vlm/generate')
         self.declare_parameter('find_object_action', '/find_object')
-        self.declare_parameter('find_something_action', '/find_something')
         self.declare_parameter('look_for_object_action', '/look_for_object')
         self.declare_parameter('go_to_object_action', '/go_to_object')
         self.declare_parameter('explore_service', '/explore')
         self.declare_parameter('save_map_service', '/save_map')
         self.declare_parameter(
-            'explore_and_record_action', '/explore_and_record')
+            'decision_event_topic',
+            '/natural_language_command/decision_event')
         self.declare_parameter('vlm_model', 'gpt-5.3-codex-spark')
         self.declare_parameter('endpoint_timeout', 5.0)
         self.declare_parameter('vlm_result_timeout', 45.0)
@@ -138,51 +134,41 @@ class NaturalLanguageCommandNode(Node):
         self.declare_parameter('max_query_characters', 4096)
         self.declare_parameter('max_object_query_characters', 1024)
         self.declare_parameter('max_map_name_characters', 128)
-        self.declare_parameter('max_exploration_duration', 3600.0)
-        self.declare_parameter('max_observation_duration', 600.0)
-        self.declare_parameter('max_scan_step_count', 360)
-        self.declare_parameter('max_cycles', 10000)
 
     def _read_parameters(self):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
-                'find_something_action', 'go_to_object_action',
-                'look_for_object_action',
+                'go_to_object_action', 'look_for_object_action',
                 'explore_service',
                 'save_map_service',
-                'explore_and_record_action', 'vlm_model',
+                'decision_event_topic',
+                'vlm_model',
                 'endpoint_timeout', 'vlm_result_timeout',
                 'find_result_timeout', 'save_map_result_timeout',
                 'cancel_timeout',
                 'max_query_characters', 'max_object_query_characters',
-                'max_map_name_characters',
-                'max_exploration_duration', 'max_observation_duration',
-                'max_scan_step_count', 'max_cycles'):
+                'max_map_name_characters'):
             setattr(self, name, self.get_parameter(name).value)
 
     def _validate_parameters(self):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
-                'find_something_action', 'go_to_object_action',
-                'look_for_object_action',
+                'go_to_object_action', 'look_for_object_action',
                 'explore_service',
-                'save_map_service',
-                'explore_and_record_action'):
+                'save_map_service', 'decision_event_topic'):
             if not getattr(self, name):
                 raise ValueError(f'{name} must not be empty')
         for name in (
                 'endpoint_timeout', 'vlm_result_timeout',
                 'find_result_timeout', 'save_map_result_timeout',
-                'cancel_timeout',
-                'max_exploration_duration', 'max_observation_duration'):
+                'cancel_timeout'):
             value = getattr(self, name)
             if not isinstance(value, (int, float)) or \
                     not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and positive')
         for name in (
                 'max_query_characters', 'max_object_query_characters',
-                'max_map_name_characters',
-                'max_scan_step_count', 'max_cycles'):
+                'max_map_name_characters'):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f'{name} must be a positive integer')
@@ -200,6 +186,29 @@ class NaturalLanguageCommandNode(Node):
                 return GoalResponse.REJECT
             self._busy = True
         return GoalResponse.ACCEPT
+
+    def _publish_decision_event(
+            self, event, goal_handle, query, source, result, intent=None):
+        payload = {
+            'schema': 'muto_natural_language_decision_v1',
+            'event': event,
+            'goal_id': bytes(goal_handle.goal_id.uuid).hex(),
+            'query': query,
+            'source': source,
+        }
+        if event == 'dispatch_result':
+            payload['success'] = bool(result.success)
+            payload['message'] = result.message
+        if intent is not None:
+            payload.update({
+                'command': intent.command,
+                'arguments': json.loads(intent.arguments_json()),
+                'model': self.vlm_model if source == 'model' else '',
+            })
+        message = String()
+        message.data = json.dumps(
+            payload, ensure_ascii=True, separators=(',', ':'), sort_keys=True)
+        self._decision_event_publisher.publish(message)
 
     def _cancel_callback(self, _goal_handle):
         """Forward parent cancellation to in-flight inference or child work."""
@@ -298,10 +307,6 @@ class NaturalLanguageCommandNode(Node):
         vlm_goal.response_json_schema = build_command_schema(
             self.max_object_query_characters,
             self.max_map_name_characters,
-            self.max_exploration_duration,
-            self.max_observation_duration,
-            self.max_scan_step_count,
-            self.max_cycles,
         )
         send_future = self._vlm_client.send_goal_async(vlm_goal)
         try:
@@ -341,10 +346,6 @@ class NaturalLanguageCommandNode(Node):
             wrapped.result.response_text,
             self.max_object_query_characters,
             self.max_map_name_characters,
-            self.max_exploration_duration,
-            self.max_observation_duration,
-            self.max_scan_step_count,
-            self.max_cycles,
         )
 
     def _send_child_goal(
@@ -580,18 +581,6 @@ class NaturalLanguageCommandNode(Node):
             )
             return f'navigation dispatched for {object_ids[0]}'
 
-        if command == 'find_something':
-            child_goal = FindSomething.Goal()
-            child_goal.prompt = intent.object_query
-            self._dispatch_motion(
-                self._active_search_client,
-                child_goal,
-                goal_handle,
-                command,
-                'FindSomething action server',
-            )
-            return 'active object search dispatched'
-
         if command == 'look_for_object':
             child_goal = LookForObject.Goal()
             child_goal.prompt = intent.object_query
@@ -620,28 +609,17 @@ class NaturalLanguageCommandNode(Node):
                 command,
             )
             return self._cancel_active_command(goal_handle)
-        if command == 'explore_and_record':
-            child_goal = ExploreAndRecord.Goal()
-            child_goal.exploration_duration = intent.exploration_duration
-            child_goal.observation_duration = intent.observation_duration
-            child_goal.scan_step_count = intent.scan_step_count
-            child_goal.max_cycles = intent.max_cycles
-            self._dispatch_motion(
-                self._program_client,
-                child_goal,
-                goal_handle,
-                command,
-                'ExploreAndRecord action server',
-            )
-            return 'explore-and-record mission dispatched'
         raise CommandFailure('validated command has no dispatcher')
 
     def _execute_callback(self, goal_handle):
         result = NaturalLanguageCommand.Result()
         query = goal_handle.request.query.strip()
+        source = 'local'
+        intent = None
         try:
             intent = parse_explicit_local_command(query)
             if intent is None:
+                source = 'model'
                 self._publish_feedback(
                     goal_handle,
                     NaturalLanguageCommand.Feedback.PHASE_INTERPRETING,
@@ -657,6 +635,9 @@ class NaturalLanguageCommandNode(Node):
                 )
             result.command = intent.command
             result.arguments_json = intent.arguments_json()
+            self._publish_decision_event(
+                'validated_intent', goal_handle, query, source, result,
+                intent=intent)
             self.get_logger().info(
                 f'Validated natural-language command: {intent.command} '
                 f'query_characters={len(query)}')
@@ -669,22 +650,34 @@ class NaturalLanguageCommandNode(Node):
             result.message = self._dispatch_intent(
                 intent, goal_handle, result)
             result.success = True
+            self._publish_decision_event(
+                'dispatch_result', goal_handle, query, source, result,
+                intent=intent)
             goal_handle.succeed()
             return result
         except CommandCanceled:
             result.success = False
             result.message = 'natural-language command canceled'
+            self._publish_decision_event(
+                'dispatch_result', goal_handle, query, source, result,
+                intent=intent)
             goal_handle.canceled()
             return result
         except (CommandFailure, CommandProtocolError) as error:
             result.success = False
             result.message = str(error)
+            self._publish_decision_event(
+                'dispatch_result', goal_handle, query, source, result,
+                intent=intent)
             goal_handle.abort()
             self.get_logger().warning(f'Command dispatch aborted: {error}')
             return result
         except Exception as error:  # noqa: B902
             result.success = False
             result.message = 'internal natural-language command error'
+            self._publish_decision_event(
+                'dispatch_result', goal_handle, query, source, result,
+                intent=intent)
             goal_handle.abort()
             self.get_logger().error(
                 f'Internal command-router error: {type(error).__name__}')

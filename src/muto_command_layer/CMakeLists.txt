@@ -173,21 +173,25 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_model_commander_integration
     test/test_model_commander_integration.py
     TIMEOUT 120
+    ENV "ROS_DOMAIN_ID=181"
   )
 
   ament_add_pytest_test(test_natural_language_command_integration
     test/test_natural_language_command_integration.py
     TIMEOUT 60
+    ENV "ROS_DOMAIN_ID=182"
   )
 
   ament_add_pytest_test(test_active_object_search_integration
     test/test_active_object_search_integration.py
     TIMEOUT 60
+    ENV "ROS_DOMAIN_ID=183"
   )
 
   ament_add_pytest_test(test_explore_and_record_integration
     test/test_explore_and_record_integration.py
-    TIMEOUT 30
+    TIMEOUT 90
+    ENV "ROS_DOMAIN_ID=184"
   )
 
   set(ament_cmake_copyright_FOUND TRUE)

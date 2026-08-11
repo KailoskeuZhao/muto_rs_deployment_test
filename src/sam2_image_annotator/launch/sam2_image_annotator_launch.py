@@ -36,6 +36,13 @@ def generate_launch_description():
         default_value="/sam2/detections",
         description="Output typed object-detection results topic.",
     )
+    detection_heartbeat_topic_arg = DeclareLaunchArgument(
+        "detection_heartbeat_topic",
+        default_value="/sam2/detection_heartbeat",
+        description=(
+            "Crop-free Header published after each completed detector frame."
+        ),
+    )
     depth_topic_arg = DeclareLaunchArgument(
         "depth_topic",
         default_value="/camera/depth/image_raw",
@@ -206,6 +213,7 @@ def generate_launch_description():
         instance_mask_topic_arg,
         segments_topic_arg,
         detections_topic_arg,
+        detection_heartbeat_topic_arg,
         depth_topic_arg,
         depth_camera_info_topic_arg,
         color_camera_info_topic_arg,
@@ -250,6 +258,8 @@ def generate_launch_description():
                 "instance_mask_topic": LaunchConfiguration("instance_mask_topic"),
                 "segments_topic": LaunchConfiguration("segments_topic"),
                 "detections_topic": LaunchConfiguration("detections_topic"),
+                "detection_heartbeat_topic": LaunchConfiguration(
+                    "detection_heartbeat_topic"),
                 "depth_topic": LaunchConfiguration("depth_topic"),
                 "depth_camera_info_topic": LaunchConfiguration(
                     "depth_camera_info_topic"),

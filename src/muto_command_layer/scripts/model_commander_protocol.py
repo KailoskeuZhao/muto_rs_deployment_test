@@ -15,6 +15,7 @@ SUPPORTED_DECISIONS = (
     'rotate',
     'observe',
     'checkpoint_registry',
+    'approach_object',
     'wait',
     'finish_not_found',
 )
@@ -103,6 +104,10 @@ def build_commander_prompt(objective, state):
         'checkpoint.\n'
         '- checkpoint_registry: request an atomic persistent checkpoint of '
         'the current object registry. This primitive does not move.\n'
+        '- approach_object: navigate near the one exact object already '
+        'confirmed by the registry. Use it only when STATE_JSON says the '
+        'mission requires approach and supplies exactly one confirmed target '
+        'ID. This primitive cannot select a merely visible object.\n'
         '- wait: defer motion for wait_seconds while the supervisor keeps '
         'monitoring registry changes.\n'
         '- finish_not_found: stop only when the accumulated state gives a '
@@ -118,7 +123,8 @@ def build_commander_prompt(objective, state):
         'stationary observation, and frontier-search evidence have completed, '
         'followed by a current registry verification.\n\n'
         'The supervisor, not you, determines whether an object was actually '
-        'found, supplies the original object description to child actions, '
+        'found, supplies the original object description or confirmed exact '
+        'ID to child actions, '
         'owns cancellation, updates the mission blackboard, and enforces all '
         'limits. Do not claim that an '
         'object exists. Prefer a registry check after new objects or completed '

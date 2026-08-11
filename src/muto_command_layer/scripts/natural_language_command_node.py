@@ -586,6 +586,11 @@ class NaturalLanguageCommandNode(Node):
             child_goal.prompt = intent.object_query
             child_goal.max_duration = 0.0
             child_goal.max_planning_steps = 0
+            child_goal.completion_mode = (
+                LookForObject.Goal.COMPLETION_APPROACH_OBJECT
+                if intent.completion_mode == 'approach_object'
+                else LookForObject.Goal.COMPLETION_REPORT_OBJECT
+            )
             self._dispatch_motion(
                 self._model_commander_client,
                 child_goal,
@@ -593,6 +598,10 @@ class NaturalLanguageCommandNode(Node):
                 command,
                 'LookForObject action server',
             )
+            if intent.completion_mode == 'approach_object':
+                return (
+                    'model-supervised find-and-approach mission dispatched'
+                )
             return 'model-supervised object-search mission dispatched'
 
         if command == 'start_exploration':

@@ -11,15 +11,16 @@ import time
 import uuid
 
 from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Twist
 from muto_command_layer.action import (
     ExploreAndRecord,
     FindObject,
+    GoToObject,
     LookForObject,
 )
 from muto_command_layer.msg import ObjectMatch
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
-from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
@@ -96,6 +97,7 @@ class FakeCommanderBackends(Node):
         self.vlm_action = f'{prefix}/vlm'
         self.find_action = f'{prefix}/find_object'
         self.explore_action = f'{prefix}/explore_frontier'
+        self.go_action = f'{prefix}/go_to_object'
         self.spin_action = f'{prefix}/spin'
         self.rotate_cmd_vel_topic = f'{prefix}/cmd_vel'
         self.odom_topic = f'{prefix}/odometry/filtered'
@@ -128,6 +130,7 @@ class FakeCommanderBackends(Node):
         self.program_cycles = []
         self.primitive_names = []
         self.program_cancellations = 0
+        self.approach_object_ids = []
         self.checkpoint_requests = 0
         self.statuses = []
         self.trace_events = []
@@ -161,6 +164,14 @@ class FakeCommanderBackends(Node):
             ExploreAndRecord,
             self.explore_action,
             execute_callback=self.execute_explore,
+            cancel_callback=self.accept_cancel,
+            callback_group=self._callback_group,
+        )
+        self.go_server = ActionServer(
+            self,
+            GoToObject,
+            self.go_action,
+            execute_callback=self.execute_go_to_object,
             cancel_callback=self.accept_cancel,
             callback_group=self._callback_group,
         )
@@ -353,6 +364,19 @@ class FakeCommanderBackends(Node):
         goal_handle.succeed()
         return result
 
+    def execute_go_to_object(self, goal_handle):
+        self.approach_object_ids.append(goal_handle.request.object_id)
+        result = GoToObject.Result()
+        if goal_handle.is_cancel_requested:
+            result.success = False
+            result.message = 'fake object approach canceled'
+            goal_handle.canceled()
+            return result
+        result.success = True
+        result.message = 'fake object approach completed'
+        goal_handle.succeed()
+        return result
+
     def execute_explore(self, goal_handle):
         self.primitive_names.append('explore_frontier')
         return self.execute_program(goal_handle)
@@ -508,6 +532,7 @@ def running_commander():
             '-p', f'action_name:={backend.commander_action}',
             '-p', f'vlm_action:={backend.vlm_action}',
             '-p', f'find_object_action:={backend.find_action}',
+            '-p', f'go_to_object_action:={backend.go_action}',
             '-p', f'explore_frontier_action:={backend.explore_action}',
             '-p', f'spin_action:={backend.spin_action}',
             '-p', f'rotate_cmd_vel_topic:={backend.rotate_cmd_vel_topic}',
@@ -575,9 +600,12 @@ def running_commander():
         assert process.returncode == 0, output
 
 
-def send_mission(client, prompt='the red mug'):
+def send_mission(
+        client, prompt='the red mug',
+        completion_mode=LookForObject.Goal.COMPLETION_REPORT_OBJECT):
     goal = LookForObject.Goal()
     goal.prompt = prompt
+    goal.completion_mode = completion_mode
     goal_handle = wait_future(client.send_goal_async(goal))
     assert goal_handle.accepted
     return goal_handle
@@ -593,6 +621,7 @@ def test_existing_match_finishes_without_planning_or_motion(
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.success
     assert wrapped.result.found
+    assert not wrapped.result.approached
     assert wrapped.result.outcome == LookForObject.Result.OUTCOME_FOUND
     assert [item.object_id for item in wrapped.result.matches] == ['red_mug_2']
     assert backend.vlm_requests == 0
@@ -614,6 +643,37 @@ def test_existing_match_finishes_without_planning_or_motion(
     )
     assert mission_result['outcome'] == 'found'
     assert mission_result['matched_object_ids'] == ['red_mug_2']
+
+
+def test_approach_completion_is_planned_after_exact_registry_confirmation(
+        running_commander):
+    backend, client = running_commander
+    backend.make_match_available()
+    backend.queue_decision(
+        'approach_object',
+        reason='the exact confirmed target can now be approached',
+    )
+
+    goal_handle = send_mission(
+        client,
+        completion_mode=LookForObject.Goal.COMPLETION_APPROACH_OBJECT,
+    )
+    wrapped = wait_future(goal_handle.get_result_async())
+
+    assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
+    assert wrapped.result.success
+    assert wrapped.result.found
+    assert wrapped.result.approached
+    assert backend.approach_object_ids == ['red_mug_2']
+    assert backend.vlm_requests == 1
+    assert backend.program_cycles == []
+    approach_event = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'command_result' and
+        event.get('command') == 'approach_object'
+    )
+    assert approach_event['object_id'] == 'red_mug_2'
+    assert approach_event['outcome'] == 'completed'
 
 
 def test_transient_registry_search_failure_retries_without_motion(

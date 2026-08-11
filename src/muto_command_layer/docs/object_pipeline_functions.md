@@ -317,6 +317,8 @@ bounded JPEG, and asks the VLM to inspect that frame plus compact mission state.
 The VLM then chooses exactly one locally validated next primitive:
 `verify_registry`, bounded `explore_frontier`, in-place `rotate`, stationary
 `observe`, `checkpoint_registry`, bounded `wait`, or `finish_not_found`.
+For a find-and-approach mission it may also choose `approach_object`, but only
+after the current registry query has returned exactly one confirmed ID.
 
 `explore_frontier` runs frontier travel for a bounded interval and stops without
 rotating. Its elapsed time counts as search evidence only when odometry confirms
@@ -334,7 +336,7 @@ longer visible to the commander.
 ```bash
 ros2 action send_goal /look_for_object \
   muto_command_layer/action/LookForObject \
-  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0}" \
+  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0, completion_mode: 0}" \
   --feedback
 ```
 
@@ -489,9 +491,9 @@ underlying service is unavailable, or the bounded save timeout expires.
 ### 13. Trigger typed commands through natural language
 
 The `/natural_language_command` action accepts one request such as `search the
-map for a red chair`, `go to the red chair`, `start exploring`, `run the
-mapping and recording mission`, `save the map as warehouse`, or `cancel the
-active command`.
+map for a red chair`, `find a green chair and then go near it`, `go to the red
+chair`, `start exploring`, `save the map as warehouse`, or `cancel the active
+command`.
 
 ```bash
 ros2 action send_goal /natural_language_command \
@@ -499,10 +501,12 @@ ros2 action send_goal /natural_language_command \
   "{query: 'run exploration and record static objects'}" --feedback
 ```
 
-The VLM is a classifier, not a ROS executor. It must return one strict JSON
-object whose command is one of `find_object`, `find_something`,
-`look_for_object`, `go_to_object`, `start_exploration`, `stop_exploration`,
-`explore_and_record`, `save_map`, `cancel_active_command`, or `unsupported`.
+The VLM is an intent parser, not a ROS executor. It must return one strict JSON
+object whose command is one of `find_object`, `look_for_object`,
+`go_to_object`, `start_exploration`, `stop_exploration`, `save_map`,
+`cancel_active_command`, or `unsupported`. A `look_for_object` intent also
+declares `completion_mode=report_object` or `approach_object`; it does not
+predefine the primitive sequence.
 The command router independently checks the exact object shape, argument types,
 and configured numeric bounds.
 It then dispatches only the corresponding compiled action or service client;
@@ -540,11 +544,11 @@ or ROS parameters.
 
 | Name | Kind and type | Purpose |
 | --- | --- | --- |
-| `/natural_language_command` | Action: `muto_command_layer/action/NaturalLanguageCommand` | Validate one VLM-classified request and dispatch a fixed typed command. |
+| `/natural_language_command` | Action: `muto_command_layer/action/NaturalLanguageCommand` | Validate a bounded intent; object missions carry a target and terminal completion condition. |
 | `/natural_language_command/decision_event` | Topic: `std_msgs/msg/String` | Transient-local original query, interpretation source, validated intent, and dispatch result for command-bag correlation. |
 | `/find_object` | Action: `muto_command_layer/action/FindObject` | Select registered objects from a natural-language prompt. |
 | `/find_something` | Compatibility action: `muto_command_layer/action/FindSomething` | Opt-in fixed search sequence retained for rollback. |
-| `/look_for_object` | Action: `muto_command_layer/action/LookForObject` | Persistently schedule bounded primitives and replan until a described static object is found or the mission ends. |
+| `/look_for_object` | Action: `muto_command_layer/action/LookForObject` | Persistently schedule bounded primitives until a described static object is confirmed and, when requested, approached. |
 | `/command_primitives/explore_frontier` | Internal action: `muto_command_layer/action/ExploreAndRecord` | Run bounded frontier travel, stop, and return its outcome without scanning. |
 | `/spin` | Internal action: `nav2_msgs/action/Spin` | Execute one model-selected bounded in-place rotation; owned and canceled by the commander. |
 | `/sam2/detection_heartbeat` | Topic: `std_msgs/msg/Header` | Crop-free detector-frame clock subscribed only during the stationary `observe` primitive. |

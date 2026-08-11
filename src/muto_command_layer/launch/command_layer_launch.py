@@ -1074,6 +1074,7 @@ def generate_launch_description():
                     'find_object_action': LaunchConfiguration(
                         'find_object_action'
                     ),
+                    'go_to_object_action': LaunchConfiguration('action_name'),
                     'explore_frontier_action': LaunchConfiguration(
                         'explore_frontier_action'
                     ),

@@ -13,7 +13,7 @@ primitives instead of one fixed exploration program:
 
 ```text
 verify_registry | explore_frontier | rotate | observe
-checkpoint_registry | wait | finish_not_found
+checkpoint_registry | approach_object | wait | finish_not_found
         -> record result -> update mission state -> choose again
 ```
 
@@ -359,10 +359,12 @@ The computed goal is also published with transient-local durability on
 ## Natural-language command router
 
 `/natural_language_command` accepts one natural-language request and asks the
-VLM to classify it into a fixed command enum. The VLM does not select ROS names
-or execute code. Its strict JSON response is validated locally, including all
-argument types and bounds, before the router can call an existing typed
-service/action.
+VLM for a bounded typed intent. For an object mission, the intent separates the
+target description from the requested completion condition: report the
+confirmed object, or approach it after confirmation. The VLM does not select
+ROS names or execute code. Its strict JSON response is validated locally,
+including all argument types and bounds, before the router can call an existing
+typed service/action.
 
 Supported commands are:
 
@@ -403,8 +405,11 @@ Plain `find X`, `look for X`, and `search for X` all enter
 `check registry for X` or `query registry for X`. Unambiguous phrases such as
 `cancel the active command` are recognized locally
 and do not use the single-request VLM socket. This keeps cancellation available
-while the model commander is planning. Ambiguous or compound requests still go
-through strict model classification.
+while the model commander is planning. An object search followed by approaching
+that same object is one declarative mission rather than two router-dispatched
+commands. For example, `find a green chair and then go near it` enters
+`/look_for_object` with `completion_mode=approach_object`. Unrelated compound
+requests remain unsupported.
 
 ## Find-object pipeline
 
@@ -521,7 +526,8 @@ poll the model continuously.
 ```text
 check the current registry
           |
-          +-- match ------------------------------------> return it
+          +-- match + report completion ----------------> return it
+          +-- match + approach completion --------------> retain exact ID
           |
           v
 capture a newly received bounded RGB frame
@@ -529,7 +535,7 @@ capture a newly received bounded RGB frame
           v
 VLM inspects frame + state and selects one bounded next primitive
   verify_registry | explore_frontier | rotate | observe
-  checkpoint_registry | wait | finish_not_found
+  checkpoint_registry | approach_object | wait | finish_not_found
           |
           v
 monitor the child result and confirmed-object set
@@ -542,9 +548,14 @@ monitor the child result and confirmed-object set
                                       | stop, verify stopped, recheck, replan
 ```
 
-The planner selects only from that bounded primitive enum. Each operation has
-one purpose: frontier travel, in-place rotation, stationary detector dwell, or
-registry persistence. The recent primitive history and outcome are returned in
+The planner selects only from that bounded primitive enum. `approach_object`
+is unavailable until `/find_object` has produced exactly one confirmed ID in
+the current registry revision; camera evidence can never unlock it. The
+commander owns the `/go_to_object` child and records its target ID plus
+before/after pose in the same primitive history. A registry change stops the
+approach before replanning. Each operation otherwise has one purpose: frontier
+travel, in-place rotation, stationary detector dwell, or registry persistence.
+The recent primitive history and outcome are returned in
 the next mission-state request so the model may change order, defer, retry, or
 choose another primitive. Every scheduling request contains
 a newly received `/camera/color/image_raw` frame encoded as a bounded JPEG. The
@@ -598,11 +609,13 @@ possibly live old child.
 ```bash
 ros2 action send_goal /look_for_object \
   muto_command_layer/action/LookForObject \
-  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0}" \
+  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0, completion_mode: 0}" \
   --feedback
 ```
 
-Zeros select the configured finite defaults: 30 minutes and 64 model planning
+`completion_mode: 0` reports the confirmed object; `completion_mode: 1`
+requires the commander to approach the one unambiguous confirmed object before
+success. Zeros select the configured finite defaults: 30 minutes and 64 model planning
 steps. A no-match or budget-limited run is a completed action whose `found`
 field is false; dependency or repeated model failures abort the action. Cancel
 the direct action with `Ctrl-C`, or dispatch it through natural language and

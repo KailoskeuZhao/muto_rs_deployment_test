@@ -22,9 +22,16 @@ SUPPORTED_COMMANDS = (
 
 _EXPECTED_KEYS = {
     'command',
+    'completion_mode',
     'object_query',
     'map_name',
 }
+
+SUPPORTED_COMPLETION_MODES = (
+    '',
+    'report_object',
+    'approach_object',
+)
 
 _LOCAL_CANCEL_QUERIES = frozenset({
     'cancel',
@@ -58,6 +65,22 @@ _LOCAL_OBJECT_PREFIXES = (
     ('navigate to ', 'go_to_object'),
 )
 
+_LOCAL_FIND_AND_APPROACH_PATTERN = re.compile(
+    r'^(?:go\s+)?(?:find|look for|search for)\s+(.+?)'
+    r'(?:,\s*)?\s+and\s+(?:(?:then|thehen)\s+)?'
+    r'(?:go|move|navigate)\s+(?:near|to)\s+(.+)$'
+)
+
+
+def _same_object_reference(object_query, reference):
+    """Accept a pronoun or a repeated target noun, never a different object."""
+    reference = reference.strip(' .!?')
+    if reference in ('it', 'that', 'that object', 'the object'):
+        return True
+    target_words = set(re.findall(r'[a-z0-9]+', object_query))
+    reference_words = re.findall(r'[a-z0-9]+', reference)
+    return bool(reference_words and reference_words[-1] in target_words)
+
 
 @dataclass(frozen=True)
 class CommandIntent:
@@ -66,12 +89,14 @@ class CommandIntent:
     command: str
     object_query: str
     map_name: str
+    completion_mode: str = ''
 
     def arguments_json(self):
         """Return deterministic arguments suitable for action results/logs."""
         return json.dumps({
             'object_query': self.object_query,
             'map_name': self.map_name,
+            'completion_mode': self.completion_mode,
         }, separators=(',', ':'), sort_keys=True)
 
 
@@ -85,6 +110,7 @@ def parse_explicit_local_cancel(query):
         command='cancel_active_command',
         object_query='',
         map_name='',
+        completion_mode='',
     )
 
 
@@ -101,6 +127,7 @@ def parse_explicit_local_command(query):
             command=command,
             object_query='',
             map_name='',
+            completion_mode='',
         )
     if normalized.startswith('save map as '):
         map_name = normalized.removeprefix('save map as ').strip()
@@ -110,7 +137,19 @@ def parse_explicit_local_command(query):
             command='save_map',
             object_query='',
             map_name=map_name,
+            completion_mode='',
         )
+    compound_match = _LOCAL_FIND_AND_APPROACH_PATTERN.fullmatch(normalized)
+    if compound_match is not None:
+        object_query = compound_match.group(1).strip(' ,')
+        reference = compound_match.group(2)
+        if object_query and _same_object_reference(object_query, reference):
+            return CommandIntent(
+                command='look_for_object',
+                object_query=object_query,
+                map_name='',
+                completion_mode='approach_object',
+            )
     for prefix, command in _LOCAL_OBJECT_PREFIXES:
         if not normalized.startswith(prefix):
             continue
@@ -121,6 +160,9 @@ def parse_explicit_local_command(query):
             command=command,
             object_query=object_query,
             map_name='',
+            completion_mode=(
+                'report_object' if command == 'look_for_object' else ''
+            ),
         )
     return None
 
@@ -142,7 +184,13 @@ def build_command_prompt(query):
         'model-supervised search. The commander monitors the registry and '
         'schedules, defers, or reschedules bounded command primitives. Plain '
         'requests to find, look for, or search for an object use this command. '
-        'Put the requested object description in object_query.\n'
+        'Put the requested object description in object_query. Set '
+        'completion_mode to report_object when the user only wants the object '
+        'found or reported. Set it to approach_object when the requested final '
+        'state also requires the robot to go, navigate, move, or get near the '
+        'object after it has been confirmed. A phrase such as "find a green '
+        'chair, then go near it" is one look_for_object mission with '
+        'completion_mode=approach_object, not multiple commands.\n'
         '- go_to_object: resolve one static registered object from '
         'object_query and navigate to it.\n'
         '- start_exploration: start manually controlled frontier exploration.\n'
@@ -160,8 +208,11 @@ def build_command_prompt(query):
         'empty map_name. Only find_object, look_for_object, and go_to_object '
         'may use object_query; every other command must return it empty. '
         'Do not infer a registry ID; preserve the user description in '
-        'object_query. If the user requests multiple commands, return '
-        'unsupported.\n\n'
+        'object_query. Only look_for_object may use completion_mode, and it '
+        'must use report_object or approach_object. Every other command must '
+        'return an empty completion_mode. Requests with unrelated multiple '
+        'goals are unsupported; an object search followed by approaching that '
+        'same confirmed object is one supported mission.\n\n'
         f'USER_QUERY_JSON={encoded_query}'
     )
 
@@ -184,6 +235,10 @@ def build_command_schema(
             'map_name': {
                 'type': 'string',
                 'maxLength': max_map_name_characters,
+            },
+            'completion_mode': {
+                'type': 'string',
+                'enum': list(SUPPORTED_COMPLETION_MODES),
             },
         },
         'required': sorted(_EXPECTED_KEYS),
@@ -228,26 +283,36 @@ def parse_command_intent(
             or re.fullmatch(
                 r'[A-Za-z0-9][A-Za-z0-9_.-]*', map_name) is None):
         raise CommandProtocolError('map_name must be a safe basename')
+    completion_mode = payload['completion_mode']
+    if not isinstance(completion_mode, str) or \
+            completion_mode not in SUPPORTED_COMPLETION_MODES:
+        raise CommandProtocolError('completion_mode is not supported')
 
     intent = CommandIntent(
         command=command,
         object_query=object_query,
         map_name=map_name,
+        completion_mode=completion_mode,
     )
 
-    if command in (
-            'find_object', 'look_for_object',
-            'go_to_object'):
+    if command in ('find_object', 'look_for_object', 'go_to_object'):
         if not object_query:
             raise CommandProtocolError(
                 f'{command} requires a non-empty object_query')
         if map_name:
             raise CommandProtocolError(f'{command} does not accept map_name')
+        if command == 'look_for_object':
+            if completion_mode not in ('report_object', 'approach_object'):
+                raise CommandProtocolError(
+                    'look_for_object requires a completion_mode')
+        elif completion_mode:
+            raise CommandProtocolError(
+                f'{command} does not accept completion_mode')
     elif command == 'save_map':
         if object_query:
             raise CommandProtocolError(
                 'save_map accepts only an optional map_name')
-    elif object_query or map_name:
+    elif object_query or map_name or completion_mode:
         raise CommandProtocolError(
             f'{command} does not accept command arguments')
 

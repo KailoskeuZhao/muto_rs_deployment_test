@@ -24,6 +24,8 @@ LIMITS = (64, 128)
 def response(command, object_query='', **overrides):
     payload = {
         'command': command,
+        'completion_mode': (
+            'report_object' if command == 'look_for_object' else ''),
         'object_query': object_query,
         'map_name': '',
     }
@@ -56,6 +58,8 @@ def test_schema_matches_local_command_and_argument_bounds():
         list(SUPPORTED_COMMANDS)
     assert schema['properties']['object_query']['maxLength'] == 64
     assert schema['properties']['map_name']['maxLength'] == 128
+    assert schema['properties']['completion_mode']['enum'] == [
+        '', 'report_object', 'approach_object']
 
 
 @pytest.mark.parametrize('query', [
@@ -69,7 +73,7 @@ def test_unambiguous_cancel_can_bypass_a_busy_vlm(query):
     assert intent.command == 'cancel_active_command'
     assert intent.object_query == ''
     assert json.loads(intent.arguments_json()) == {
-        'map_name': '', 'object_query': ''}
+        'completion_mode': '', 'map_name': '', 'object_query': ''}
 
 
 @pytest.mark.parametrize('query, command, object_query', [
@@ -96,6 +100,26 @@ def test_common_single_commands_bypass_vlm(query, command, object_query):
         assert intent.map_name == ''
 
 
+@pytest.mark.parametrize('query, object_query', [
+    ('find chair and go to it', 'chair'),
+    ('find a green chair, and then go near the chair', 'a green chair'),
+    ('go find a green chair, and thehen go near the chair', 'a green chair'),
+    ('search for the red mug and navigate to that object', 'the red mug'),
+])
+def test_unambiguous_find_and_approach_goal_bypasses_intent_vlm(
+        query, object_query):
+    intent = parse_explicit_local_command(query)
+
+    assert intent.command == 'look_for_object'
+    assert intent.object_query == object_query
+    assert intent.completion_mode == 'approach_object'
+
+
+def test_find_one_object_then_approach_another_is_not_locally_collapsed():
+    assert parse_explicit_local_command(
+        'find the chair and go near the table') is None
+
+
 @pytest.mark.parametrize('query', [
     'do not cancel the active command',
     'stop exploring',
@@ -109,7 +133,6 @@ def test_ambiguous_or_compound_cancel_still_requires_interpretation(query):
 
 
 @pytest.mark.parametrize('query', [
-    'find chair and go to it',
     'explore, scan, and record',
     'look for',
     'save map as ../bad',
@@ -128,6 +151,31 @@ def test_ambiguous_or_compound_commands_still_require_interpretation(query):
 ])
 def test_argumentless_commands_accept_only_zeroed_arguments(command):
     assert parse(response(command)).command == command
+
+
+def test_find_then_approach_is_one_declarative_object_mission():
+    intent = parse(response(
+        'look_for_object',
+        'green chair',
+        completion_mode='approach_object',
+    ))
+
+    assert intent.command == 'look_for_object'
+    assert intent.object_query == 'green chair'
+    assert intent.completion_mode == 'approach_object'
+    assert 'one look_for_object mission' in build_command_prompt(
+        'find a green chair, then go near it')
+
+
+@pytest.mark.parametrize('command', [
+    'find_object',
+    'go_to_object',
+    'save_map',
+    'start_exploration',
+])
+def test_only_supervised_object_mission_accepts_completion_mode(command):
+    with pytest.raises(CommandProtocolError):
+        parse(response(command, 'chair', completion_mode='approach_object'))
 
 
 @pytest.mark.parametrize(

@@ -148,6 +148,7 @@ model_commander:
     action_name: /look_for_object
     vlm_action: /vlm/generate
     find_object_action: /find_object
+    go_to_object_action: /go_to_object
     explore_frontier_action: /command_primitives/explore_frontier
     spin_action: /spin
     rotate_cmd_vel_topic: /cmd_vel

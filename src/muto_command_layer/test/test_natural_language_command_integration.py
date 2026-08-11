@@ -52,6 +52,8 @@ def wait_until(predicate, timeout=8.0):
 def intent_response(command, object_query='', **overrides):
     response = {
         'command': command,
+        'completion_mode': (
+            'report_object' if command == 'look_for_object' else ''),
         'object_query': object_query,
         'map_name': '',
     }
@@ -78,6 +80,7 @@ class FakeCommandBackends(Node):
         self.schemas = []
         self.find_prompts = []
         self.model_search_prompts = []
+        self.model_search_completion_modes = []
         self.go_object_ids = []
         self.explore_requests = []
         self.save_map_requests = []
@@ -194,6 +197,8 @@ class FakeCommandBackends(Node):
 
     def execute_model_search(self, goal_handle):
         self.model_search_prompts.append(goal_handle.request.prompt)
+        self.model_search_completion_modes.append(
+            int(goal_handle.request.completion_mode))
         succeeded = self._wait_for_motion(goal_handle, 'look_for_object')
         result = LookForObject.Result()
         result.success = succeeded
@@ -343,6 +348,8 @@ def test_plain_find_dispatches_model_commander_and_supports_cancel(
 
     assert dispatched.status == GoalStatus.STATUS_SUCCEEDED
     assert dispatched.result.command == 'look_for_object'
+    assert backend.model_search_completion_modes == [
+        LookForObject.Goal.COMPLETION_REPORT_OBJECT]
     assert canceled.status == GoalStatus.STATUS_SUCCEEDED
     assert len(backend.schemas) == 0
     wait_until(lambda: any(
@@ -357,6 +364,25 @@ def test_plain_find_dispatches_model_commander_and_supports_cancel(
         event['command'] == 'look_for_object'
         for event in backend.decision_events
     )
+
+
+def test_find_then_approach_is_dispatched_as_one_supervised_mission(
+        running_router):
+    backend, client = running_router
+
+    dispatched = send_command(
+        client, 'go find a green chair, and thehen go near the chair')
+    wait_until(lambda: backend.model_search_prompts == ['a green chair'])
+    canceled = send_command(client, 'cancel the active command')
+
+    assert dispatched.status == GoalStatus.STATUS_SUCCEEDED
+    assert dispatched.result.command == 'look_for_object'
+    assert 'find-and-approach' in dispatched.result.message
+    assert backend.model_search_completion_modes == [
+        LookForObject.Goal.COMPLETION_APPROACH_OBJECT]
+    assert backend.go_object_ids == []
+    assert backend.schemas == []
+    assert canceled.status == GoalStatus.STATUS_SUCCEEDED
 
 
 def test_explicit_registry_query_remains_stationary(

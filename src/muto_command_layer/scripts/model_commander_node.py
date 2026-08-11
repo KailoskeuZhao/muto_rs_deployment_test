@@ -10,6 +10,7 @@ import traceback
 
 from action_msgs.msg import GoalStatus
 import cv2
+from geometry_msgs.msg import Twist
 from model_commander_protocol import (
     build_active_inspection_prompt,
     build_active_inspection_schema,
@@ -19,16 +20,16 @@ from model_commander_protocol import (
     parse_active_inspection_decision,
     parse_commander_decision,
 )
-import numpy as np
 from muto_command_layer.action import (
     ExploreAndRecord,
     FindObject,
+    GoToObject,
     LookForObject,
 )
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
-from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+import numpy as np
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -127,6 +128,12 @@ class ModelCommanderNode(Node):
             self,
             FindObject,
             self.find_object_action,
+            callback_group=self._callback_group,
+        )
+        self._go_to_object_client = ActionClient(
+            self,
+            GoToObject,
+            self.go_to_object_action,
             callback_group=self._callback_group,
         )
         self._explore_frontier_client = ActionClient(
@@ -273,6 +280,7 @@ class ModelCommanderNode(Node):
         self.declare_parameter('action_name', '/look_for_object')
         self.declare_parameter('vlm_action', '/vlm/generate')
         self.declare_parameter('find_object_action', '/find_object')
+        self.declare_parameter('go_to_object_action', '/go_to_object')
         self.declare_parameter(
             'explore_frontier_action',
             '/command_primitives/explore_frontier')
@@ -364,6 +372,7 @@ class ModelCommanderNode(Node):
             'action_name',
             'vlm_action',
             'find_object_action',
+            'go_to_object_action',
             'explore_frontier_action',
             'spin_action',
             'rotate_cmd_vel_topic',
@@ -441,6 +450,7 @@ class ModelCommanderNode(Node):
     def _validate_parameters(self):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
+                'go_to_object_action',
                 'explore_frontier_action', 'spin_action',
                 'rotate_cmd_vel_topic', 'registry_save_service',
                 'detection_heartbeat_topic', 'registry_topic',
@@ -709,13 +719,14 @@ class ModelCommanderNode(Node):
 
     def _publish_command_lifecycle_event(
             self, event, mission_id, objective, duration, planning_limit,
-            result=None):
+            completion='report_object', result=None):
         payload = {
             'schema': 'muto_command_lifecycle_v1',
             'event': event,
             'action_name': self.action_name,
             'goal_id': mission_id,
             'objective': objective,
+            'requested_completion': completion,
             'model': self.vlm_model,
             'max_duration_seconds': round(duration, 3),
             'max_planning_steps': planning_limit,
@@ -725,6 +736,7 @@ class ModelCommanderNode(Node):
                 'outcome': int(result.outcome),
                 'success': bool(result.success),
                 'found': bool(result.found),
+                'approached': bool(result.approached),
                 'message': result.message[
                     :self.max_state_message_characters],
                 'planning_steps': int(result.planning_steps),
@@ -741,7 +753,7 @@ class ModelCommanderNode(Node):
 
     def _announce_command_bag_start(
             self, mission_id, objective, duration, planning_limit,
-            goal_handle, deadline):
+            goal_handle, deadline, completion='report_object'):
         with self._state_lock:
             self._latest_command_bag_status_event = ''
             self._latest_command_bag_status_goal_id = ''
@@ -749,7 +761,7 @@ class ModelCommanderNode(Node):
             self._latest_command_bag_status_detail = ''
         self._publish_command_lifecycle_event(
             'mission_started', mission_id, objective, duration,
-            planning_limit)
+            planning_limit, completion=completion)
         if not self.command_bag_enabled:
             return True
 
@@ -1076,6 +1088,7 @@ class ModelCommanderNode(Node):
         prompt = goal_request.prompt.strip()
         duration = float(goal_request.max_duration)
         planning_steps = int(goal_request.max_planning_steps)
+        completion_mode = int(goal_request.completion_mode)
         if not prompt or len(prompt) > self.max_prompt_characters:
             self.get_logger().warning(
                 'Rejected model mission with empty or oversized prompt')
@@ -1088,6 +1101,12 @@ class ModelCommanderNode(Node):
         if planning_steps < 0 or planning_steps > self.maximum_planning_steps:
             self.get_logger().warning(
                 'Rejected model mission with invalid planning budget')
+            return GoalResponse.REJECT
+        if completion_mode not in (
+                LookForObject.Goal.COMPLETION_REPORT_OBJECT,
+                LookForObject.Goal.COMPLETION_APPROACH_OBJECT):
+            self.get_logger().warning(
+                'Rejected model mission with invalid completion mode')
             return GoalResponse.REJECT
         with self._state_lock:
             if self._busy or self._ownership_uncertain:
@@ -1734,6 +1753,147 @@ class ModelCommanderNode(Node):
                 wrapped.result.message or 'registry object search failed')
         return list(wrapped.result.matches), wrapped.result.message
 
+    def _run_approach_object(
+            self, object_id, expected_revision, goal_handle, deadline,
+            planning_steps, commands_dispatched):
+        """Navigate to one registry-confirmed exact ID as an owned primitive."""
+        revision, _, _ = self._registry_state()
+        if revision != expected_revision:
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before object approach dispatch',
+                'object_id': object_id,
+            }
+
+        child_goal = GoToObject.Goal()
+        child_goal.object_id = object_id
+        child_token = object()
+
+        def feedback_callback(message):
+            feedback = message.feedback
+            self._publish_feedback(
+                goal_handle,
+                LookForObject.Feedback.PHASE_EXECUTING,
+                feedback.status or f'approaching confirmed object {object_id}',
+                'approach_object',
+                planning_steps,
+                commands_dispatched,
+                child_token=child_token,
+            )
+
+        self._publish_feedback(
+            goal_handle,
+            LookForObject.Feedback.PHASE_EXECUTING,
+            f'approaching registry-confirmed object {object_id}',
+            'approach_object',
+            planning_steps,
+            commands_dispatched,
+        )
+        with self._state_lock:
+            self._active_child_token = child_token
+        try:
+            child_handle = self._send_goal(
+                self._go_to_object_client,
+                child_goal,
+                goal_handle,
+                deadline,
+                'GoToObject action server',
+                feedback_callback=feedback_callback,
+                pre_dispatch_callback=lambda: self._assert_registry_revision(
+                    expected_revision),
+            )
+        except StalePlan:
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before object approach dispatch',
+                'object_id': object_id,
+            }
+        except OwnedGoalStateUnknown:
+            self._mark_ownership_uncertain(
+                'object-approach dispatch state is unknown; model commander '
+                'is latched closed until restart')
+            raise
+        except Exception:
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+            raise
+
+        with self._state_lock:
+            self._active_child_goal = child_handle
+        try:
+            result_future = child_handle.get_result_async()
+        except Exception as error:
+            self._cancel_goal_best_effort(child_handle)
+            self._mark_ownership_uncertain(
+                'accepted object approach cannot be monitored; model '
+                'commander is latched closed until restart')
+            raise OwnedGoalStateUnknown(
+                'could not monitor accepted object-approach goal') from error
+
+        terminal_confirmed = False
+        try:
+            while not result_future.done():
+                self._check_parent_state(goal_handle, deadline)
+                revision, _, _ = self._registry_state()
+                if revision != expected_revision:
+                    self._cancel_goal_and_wait(child_handle, result_future)
+                    terminal_confirmed = True
+                    return {
+                        'outcome': 'registry_changed',
+                        'message': (
+                            'registry changed during object approach; motion '
+                            'was stopped before replanning'),
+                        'object_id': object_id,
+                    }
+                time.sleep(self.monitor_period)
+            self._check_parent_state(goal_handle, deadline)
+            terminal_confirmed = True
+            try:
+                wrapped = result_future.result()
+            except Exception as error:
+                raise CommanderFailure(
+                    'confirmed-object approach result failed') from error
+        except (CommanderCanceled, CommanderFailure,
+                MissionBudgetExhausted):
+            try:
+                self._cancel_goal_and_wait(child_handle, result_future)
+                terminal_confirmed = True
+            except OwnedGoalStateUnknown:
+                self._mark_ownership_uncertain(
+                    'object-approach stop is unconfirmed; model commander is '
+                    'latched closed until restart')
+                raise
+            raise
+        finally:
+            if terminal_confirmed:
+                with self._state_lock:
+                    if self._active_child_goal is child_handle:
+                        self._active_child_goal = None
+                    if self._active_child_token is child_token:
+                        self._active_child_token = None
+
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise CommanderFailure('confirmed-object approach did not succeed')
+        if not wrapped.result.success:
+            raise CommanderFailure(
+                wrapped.result.message or 'confirmed-object approach failed')
+        return {
+            'outcome': 'completed',
+            'message': wrapped.result.message or (
+                f'approach completed for {object_id}'),
+            'object_id': object_id,
+        }
+
+    def _assert_registry_revision(self, expected_revision):
+        revision, _, _ = self._registry_state()
+        if revision != expected_revision:
+            raise StalePlan(
+                'confirmed-object set changed before command dispatch')
+
     def _publish_rotate_stop(self):
         stop = Twist()
         for _ in range(self.rotate_stop_publish_count):
@@ -2281,11 +2441,12 @@ class ModelCommanderNode(Node):
     @staticmethod
     def _fill_result(
             outcome, success, found, message, matches,
-            planning_steps, commands_dispatched):
+            planning_steps, commands_dispatched, approached=False):
         result = LookForObject.Result()
         result.outcome = outcome
         result.success = success
         result.found = found
+        result.approached = approached
         result.message = message
         result.matches = matches
         result.planning_steps = planning_steps
@@ -2294,6 +2455,14 @@ class ModelCommanderNode(Node):
 
     def _execute_callback(self, goal_handle):
         objective = goal_handle.request.prompt.strip()
+        completion_mode = int(goal_handle.request.completion_mode)
+        approach_required = (
+            completion_mode ==
+            LookForObject.Goal.COMPLETION_APPROACH_OBJECT
+        )
+        completion_name = (
+            'approach_object' if approach_required else 'report_object'
+        )
         mission_id = bytes(goal_handle.goal_id.uuid).hex()
         duration = float(goal_handle.request.max_duration) or \
             self.default_max_duration
@@ -2325,6 +2494,8 @@ class ModelCommanderNode(Node):
         completed_checkpoints = 0
         frontier_exhausted = False
         matches = []
+        confirmed_match_revision = -1
+        approach_completed = False
         result = None
 
         def dispatch_budget_available():
@@ -2337,6 +2508,7 @@ class ModelCommanderNode(Node):
             nonlocal last_command
             nonlocal last_outcome
             nonlocal last_message
+            nonlocal confirmed_match_revision
             while True:
                 if not dispatch_budget_available():
                     raise MissionBudgetExhausted(
@@ -2410,6 +2582,7 @@ class ModelCommanderNode(Node):
                         ],
                         matched_objects=matched_objects,
                     )
+                    confirmed_match_revision = revision
                     return found_matches
                 if revision == start_revision:
                     registry_checked_revision = revision
@@ -2424,6 +2597,7 @@ class ModelCommanderNode(Node):
                         world_revision=revision,
                         matched_object_ids=[],
                     )
+                    confirmed_match_revision = -1
                     return []
                 registry_checked_revision = start_revision
                 last_outcome = 'registry_changed_during_check'
@@ -2440,6 +2614,45 @@ class ModelCommanderNode(Node):
                     world_revision=revision,
                     matched_object_ids=[],
                 )
+
+        def completion_state():
+            return {
+                'requested_completion': completion_name,
+                'object_confirmed': bool(matches),
+                'confirmed_match_revision': confirmed_match_revision,
+                'confirmed_targets': self._match_context(matches),
+                'approach_required': approach_required,
+                'approach_completed': approach_completed,
+                'remaining_completion_requirements': (
+                    ['approach_confirmed_object']
+                    if approach_required and matches and
+                    not approach_completed else
+                    ['confirm_object'] if not matches else []
+                ),
+            }
+
+        def finish_if_satisfied(message):
+            if not matches:
+                return None
+            if approach_required and not approach_completed:
+                if len(matches) != 1:
+                    raise CommanderFailure(
+                        'approach mission requires one unambiguous confirmed '
+                        'object; matching IDs: {}'.format(', '.join(
+                            match.object_id for match in matches)))
+                return None
+            completed_result = self._fill_result(
+                LookForObject.Result.OUTCOME_FOUND,
+                True,
+                True,
+                message,
+                matches,
+                planning_steps,
+                commands_dispatched,
+                approached=approach_completed,
+            )
+            goal_handle.succeed()
+            return completed_result
 
         def inspect_active_command(
                 child_result_future, child_token, active_state):
@@ -2503,6 +2716,7 @@ class ModelCommanderNode(Node):
                     completed_checkpoints,
                     frontier_exhausted,
                 )
+                state.update(completion_state())
                 state.update({
                     'inspection_mode': 'active_command_monitor',
                     'active_command': active_command,
@@ -2665,6 +2879,7 @@ class ModelCommanderNode(Node):
                 planning_limit,
                 goal_handle,
                 deadline,
+                completion=completion_name,
             )
             if not bag_ready and self.command_bag_required:
                 raise CommanderFailure(
@@ -2673,17 +2888,9 @@ class ModelCommanderNode(Node):
             self._wait_for_registry_snapshot(goal_handle, deadline)
             matches = check_registry()
             if matches:
-                result = self._fill_result(
-                    LookForObject.Result.OUTCOME_FOUND,
-                    True,
-                    True,
-                    last_message,
-                    matches,
-                    planning_steps,
-                    commands_dispatched,
-                )
-                goal_handle.succeed()
-                return result
+                result = finish_if_satisfied(last_message)
+                if result is not None:
+                    return result
 
             while True:
                 self._check_parent_state(goal_handle, deadline)
@@ -2695,17 +2902,9 @@ class ModelCommanderNode(Node):
                 if capture_revision != registry_checked_revision:
                     matches = check_registry()
                     if matches:
-                        result = self._fill_result(
-                            LookForObject.Result.OUTCOME_FOUND,
-                            True,
-                            True,
-                            last_message,
-                            matches,
-                            planning_steps,
-                            commands_dispatched,
-                        )
-                        goal_handle.succeed()
-                        return result
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
                     continue
 
                 self._publish_feedback(
@@ -2746,6 +2945,7 @@ class ModelCommanderNode(Node):
                         completed_checkpoints,
                         frontier_exhausted,
                     )
+                    state.update(completion_state())
                     self._publish_feedback(
                         goal_handle,
                         LookForObject.Feedback.PHASE_THINKING,
@@ -2816,17 +3016,9 @@ class ModelCommanderNode(Node):
                     )
                     matches = check_registry()
                     if matches:
-                        result = self._fill_result(
-                            LookForObject.Result.OUTCOME_FOUND,
-                            True,
-                            True,
-                            last_message,
-                            matches,
-                            planning_steps,
-                            commands_dispatched,
-                        )
-                        goal_handle.succeed()
-                        return result
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
                     continue
                 except PlannerFailure as error:
                     consecutive_planner_failures += 1
@@ -2857,17 +3049,9 @@ class ModelCommanderNode(Node):
                     if wait_outcome == 'registry_changed':
                         matches = check_registry()
                         if matches:
-                            result = self._fill_result(
-                                LookForObject.Result.OUTCOME_FOUND,
-                                True,
-                                True,
-                                last_message,
-                                matches,
-                                planning_steps,
-                                commands_dispatched,
-                            )
-                            goal_handle.succeed()
-                            return result
+                            result = finish_if_satisfied(last_message)
+                            if result is not None:
+                                return result
                     continue
 
                 consecutive_planner_failures = 0
@@ -2883,17 +3067,9 @@ class ModelCommanderNode(Node):
                     )
                     matches = check_registry()
                     if matches:
-                        result = self._fill_result(
-                            LookForObject.Result.OUTCOME_FOUND,
-                            True,
-                            True,
-                            last_message,
-                            matches,
-                            planning_steps,
-                            commands_dispatched,
-                        )
-                        goal_handle.succeed()
-                        return result
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
                     continue
                 last_visual_observation = decision.visual_observation
                 last_target_evidence = decision.target_evidence
@@ -2938,17 +3114,9 @@ class ModelCommanderNode(Node):
                     )
                     matches = check_registry()
                     if matches:
-                        result = self._fill_result(
-                            LookForObject.Result.OUTCOME_FOUND,
-                            True,
-                            True,
-                            last_message,
-                            matches,
-                            planning_steps,
-                            commands_dispatched,
-                        )
-                        goal_handle.succeed()
-                        return result
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
                     continue
 
                 if decision.decision == 'verify_registry':
@@ -2964,17 +3132,9 @@ class ModelCommanderNode(Node):
                         ended_pose,
                     ))
                     if matches:
-                        result = self._fill_result(
-                            LookForObject.Result.OUTCOME_FOUND,
-                            True,
-                            True,
-                            last_message,
-                            matches,
-                            planning_steps,
-                            commands_dispatched,
-                        )
-                        goal_handle.succeed()
-                        return result
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
                     continue
 
                 if decision.decision == 'wait':
@@ -3019,18 +3179,122 @@ class ModelCommanderNode(Node):
                             'registry_changed', 'visual_interrupt'):
                         matches = check_registry()
                         if matches:
-                            result = self._fill_result(
-                                LookForObject.Result.OUTCOME_FOUND,
-                                True,
-                                True,
-                                last_message,
-                                matches,
-                                planning_steps,
-                                commands_dispatched,
-                            )
-                            goal_handle.succeed()
-                            return result
+                            result = finish_if_satisfied(last_message)
+                            if result is not None:
+                                return result
                     continue
+
+                if decision.decision == 'approach_object':
+                    if not approach_required:
+                        raise CommanderFailure(
+                            'planner selected approach_object for a '
+                            'report-only mission')
+                    if len(matches) != 1 or \
+                            confirmed_match_revision != decision_revision:
+                        last_command = 'approach_object'
+                        last_outcome = 'confirmation_required'
+                        last_message = (
+                            'approach requires one exact object confirmed in '
+                            'the current registry revision')
+                        matches = check_registry()
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
+                        continue
+                    if not dispatch_budget_available():
+                        raise MissionBudgetExhausted(
+                            'command-dispatch budget exhausted')
+                    commands_dispatched += 1
+                    target_id = matches[0].object_id
+                    started_pose = self._robot_pose_context()
+                    try:
+                        program = self._run_approach_object(
+                            target_id,
+                            decision_revision,
+                            goal_handle,
+                            deadline,
+                            planning_steps,
+                            commands_dispatched,
+                        )
+                        consecutive_command_failures = 0
+                    except OwnedGoalStateUnknown:
+                        raise
+                    except CommanderFailure as error:
+                        consecutive_command_failures += 1
+                        last_command = 'approach_object'
+                        last_outcome = 'command_failure'
+                        last_message = str(error)
+                        ended_pose = self._robot_pose_context()
+                        memory_entry = self._primitive_memory_entry(
+                            'approach_object',
+                            last_outcome,
+                            last_message,
+                            decision_revision,
+                            started_pose,
+                            ended_pose,
+                            object_id=target_id,
+                        )
+                        primitive_history.append(memory_entry)
+                        self._publish_trace_event(
+                            'command_result', mission_id,
+                            planning_step=planning_steps,
+                            command='approach_object',
+                            outcome=last_outcome,
+                            message=last_message[
+                                :self.max_state_message_characters],
+                            world_revision=decision_revision,
+                            object_id=target_id,
+                            started_pose=memory_entry['started_pose'],
+                            ended_pose=memory_entry['ended_pose'],
+                            delta_pose=memory_entry['delta_pose'],
+                        )
+                        if consecutive_command_failures >= \
+                                self.max_consecutive_command_failures:
+                            raise CommanderFailure(
+                                'object approach repeatedly failed') from error
+                        continue
+
+                    last_command = 'approach_object'
+                    last_outcome = program['outcome']
+                    last_message = program['message']
+                    ended_pose = self._robot_pose_context()
+                    memory_entry = self._primitive_memory_entry(
+                        'approach_object',
+                        program['outcome'],
+                        program['message'],
+                        decision_revision,
+                        started_pose,
+                        ended_pose,
+                        object_id=target_id,
+                    )
+                    primitive_history.append(memory_entry)
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='approach_object',
+                        outcome=program['outcome'],
+                        message=program['message'][
+                            :self.max_state_message_characters],
+                        world_revision=decision_revision,
+                        object_id=target_id,
+                        started_pose=memory_entry['started_pose'],
+                        ended_pose=memory_entry['ended_pose'],
+                        delta_pose=memory_entry['delta_pose'],
+                    )
+                    if program['outcome'] == 'registry_changed':
+                        matches = check_registry()
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
+                        continue
+                    approach_completed = True
+                    completed_primitives += 1
+                    result = finish_if_satisfied(last_message)
+                    if result is None:
+                        raise CommanderFailure(
+                            'object approach completed without a confirmed '
+                            'mission target')
+                    return result
 
                 if decision.decision == 'finish_not_found':
                     no_match_search_evidence = (
@@ -3043,15 +3307,16 @@ class ModelCommanderNode(Node):
                         completed_exploration_distance_m >=
                         self.minimum_no_match_travel_distance_m
                     )
-                    if not no_match_search_evidence or \
+                    if matches or not no_match_search_evidence or \
                             registry_checked_revision != decision_revision:
                         last_command = 'finish_not_found'
                         last_outcome = 'premature_finish_rejected'
                         last_message = (
-                            'local policy requires enough stationary '
-                            'observations, measured rotation, measured '
-                            'translational travel, and a current registry '
-                            'check before no-match finish'
+                            'local policy forbids no-match while a target is '
+                            'confirmed and otherwise requires enough '
+                            'stationary observations, measured rotation, '
+                            'measured translational travel, and a current '
+                            'registry check'
                         )
                         self._publish_trace_event(
                             'command_result', mission_id,
@@ -3085,17 +3350,9 @@ class ModelCommanderNode(Node):
                         )
                         matches = check_registry()
                         if matches:
-                            result = self._fill_result(
-                                LookForObject.Result.OUTCOME_FOUND,
-                                True,
-                                True,
-                                last_message,
-                                matches,
-                                planning_steps,
-                                commands_dispatched,
-                            )
-                            goal_handle.succeed()
-                            return result
+                            result = finish_if_satisfied(last_message)
+                            if result is not None:
+                                return result
                         continue
                     return result
 
@@ -3254,17 +3511,9 @@ class ModelCommanderNode(Node):
                             completed_checkpoints += 1
                     matches = check_registry()
                     if matches:
-                        result = self._fill_result(
-                            LookForObject.Result.OUTCOME_FOUND,
-                            True,
-                            True,
-                            last_message,
-                            matches,
-                            planning_steps,
-                            commands_dispatched,
-                        )
-                        goal_handle.succeed()
-                        return result
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
                     continue
 
                 raise CommanderFailure(
@@ -3350,6 +3599,7 @@ class ModelCommanderNode(Node):
                     objective,
                     duration,
                     planning_limit,
+                    completion=completion_name,
                     result=result,
                 )
                 outcome_names = {
@@ -3368,6 +3618,8 @@ class ModelCommanderNode(Node):
                         int(result.outcome), f'unknown_{int(result.outcome)}'),
                     success=bool(result.success),
                     found=bool(result.found),
+                    approached=bool(result.approached),
+                    requested_completion=completion_name,
                     message=result.message[
                         :self.max_state_message_characters],
                     planning_steps=int(result.planning_steps),

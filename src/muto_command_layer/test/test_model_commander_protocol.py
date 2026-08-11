@@ -84,6 +84,7 @@ def test_schema_matches_local_decisions_and_bounds():
         'rotate',
         'observe',
         'checkpoint_registry',
+        'approach_object',
         'wait',
         'finish_not_found',
     )

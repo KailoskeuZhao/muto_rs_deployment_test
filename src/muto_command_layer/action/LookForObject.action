@@ -4,6 +4,12 @@ string prompt
 # Zero selects the model commander's configured finite safety budget.
 float32 max_duration
 uint32 max_planning_steps
+
+# Declarative mission completion condition. Zero preserves the historical
+# behavior for older callers: report a confirmed object without approaching it.
+uint8 COMPLETION_REPORT_OBJECT=0
+uint8 COMPLETION_APPROACH_OBJECT=1
+uint8 completion_mode
 ---
 # success means the supervised mission ran without an infrastructure failure;
 # found distinguishes a match from a completed or budget-limited no-match run.
@@ -15,6 +21,7 @@ uint8 OUTCOME_CANCELED=5
 
 bool success
 bool found
+bool approached
 uint8 outcome
 string message
 muto_command_layer/ObjectMatch[] matches

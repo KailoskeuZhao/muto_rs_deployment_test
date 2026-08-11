@@ -10,7 +10,6 @@ import traceback
 
 from action_msgs.msg import GoalStatus
 import cv2
-from cv_bridge import CvBridge, CvBridgeError
 from model_commander_protocol import (
     build_active_inspection_prompt,
     build_active_inspection_schema,
@@ -20,6 +19,7 @@ from model_commander_protocol import (
     parse_active_inspection_decision,
     parse_commander_decision,
 )
+import numpy as np
 from muto_command_layer.action import (
     ExploreAndRecord,
     FindObject,
@@ -146,7 +146,6 @@ class ModelCommanderNode(Node):
         self._latest_command_bag_status_goal_id = ''
         self._latest_command_bag_status_path = ''
         self._latest_command_bag_status_detail = ''
-        self._cv_bridge = CvBridge()
         self._camera_subscription = None
         self._camera_qos = QoSProfile(
             depth=1,
@@ -737,12 +736,7 @@ class ModelCommanderNode(Node):
         if len(message.data) <= 0 or \
                 len(message.data) > self.visual_observation_max_source_bytes:
             raise PlannerFailure('camera frame source payload is invalid')
-        try:
-            image = self._cv_bridge.imgmsg_to_cv2(
-                message, desired_encoding='bgr8')
-        except (CvBridgeError, TypeError, ValueError) as error:
-            raise PlannerFailure(
-                'camera frame could not be converted to bgr8') from error
+        image = self._decode_image_to_bgr(message)
         if image is None or image.ndim != 3 or image.shape[2] != 3:
             raise PlannerFailure('camera frame did not convert to BGR image')
         source_height, source_width = image.shape[:2]
@@ -822,6 +816,48 @@ class ModelCommanderNode(Node):
             encoded_height=int(image.shape[0]),
         )
         return observation
+
+    def _decode_image_to_bgr(self, message):
+        encoding = message.encoding.strip().lower()
+        channel_counts = {
+            'bgr8': 3,
+            'rgb8': 3,
+            'mono8': 1,
+            'bgra8': 4,
+            'rgba8': 4,
+        }
+        channels = channel_counts.get(encoding)
+        if channels is None:
+            raise PlannerFailure(
+                f'unsupported camera image encoding: {message.encoding}')
+        minimum_step = message.width * channels
+        if message.step < minimum_step:
+            raise PlannerFailure('camera frame row stride is invalid')
+        required_bytes = message.step * (message.height - 1) + minimum_step
+        if len(message.data) < required_bytes:
+            raise PlannerFailure('camera frame payload is shorter than layout')
+        try:
+            flat = np.frombuffer(message.data, dtype=np.uint8)
+            rows = flat[:message.step * message.height].reshape(
+                (message.height, message.step))
+            image = rows[:, :minimum_step].reshape(
+                (message.height, message.width, channels))
+            if encoding == 'bgr8':
+                return image.copy()
+            if encoding == 'rgb8':
+                return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            if encoding == 'mono8':
+                return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            if encoding == 'bgra8':
+                return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+            if encoding == 'rgba8':
+                return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+        except (AttributeError, ImportError, RuntimeError, TypeError,
+                ValueError, cv2.error) as error:
+            raise PlannerFailure(
+                'camera frame could not be converted to bgr8') from error
+        raise PlannerFailure(
+            f'unsupported camera image encoding: {message.encoding}')
 
     def _capture_visual_observation(
             self, after_sequence, goal_handle, deadline,

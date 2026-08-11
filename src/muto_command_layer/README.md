@@ -709,7 +709,8 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
 - `visual_observation_max_source_width`,
   `visual_observation_max_source_height`, and
   `visual_observation_max_source_bytes`: reject unreasonable raw messages before
-  CvBridge conversion; defaults are `8192`, `8192`, and `67108864` bytes.
+  direct `bgr8`/`rgb8`/`mono8`/`bgra8`/`rgba8` conversion; defaults are `8192`,
+  `8192`, and `67108864` bytes.
 - `max_query_characters`, `max_object_query_characters`, and
   `max_map_name_characters`: local input/output limits for natural-language
   routing; defaults `4096`, `1024`, and `128`.

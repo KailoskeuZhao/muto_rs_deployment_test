@@ -669,6 +669,14 @@ def generate_launch_description():
             description='Fast model used by persistent command planning.',
         ),
         DeclareLaunchArgument(
+            'model_commander_openblas_preload',
+            default_value='/usr/lib/aarch64-linux-gnu/libopenblas.so.0',
+            description=(
+                'OpenBLAS library preloaded for model_commander camera '
+                'conversion on Jetson/Humble.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'natural_language_vlm_model',
             default_value='gpt-5.3-codex-spark',
             description='Fast model used by natural-language command routing.',
@@ -1012,6 +1020,11 @@ def generate_launch_description():
             condition=IfCondition(
                 LaunchConfiguration('launch_model_commander')
             ),
+            additional_env={
+                'LD_PRELOAD': LaunchConfiguration(
+                    'model_commander_openblas_preload'
+                ),
+            },
             parameters=[
                 LaunchConfiguration('params_file'),
                 {

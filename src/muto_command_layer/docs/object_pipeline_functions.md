@@ -279,7 +279,10 @@ ros2 topic echo /object_search/matches \
 
 Zero candidates is a successful no-match result. Exactly one candidate still
 receives visual verification, so requested attributes such as color are not
-accepted from class metadata alone.
+accepted from class metadata alone. General color descriptions require the
+color to dominate the object's primary visible body or upholstery; small parts,
+lighting tint, reflections, and background colors do not satisfy the request.
+Occluded or ambiguous candidates are rejected.
 
 ### 8. Legacy active-search compatibility
 
@@ -316,7 +319,10 @@ The VLM then chooses exactly one locally validated next primitive:
 `observe`, `checkpoint_registry`, bounded `wait`, or `finish_not_found`.
 
 `explore_frontier` runs frontier travel for a bounded interval and stops without
-rotating. `rotate` owns one bounded Nav2 Spin goal. `observe` creates a
+rotating. Its elapsed time counts as search evidence only when odometry confirms
+spatial displacement; a stationary timeout is reported as no progress.
+`rotate` publishes a bounded executable yaw command and verifies the achieved
+angle from `/odometry/filtered`. `observe` creates a
 temporary `/sam2/detection_heartbeat` subscription and waits for fresh crop-free
 frame completions without motion. The subscription is destroyed when the
 primitive ends. `checkpoint_registry` atomically saves

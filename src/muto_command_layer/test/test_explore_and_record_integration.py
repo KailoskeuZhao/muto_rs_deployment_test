@@ -190,10 +190,12 @@ class FakeProgramBackends(Node):
             response.state = ControlExploration.Request.STATE_RUNNING
             response.message = 'fake exploration started'
         elif self.stop_responses_before_idle > 0:
+            self.publish_navigation_active(False)
             self.stop_responses_before_idle -= 1
             response.state = ControlExploration.Request.STATE_STOPPING
             response.message = 'fake exploration is still stopping'
         else:
+            self.publish_navigation_active(False)
             response.state = ControlExploration.Request.STATE_IDLE
             response.message = 'fake exploration stopped'
         return response
@@ -290,6 +292,7 @@ def running_command_layer(tmp_path):
             '-p', 'scan_step_count:=6',
             '-p', 'navigation_settle_time:=0.01',
             '-p', 'program_endpoint_timeout:=1.0',
+            '-p', 'frontier_navigation_start_timeout:=0.5',
             '-p', 'spin_time_allowance:=1.0',
             '-p', 'tf_timeout:=1.0',
             '-p', 'visibility_map_timeout:=1.0',
@@ -417,6 +420,7 @@ def test_one_cycle_spins_checkpoints_and_reports_counts(running_command_layer):
 def test_frontier_primitive_travels_without_scanning_or_checkpointing(
         running_command_layer):
     backend, _ = running_command_layer
+    backend.publish_navigation_active(True)
     client = ActionClient(
         backend,
         ExploreAndRecord,
@@ -442,6 +446,7 @@ def test_frontier_primitive_travels_without_scanning_or_checkpointing(
 def test_frontier_primitive_waits_for_idle_when_stop_is_still_pending(
         running_command_layer):
     backend, _ = running_command_layer
+    backend.publish_navigation_active(True)
     backend.stop_responses_before_idle = 1
     client = ActionClient(
         backend,

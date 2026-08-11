@@ -27,11 +27,11 @@ from muto_command_layer.action import (
 )
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
-from nav2_msgs.action import Spin
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -93,6 +93,20 @@ class VisualObservation:
     encoded_height: int
 
 
+@dataclass(frozen=True)
+class RobotPoseSnapshot:
+    """Latest robot odometry pose included in high-level decision memory."""
+
+    frame_id: str
+    child_frame_id: str
+    stamp_seconds: float
+    receipt_monotonic: float
+    x: float
+    y: float
+    z: float
+    yaw: float
+
+
 class ModelCommanderNode(Node):
     """Plan bounded typed commands while continuously monitoring the mission."""
 
@@ -121,12 +135,6 @@ class ModelCommanderNode(Node):
             self.explore_frontier_action,
             callback_group=self._callback_group,
         )
-        self._spin_client = ActionClient(
-            self,
-            Spin,
-            self.spin_action,
-            callback_group=self._callback_group,
-        )
         self._checkpoint_client = self.create_client(
             Trigger,
             self.registry_save_service,
@@ -142,6 +150,8 @@ class ModelCommanderNode(Node):
         self._registry_signature = None
         self._registry_revision = 0
         self._confirmed_object_count = 0
+        self._registry_object_context = {}
+        self._latest_robot_pose = None
         self._latest_command_bag_status_event = ''
         self._latest_command_bag_status_goal_id = ''
         self._latest_command_bag_status_path = ''
@@ -192,6 +202,18 @@ class ModelCommanderNode(Node):
             registry_qos,
             callback_group=self._callback_group,
         )
+        odom_qos = QoSProfile(
+            depth=10,
+            durability=DurabilityPolicy.VOLATILE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self._robot_pose_subscription = self.create_subscription(
+            Odometry,
+            self.robot_pose_topic,
+            self._robot_pose_callback,
+            odom_qos,
+            callback_group=self._callback_group,
+        )
         status_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -215,6 +237,8 @@ class ModelCommanderNode(Node):
         )
         self._decision_event_publisher = self.create_publisher(
             String, self.decision_event_topic, trace_qos)
+        self._rotate_cmd_vel_publisher = self.create_publisher(
+            Twist, self.rotate_cmd_vel_topic, 1)
         image_trace_qos = QoSProfile(
             depth=4,
             durability=DurabilityPolicy.VOLATILE,
@@ -241,6 +265,7 @@ class ModelCommanderNode(Node):
             f'Model commander ready: action={self.action_name} '
             f'planner={self.vlm_action} '
             f'camera={self.visual_observation_topic} '
+            f'pose={self.robot_pose_topic} '
             f'status={self.status_topic} '
             f'decisions={self.decision_event_topic}')
 
@@ -252,11 +277,13 @@ class ModelCommanderNode(Node):
             'explore_frontier_action',
             '/command_primitives/explore_frontier')
         self.declare_parameter('spin_action', '/spin')
+        self.declare_parameter('rotate_cmd_vel_topic', '/cmd_vel')
         self.declare_parameter(
             'registry_save_service', '/sam2/save_stored_objects')
         self.declare_parameter(
             'detection_heartbeat_topic', '/sam2/detection_heartbeat')
         self.declare_parameter('registry_topic', '/sam2/stored_objects')
+        self.declare_parameter('robot_pose_topic', '/odometry/filtered')
         self.declare_parameter(
             'visual_observation_topic', '/camera/color/image_raw')
         self.declare_parameter('status_topic', '/model_commander/status')
@@ -290,10 +317,16 @@ class ModelCommanderNode(Node):
         self.declare_parameter('max_rotation_radians', 6.283185307179586)
         self.declare_parameter('max_observation_seconds', 30.0)
         self.declare_parameter('spin_time_allowance', 15.0)
+        self.declare_parameter('rotate_executable_yaw_velocity', 0.19)
+        self.declare_parameter('rotate_goal_tolerance', 0.08)
+        self.declare_parameter('rotate_control_period', 0.05)
+        self.declare_parameter('rotate_stop_publish_count', 3)
         self.declare_parameter('checkpoint_timeout', 10.0)
         self.declare_parameter('observation_min_detection_frames', 3)
         self.declare_parameter(
-            'minimum_no_match_exploration_seconds', 10.0)
+            'minimum_explore_progress_distance_m', 0.1)
+        self.declare_parameter(
+            'minimum_no_match_travel_distance_m', 0.5)
         self.declare_parameter('minimum_no_match_observations', 4)
         self.declare_parameter('minimum_no_match_checkpoints', 1)
         self.declare_parameter(
@@ -333,9 +366,11 @@ class ModelCommanderNode(Node):
             'find_object_action',
             'explore_frontier_action',
             'spin_action',
+            'rotate_cmd_vel_topic',
             'registry_save_service',
             'detection_heartbeat_topic',
             'registry_topic',
+            'robot_pose_topic',
             'visual_observation_topic',
             'status_topic',
             'command_bag_enabled',
@@ -364,8 +399,13 @@ class ModelCommanderNode(Node):
             'max_rotation_radians',
             'max_observation_seconds',
             'spin_time_allowance',
+            'rotate_executable_yaw_velocity',
+            'rotate_goal_tolerance',
+            'rotate_control_period',
+            'rotate_stop_publish_count',
             'checkpoint_timeout',
-            'minimum_no_match_exploration_seconds',
+            'minimum_explore_progress_distance_m',
+            'minimum_no_match_travel_distance_m',
             'minimum_no_match_rotation_radians',
             'minimum_no_match_observations',
             'minimum_no_match_checkpoints',
@@ -402,8 +442,9 @@ class ModelCommanderNode(Node):
         for name in (
                 'action_name', 'vlm_action', 'find_object_action',
                 'explore_frontier_action', 'spin_action',
-                'registry_save_service', 'detection_heartbeat_topic',
-                'registry_topic',
+                'rotate_cmd_vel_topic', 'registry_save_service',
+                'detection_heartbeat_topic', 'registry_topic',
+                'robot_pose_topic',
                 'visual_observation_topic', 'status_topic',
                 'command_bag_event_topic', 'command_bag_status_topic',
                 'decision_event_topic', 'inspected_image_topic'):
@@ -415,8 +456,11 @@ class ModelCommanderNode(Node):
                 'default_max_duration', 'maximum_mission_duration',
                 'max_wait_seconds', 'max_exploration_seconds',
                 'max_rotation_radians', 'max_observation_seconds',
-                'spin_time_allowance', 'checkpoint_timeout',
-                'minimum_no_match_exploration_seconds',
+                'spin_time_allowance', 'rotate_executable_yaw_velocity',
+                'rotate_goal_tolerance', 'rotate_control_period',
+                'checkpoint_timeout',
+                'minimum_explore_progress_distance_m',
+                'minimum_no_match_travel_distance_m',
                 'minimum_no_match_rotation_radians',
                 'planner_retry_initial_delay',
                 'planner_retry_max_delay', 'command_retry_initial_delay',
@@ -457,6 +501,7 @@ class ModelCommanderNode(Node):
                 'visual_observation_max_source_width',
                 'visual_observation_max_source_height',
                 'visual_observation_max_source_bytes',
+                'rotate_stop_publish_count',
                 'max_consecutive_active_inspection_failures',
                 'max_visual_interrupts'):
             value = getattr(self, name)
@@ -493,8 +538,23 @@ class ModelCommanderNode(Node):
             self._registry_object_signature(item)
             for item in message.objects
         ))
+        object_context = {}
+        for item in message.objects:
+            object_context[item.name] = {
+                'object_id': item.name,
+                'label': item.label,
+                'class_id': int(item.class_id),
+                'x': round(float(item.position.x), 4),
+                'y': round(float(item.position.y), 4),
+                'z': round(float(item.position.z), 4),
+                'image_confidence': round(float(item.image_confidence), 4),
+                'observation_count': int(item.observation_count),
+                'point_count': int(item.point_count),
+                'last_confidence': round(float(item.last_confidence), 4),
+            }
         with self._state_lock:
             self._confirmed_object_count = len(message.objects)
+            self._registry_object_context = object_context
             if signature != self._registry_signature:
                 self._registry_signature = signature
                 self._registry_revision += 1
@@ -510,6 +570,121 @@ class ModelCommanderNode(Node):
                 self._confirmed_object_count,
                 self._registry_signature is not None,
             )
+
+    def _robot_pose_callback(self, message):
+        orientation = message.pose.pose.orientation
+        siny_cosp = 2.0 * (
+            orientation.w * orientation.z + orientation.x * orientation.y)
+        cosy_cosp = 1.0 - 2.0 * (
+            orientation.y * orientation.y + orientation.z * orientation.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        stamp = message.header.stamp
+        position = message.pose.pose.position
+        snapshot = RobotPoseSnapshot(
+            frame_id=message.header.frame_id.strip(),
+            child_frame_id=message.child_frame_id.strip(),
+            stamp_seconds=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
+            receipt_monotonic=time.monotonic(),
+            x=float(position.x),
+            y=float(position.y),
+            z=float(position.z),
+            yaw=float(yaw),
+        )
+        with self._state_lock:
+            self._latest_robot_pose = snapshot
+
+    def _robot_pose_context(self):
+        with self._state_lock:
+            snapshot = self._latest_robot_pose
+        if snapshot is None:
+            return None
+        return {
+            'topic': self.robot_pose_topic,
+            'frame_id': snapshot.frame_id,
+            'child_frame_id': snapshot.child_frame_id,
+            'stamp_seconds': round(snapshot.stamp_seconds, 9),
+            'age_seconds': round(
+                max(0.0, time.monotonic() - snapshot.receipt_monotonic), 3),
+            'x': round(snapshot.x, 4),
+            'y': round(snapshot.y, 4),
+            'z': round(snapshot.z, 4),
+            'yaw_rad': round(snapshot.yaw, 6),
+        }
+
+    def _robot_pose_snapshot(self):
+        with self._state_lock:
+            return self._latest_robot_pose
+
+    def _match_context(self, matches):
+        robot_pose = self._robot_pose_snapshot()
+        with self._state_lock:
+            object_context = dict(self._registry_object_context)
+        contexts = []
+        for match in matches:
+            context = {
+                'object_id': match.object_id,
+                'label': match.label,
+                'description': match.description[
+                    :self.max_state_message_characters],
+            }
+            registry_entry = object_context.get(match.object_id)
+            if registry_entry is not None:
+                context['registry_position'] = registry_entry
+                if robot_pose is not None:
+                    dx = float(registry_entry['x']) - robot_pose.x
+                    dy = float(registry_entry['y']) - robot_pose.y
+                    dz = float(registry_entry['z']) - robot_pose.z
+                    context['distance_from_robot'] = {
+                        'dx': round(dx, 4),
+                        'dy': round(dy, 4),
+                        'dz': round(dz, 4),
+                        'distance_xy': round(math.hypot(dx, dy), 4),
+                    }
+            contexts.append(context)
+        return contexts
+
+    @staticmethod
+    def _angle_delta(end_yaw, start_yaw):
+        return math.atan2(
+            math.sin(end_yaw - start_yaw),
+            math.cos(end_yaw - start_yaw),
+        )
+
+    def _pose_delta_context(self, start_pose, end_pose):
+        if start_pose is None or end_pose is None:
+            return None
+        dx = float(end_pose['x']) - float(start_pose['x'])
+        dy = float(end_pose['y']) - float(start_pose['y'])
+        dz = float(end_pose['z']) - float(start_pose['z'])
+        dyaw = self._angle_delta(
+            float(end_pose['yaw_rad']),
+            float(start_pose['yaw_rad']),
+        )
+        return {
+            'dx': round(dx, 4),
+            'dy': round(dy, 4),
+            'dz': round(dz, 4),
+            'distance_xy': round(math.hypot(dx, dy), 4),
+            'dyaw_rad': round(dyaw, 6),
+            'dyaw_abs_rad': round(abs(dyaw), 6),
+        }
+
+    def _primitive_memory_entry(
+            self, primitive, outcome, message, world_revision,
+            started_pose, ended_pose, **fields):
+        entry = {
+            'primitive': primitive,
+            'outcome': outcome,
+            'message': message[:self.max_state_message_characters],
+            'world_revision': world_revision,
+            'started_pose': started_pose,
+            'ended_pose': ended_pose,
+            'delta_pose': self._pose_delta_context(started_pose, ended_pose),
+        }
+        for key, value in fields.items():
+            if value is not None:
+                entry[key] = value
+        return entry
 
     def _command_bag_status_callback(self, message):
         try:
@@ -557,6 +732,7 @@ class ModelCommanderNode(Node):
                 'matched_object_ids': [
                     match.object_id for match in result.matches
                 ],
+                'matched_objects': self._match_context(result.matches),
             })
         message = String()
         message.data = json.dumps(
@@ -607,6 +783,7 @@ class ModelCommanderNode(Node):
             'event': event,
             'mission_id': mission_id,
             'ros_time_nanoseconds': self.get_clock().now().nanoseconds,
+            'robot_pose': self._robot_pose_context(),
         }
         payload.update(fields)
         message = String()
@@ -1557,6 +1734,106 @@ class ModelCommanderNode(Node):
                 wrapped.result.message or 'registry object search failed')
         return list(wrapped.result.matches), wrapped.result.message
 
+    def _publish_rotate_stop(self):
+        stop = Twist()
+        for _ in range(self.rotate_stop_publish_count):
+            self._rotate_cmd_vel_publisher.publish(stop)
+            time.sleep(self.rotate_control_period)
+
+    def _run_direct_rotate(
+            self, rotation_radians, expected_revision, goal_handle, deadline,
+            planning_steps, commands_dispatched):
+        target_radians = abs(float(rotation_radians))
+        if target_radians <= self.rotate_goal_tolerance:
+            return {
+                'outcome': 'completed',
+                'message': 'requested rotation is already within tolerance',
+                'completed_cycles': 1,
+                'requested_rotation_radians': round(float(rotation_radians), 6),
+                'observed_rotation_radians': 0.0,
+            }
+
+        current_revision, _, _ = self._registry_state()
+        if current_revision != expected_revision:
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before command dispatch',
+                'completed_cycles': 0,
+            }
+
+        start_pose = self._robot_pose_snapshot()
+        if start_pose is None:
+            raise CommanderFailure(
+                'odometry is unavailable; direct rotate cannot verify yaw')
+
+        child_token = object()
+        with self._state_lock:
+            self._active_child_token = child_token
+
+        yaw_rate = math.copysign(
+            float(self.rotate_executable_yaw_velocity),
+            float(rotation_radians),
+        )
+        command = Twist()
+        command.angular.z = yaw_rate
+        required_observed = max(
+            0.0, target_radians - float(self.rotate_goal_tolerance))
+        run_timeout = max(
+            self.spin_time_allowance,
+            target_radians / max(1.0e-6, abs(yaw_rate)) * 2.0 + 3.0,
+        )
+        rotate_deadline = min(deadline, time.monotonic() + run_timeout)
+        max_observed = 0.0
+
+        self._publish_feedback(
+            goal_handle,
+            LookForObject.Feedback.PHASE_EXECUTING,
+            'direct executable yaw rotation is active',
+            'rotate',
+            planning_steps,
+            commands_dispatched,
+            child_token=child_token,
+        )
+
+        try:
+            while time.monotonic() < rotate_deadline:
+                self._check_parent_state(goal_handle, deadline)
+                revision, _, _ = self._registry_state()
+                if revision != expected_revision:
+                    return {
+                        'outcome': 'registry_changed',
+                        'message': 'registry changed during direct rotation',
+                        'completed_cycles': 0,
+                        'requested_rotation_radians': round(
+                            float(rotation_radians), 6),
+                        'observed_rotation_radians': round(max_observed, 6),
+                    }
+                current_pose = self._robot_pose_snapshot()
+                if current_pose is not None:
+                    observed = abs(
+                        self._angle_delta(current_pose.yaw, start_pose.yaw))
+                    max_observed = max(max_observed, observed)
+                    if max_observed >= required_observed:
+                        return {
+                            'outcome': 'completed',
+                            'message': 'direct rotation completed from odometry',
+                            'completed_cycles': 1,
+                            'requested_rotation_radians': round(
+                                float(rotation_radians), 6),
+                            'observed_rotation_radians': round(max_observed, 6),
+                        }
+                self._rotate_cmd_vel_publisher.publish(command)
+                time.sleep(self.rotate_control_period)
+        finally:
+            self._publish_rotate_stop()
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+
+        raise CommanderFailure(
+            'direct rotation timed out before odometry reached the requested yaw '
+            f'(observed {max_observed:.3f} rad of {target_radians:.3f} rad)')
+
     def _run_primitive(
             self, primitive_name, exploration_seconds, rotation_radians,
             expected_revision, goal_handle, deadline,
@@ -1569,18 +1846,20 @@ class ModelCommanderNode(Node):
                 'message': 'registry changed before command dispatch',
                 'completed_cycles': 0,
             }
+        if primitive_name == 'rotate':
+            return self._run_direct_rotate(
+                rotation_radians,
+                expected_revision,
+                goal_handle,
+                deadline,
+                planning_steps,
+                commands_dispatched,
+            )
         child_goal = ExploreAndRecord.Goal()
         if primitive_name == 'explore_frontier':
             child_goal.exploration_duration = exploration_seconds
             primitive_client = self._explore_frontier_client
             endpoint_name = 'ExploreFrontier primitive action server'
-        elif primitive_name == 'rotate':
-            child_goal = Spin.Goal()
-            child_goal.target_yaw = rotation_radians
-            child_goal.time_allowance = Duration(
-                seconds=self.spin_time_allowance).to_msg()
-            primitive_client = self._spin_client
-            endpoint_name = 'Nav2 Spin action server'
         else:
             raise CommanderFailure(
                 f'unsupported local primitive: {primitive_name}')
@@ -1595,20 +1874,31 @@ class ModelCommanderNode(Node):
             'inspection_deadline': deadline,
             'bounded_wait': False,
         }
+        starting_robot_pose = self._robot_pose_snapshot()
+        maximum_displacement_m = 0.0
+
+        def update_spatial_progress():
+            nonlocal maximum_displacement_m
+            current_pose = self._robot_pose_snapshot()
+            if starting_robot_pose is None or current_pose is None:
+                return
+            if starting_robot_pose.frame_id != current_pose.frame_id:
+                return
+            displacement = math.hypot(
+                current_pose.x - starting_robot_pose.x,
+                current_pose.y - starting_robot_pose.y,
+            )
+            maximum_displacement_m = max(
+                maximum_displacement_m, displacement)
 
         def feedback_callback(message):
             feedback = message.feedback
             with monitor_state_lock:
-                if primitive_name == 'explore_frontier':
-                    monitor_state['phase'] = int(feedback.phase)
-                    monitor_state['status'] = feedback.status
-                    monitor_state['completed_cycles'] = int(
-                        feedback.completed_cycles)
-                    status = feedback.status
-                else:
-                    monitor_state['phase'] = 'spinning'
-                    monitor_state['status'] = 'Nav2 is rotating in place'
-                    status = monitor_state['status']
+                monitor_state['phase'] = int(feedback.phase)
+                monitor_state['status'] = feedback.status
+                monitor_state['completed_cycles'] = int(
+                    feedback.completed_cycles)
+                status = feedback.status
             self._publish_feedback(
                 goal_handle,
                 LookForObject.Feedback.PHASE_EXECUTING,
@@ -1684,6 +1974,7 @@ class ModelCommanderNode(Node):
             )
             while not result_future.done():
                 self._check_parent_state(goal_handle, deadline)
+                update_spatial_progress()
                 revision, _, _ = self._registry_state()
                 if revision != expected_revision:
                     self._publish_feedback(
@@ -1748,6 +2039,7 @@ class ModelCommanderNode(Node):
                         }
                 time.sleep(self.monitor_period)
             self._check_parent_state(goal_handle, deadline)
+            update_spatial_progress()
             child_terminal_confirmed = True
             wrapped = result_future.result()
         except (CommanderCanceled, MissionBudgetExhausted):
@@ -1773,22 +2065,29 @@ class ModelCommanderNode(Node):
 
         if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
             raise CommanderFailure(f'{primitive_name} did not succeed')
-        if primitive_name == 'rotate':
-            return {
-                'outcome': 'completed',
-                'message': 'bounded in-place rotation completed',
-                'completed_cycles': 1,
-            }
         if not wrapped.result.success:
             raise CommanderFailure(
                 wrapped.result.message
                 or 'frontier command did not succeed')
+        outcome = 'completed'
+        message = wrapped.result.message
+        frontier_exhausted = 'exhausted' in message.casefold()
+        if not frontier_exhausted and maximum_displacement_m < \
+                self.minimum_explore_progress_distance_m:
+            outcome = 'no_spatial_progress'
+            message = (
+                'frontier step ended without measurable travel: maximum '
+                f'displacement {maximum_displacement_m:.3f} m is below '
+                f'{self.minimum_explore_progress_distance_m:.3f} m'
+            )
         return {
-            'outcome': 'completed',
-            'message': wrapped.result.message,
+            'outcome': outcome,
+            'message': message,
             'completed_cycles': int(wrapped.result.completed_cycles),
             'objects_before': int(wrapped.result.objects_before),
             'objects_after': int(wrapped.result.objects_after),
+            'observed_exploration_distance_m': round(
+                maximum_displacement_m, 4),
         }
 
     def _run_observe(
@@ -1926,6 +2225,7 @@ class ModelCommanderNode(Node):
             last_command, last_outcome, last_message, observation,
             last_visual_observation, last_target_evidence,
             primitive_history, completed_exploration_seconds,
+            completed_exploration_distance_m,
             completed_observations, completed_rotation_radians,
             completed_checkpoints, frontier_exhausted):
         revision, object_count, _ = self._registry_state()
@@ -1938,18 +2238,21 @@ class ModelCommanderNode(Node):
             'commands_dispatched': commands_dispatched,
             'world_revision': revision,
             'confirmed_object_count': object_count,
+            'robot_pose': self._robot_pose_context(),
             'registry_checked_revision': registry_checked_revision,
             'search_primitives_completed': completed_primitives,
             'primitive_history': primitive_history[-12:],
             'completed_exploration_seconds': round(
                 completed_exploration_seconds, 3),
+            'completed_exploration_distance_m': round(
+                completed_exploration_distance_m, 4),
             'completed_observations': completed_observations,
             'completed_rotation_radians': round(
                 completed_rotation_radians, 6),
             'completed_checkpoints': completed_checkpoints,
             'frontier_exhausted': frontier_exhausted,
-            'minimum_no_match_exploration_seconds': (
-                self.minimum_no_match_exploration_seconds
+            'minimum_no_match_travel_distance_m': (
+                self.minimum_no_match_travel_distance_m
             ),
             'minimum_no_match_observations': (
                 self.minimum_no_match_observations
@@ -2016,6 +2319,7 @@ class ModelCommanderNode(Node):
         repeated_decision_count = 0
         primitive_history = []
         completed_exploration_seconds = 0.0
+        completed_exploration_distance_m = 0.0
         completed_observations = 0
         completed_rotation_radians = 0.0
         completed_checkpoints = 0
@@ -2092,6 +2396,7 @@ class ModelCommanderNode(Node):
                 if found_matches and revision == start_revision:
                     registry_checked_revision = revision
                     last_outcome = 'match_found'
+                    matched_objects = self._match_context(found_matches)
                     self._publish_trace_event(
                         'command_result', mission_id,
                         planning_step=planning_steps,
@@ -2103,6 +2408,7 @@ class ModelCommanderNode(Node):
                         matched_object_ids=[
                             match.object_id for match in found_matches
                         ],
+                        matched_objects=matched_objects,
                     )
                     return found_matches
                 if revision == start_revision:
@@ -2191,6 +2497,7 @@ class ModelCommanderNode(Node):
                     last_target_evidence,
                     primitive_history,
                     completed_exploration_seconds,
+                    completed_exploration_distance_m,
                     completed_observations,
                     completed_rotation_radians,
                     completed_checkpoints,
@@ -2433,6 +2740,7 @@ class ModelCommanderNode(Node):
                         last_target_evidence,
                         primitive_history,
                         completed_exploration_seconds,
+                        completed_exploration_distance_m,
                         completed_observations,
                         completed_rotation_radians,
                         completed_checkpoints,
@@ -2644,12 +2952,17 @@ class ModelCommanderNode(Node):
                     continue
 
                 if decision.decision == 'verify_registry':
+                    started_pose = self._robot_pose_context()
                     matches = check_registry()
-                    primitive_history.append({
-                        'primitive': 'verify_registry',
-                        'outcome': 'match_found' if matches else 'no_match',
-                        'world_revision': decision_revision,
-                    })
+                    ended_pose = self._robot_pose_context()
+                    primitive_history.append(self._primitive_memory_entry(
+                        'verify_registry',
+                        'match_found' if matches else 'no_match',
+                        last_message,
+                        decision_revision,
+                        started_pose,
+                        ended_pose,
+                    ))
                     if matches:
                         result = self._fill_result(
                             LookForObject.Result.OUTCOME_FOUND,
@@ -2665,6 +2978,7 @@ class ModelCommanderNode(Node):
                     continue
 
                 if decision.decision == 'wait':
+                    started_pose = self._robot_pose_context()
                     wait_outcome = self._wait_while_monitoring(
                         decision.wait_seconds,
                         decision_revision,
@@ -2678,11 +2992,18 @@ class ModelCommanderNode(Node):
                     last_command = 'wait'
                     last_outcome = wait_outcome
                     last_message = decision.reason
-                    primitive_history.append({
-                        'primitive': 'wait',
-                        'outcome': wait_outcome,
-                        'world_revision': decision_revision,
-                    })
+                    ended_pose = self._robot_pose_context()
+                    memory_entry = self._primitive_memory_entry(
+                        'wait',
+                        wait_outcome,
+                        decision.reason,
+                        decision_revision,
+                        started_pose,
+                        ended_pose,
+                        requested_wait_seconds=round(
+                            decision.wait_seconds, 3),
+                    )
+                    primitive_history.append(memory_entry)
                     self._publish_trace_event(
                         'command_result', mission_id,
                         planning_step=planning_steps,
@@ -2690,6 +3011,9 @@ class ModelCommanderNode(Node):
                         outcome=wait_outcome,
                         message=decision.reason,
                         world_revision=decision_revision,
+                        started_pose=memory_entry['started_pose'],
+                        ended_pose=memory_entry['ended_pose'],
+                        delta_pose=memory_entry['delta_pose'],
                     )
                     if wait_outcome in (
                             'registry_changed', 'visual_interrupt'):
@@ -2716,11 +3040,8 @@ class ModelCommanderNode(Node):
                         self.minimum_no_match_rotation_radians and
                         completed_checkpoints >=
                         self.minimum_no_match_checkpoints and
-                        (
-                            frontier_exhausted or
-                            completed_exploration_seconds >=
-                            self.minimum_no_match_exploration_seconds
-                        )
+                        completed_exploration_distance_m >=
+                        self.minimum_no_match_travel_distance_m
                     )
                     if not no_match_search_evidence or \
                             registry_checked_revision != decision_revision:
@@ -2728,9 +3049,9 @@ class ModelCommanderNode(Node):
                         last_outcome = 'premature_finish_rejected'
                         last_message = (
                             'local policy requires enough stationary '
-                            'observations, rotation coverage, frontier-search '
-                            'evidence, and a current registry check before '
-                            'no-match finish'
+                            'observations, measured rotation, measured '
+                            'translational travel, and a current registry '
+                            'check before no-match finish'
                         )
                         self._publish_trace_event(
                             'command_result', mission_id,
@@ -2785,6 +3106,7 @@ class ModelCommanderNode(Node):
                         raise MissionBudgetExhausted(
                             'command-dispatch budget exhausted')
                     commands_dispatched += 1
+                    started_pose = self._robot_pose_context()
                     try:
                         if decision.decision in (
                                 'explore_frontier', 'rotate'):
@@ -2825,13 +3147,16 @@ class ModelCommanderNode(Node):
                         last_command = decision.decision
                         last_outcome = 'command_failure'
                         last_message = str(error)
-                        primitive_history.append({
-                            'primitive': decision.decision,
-                            'outcome': 'command_failure',
-                            'message': last_message[
-                                :self.max_state_message_characters],
-                            'world_revision': decision_revision,
-                        })
+                        ended_pose = self._robot_pose_context()
+                        memory_entry = self._primitive_memory_entry(
+                            decision.decision,
+                            'command_failure',
+                            last_message,
+                            decision_revision,
+                            started_pose,
+                            ended_pose,
+                        )
+                        primitive_history.append(memory_entry)
                         self._publish_trace_event(
                             'command_result', mission_id,
                             planning_step=planning_steps,
@@ -2840,6 +3165,9 @@ class ModelCommanderNode(Node):
                             message=last_message[
                                 :self.max_state_message_characters],
                             world_revision=decision_revision,
+                            started_pose=memory_entry['started_pose'],
+                            ended_pose=memory_entry['ended_pose'],
+                            delta_pose=memory_entry['delta_pose'],
                         )
                         if consecutive_command_failures >= \
                                 self.max_consecutive_command_failures:
@@ -2849,16 +3177,32 @@ class ModelCommanderNode(Node):
                     last_command = decision.decision
                     last_outcome = program['outcome']
                     last_message = program['message']
-                    primitive_history.append({
-                        'primitive': decision.decision,
-                        'outcome': program['outcome'],
-                        'message': program['message'][
-                            :self.max_state_message_characters],
-                        'world_revision': decision_revision,
-                        'objects_before': program.get('objects_before'),
-                        'objects_after': program.get('objects_after'),
-                        'detection_frames': program.get('detection_frames'),
-                    })
+                    ended_pose = self._robot_pose_context()
+                    memory_entry = self._primitive_memory_entry(
+                        decision.decision,
+                        program['outcome'],
+                        program['message'],
+                        decision_revision,
+                        started_pose,
+                        ended_pose,
+                        objects_before=program.get('objects_before'),
+                        objects_after=program.get('objects_after'),
+                        detection_frames=program.get('detection_frames'),
+                        observed_rotation_radians=program.get(
+                            'observed_rotation_radians'),
+                        observed_exploration_distance_m=program.get(
+                            'observed_exploration_distance_m'),
+                        requested_exploration_seconds=round(
+                            decision.exploration_seconds, 3)
+                        if decision.decision == 'explore_frontier' else None,
+                        requested_rotation_radians=round(
+                            decision.rotation_radians, 6)
+                        if decision.decision == 'rotate' else None,
+                        requested_observation_seconds=round(
+                            decision.observation_seconds, 3)
+                        if decision.decision == 'observe' else None,
+                    )
+                    primitive_history.append(memory_entry)
                     self._publish_trace_event(
                         'command_result', mission_id,
                         planning_step=planning_steps,
@@ -2870,6 +3214,15 @@ class ModelCommanderNode(Node):
                         objects_before=program.get('objects_before'),
                         objects_after=program.get('objects_after'),
                         detection_frames=program.get('detection_frames'),
+                        requested_rotation_radians=program.get(
+                            'requested_rotation_radians'),
+                        observed_rotation_radians=program.get(
+                            'observed_rotation_radians'),
+                        observed_exploration_distance_m=program.get(
+                            'observed_exploration_distance_m'),
+                        started_pose=memory_entry['started_pose'],
+                        ended_pose=memory_entry['ended_pose'],
+                        delta_pose=memory_entry['delta_pose'],
                     )
                     if program['outcome'] == 'visual_interrupt':
                         last_visual_observation = program[
@@ -2881,13 +3234,20 @@ class ModelCommanderNode(Node):
                             completed_exploration_seconds += (
                                 decision.exploration_seconds
                             )
+                            completed_exploration_distance_m += float(
+                                program.get(
+                                    'observed_exploration_distance_m', 0.0
+                                ))
                             frontier_exhausted = (
                                 frontier_exhausted or
                                 'exhausted' in program['message'].casefold()
                             )
                         elif decision.decision == 'rotate':
-                            completed_rotation_radians += abs(
-                                decision.rotation_radians)
+                            completed_rotation_radians += abs(float(
+                                program.get(
+                                    'observed_rotation_radians',
+                                    abs(decision.rotation_radians),
+                                )))
                         elif decision.decision == 'observe':
                             completed_observations += 1
                         elif decision.decision == 'checkpoint_registry':
@@ -2991,6 +3351,45 @@ class ModelCommanderNode(Node):
                     duration,
                     planning_limit,
                     result=result,
+                )
+                outcome_names = {
+                    LookForObject.Result.OUTCOME_FOUND: 'found',
+                    LookForObject.Result.OUTCOME_NOT_FOUND: 'not_found',
+                    LookForObject.Result.OUTCOME_BUDGET_EXHAUSTED: (
+                        'budget_exhausted'
+                    ),
+                    LookForObject.Result.OUTCOME_FAILED: 'failed',
+                    LookForObject.Result.OUTCOME_CANCELED: 'canceled',
+                }
+                self._publish_trace_event(
+                    'mission_result', mission_id,
+                    terminal_event=terminal_event,
+                    outcome=outcome_names.get(
+                        int(result.outcome), f'unknown_{int(result.outcome)}'),
+                    success=bool(result.success),
+                    found=bool(result.found),
+                    message=result.message[
+                        :self.max_state_message_characters],
+                    planning_steps=int(result.planning_steps),
+                    commands_dispatched=int(result.commands_dispatched),
+                    matched_object_ids=[
+                        match.object_id for match in result.matches
+                    ],
+                    matched_objects=self._match_context(result.matches),
+                    last_command=last_command,
+                    last_outcome=last_outcome,
+                    last_message=last_message[
+                        :self.max_state_message_characters],
+                    completed_exploration_seconds=round(
+                        completed_exploration_seconds, 3),
+                    completed_exploration_distance_m=round(
+                        completed_exploration_distance_m, 4),
+                    completed_observations=completed_observations,
+                    completed_rotation_radians=round(
+                        completed_rotation_radians, 6),
+                    completed_checkpoints=completed_checkpoints,
+                    frontier_exhausted=frontier_exhausted,
+                    primitive_history=primitive_history[-20:],
                 )
             if ownership_uncertain:
                 self._set_status(

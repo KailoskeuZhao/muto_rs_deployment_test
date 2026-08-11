@@ -308,6 +308,7 @@ private:
   {
     elapsed,
     canceled,
+    timeout,
     exploration_complete,
     stopping,
   };
@@ -522,6 +523,7 @@ private:
     declare_parameter<double>("exploration_service_timeout", 5.0);
     declare_parameter<double>("save_map_timeout", 10.0);
     declare_parameter<double>("program_endpoint_timeout", 5.0);
+    declare_parameter<double>("frontier_navigation_start_timeout", 15.0);
     declare_parameter<double>("exploration_cycle_duration", 10.0);
     declare_parameter<double>("observation_duration", 3.0);
     declare_parameter<int64_t>("observation_min_detection_frames", 3);
@@ -618,6 +620,8 @@ private:
     save_map_timeout_ = get_parameter("save_map_timeout").as_double();
     program_endpoint_timeout_ =
       get_parameter("program_endpoint_timeout").as_double();
+    frontier_navigation_start_timeout_ =
+      get_parameter("frontier_navigation_start_timeout").as_double();
     exploration_cycle_duration_ =
       get_parameter("exploration_cycle_duration").as_double();
     observation_duration_ = get_parameter("observation_duration").as_double();
@@ -788,6 +792,12 @@ private:
     {
       throw std::invalid_argument(
               "exploration_cycle_duration must be finite and positive");
+    }
+    if (!std::isfinite(frontier_navigation_start_timeout_) ||
+      frontier_navigation_start_timeout_ <= 0.0)
+    {
+      throw std::invalid_argument(
+              "frontier_navigation_start_timeout must be finite and positive");
     }
     if (!std::isfinite(observation_duration_) || observation_duration_ <= 0.0) {
       throw std::invalid_argument(
@@ -1464,6 +1474,29 @@ private:
       }
       if (watch_exploration_completion && exploration_completed_.load()) {
         return ProgramDelayStatus::exploration_complete;
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    return ProgramDelayStatus::elapsed;
+  }
+
+  ProgramDelayStatus wait_for_frontier_navigation_start(
+    const std::shared_ptr<ProgramGoalHandle> & goal_handle)
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(frontier_navigation_start_timeout_);
+    while (!navigation_active_.load(std::memory_order_relaxed)) {
+      if (goal_handle->is_canceling()) {
+        return ProgramDelayStatus::canceled;
+      }
+      if (stopping_.load() || !rclcpp::ok()) {
+        return ProgramDelayStatus::stopping;
+      }
+      if (exploration_completed_.load()) {
+        return ProgramDelayStatus::exploration_complete;
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return ProgramDelayStatus::timeout;
       }
       std::this_thread::sleep_for(50ms);
     }
@@ -2735,7 +2768,31 @@ private:
 
     publish_program_feedback(
       goal_handle, kProgramExploringPhase,
-      "bounded frontier exploration primitive is running", 0U, objects_after);
+      "waiting for frontier navigation to begin", 0U, objects_after);
+    const auto navigation_start = wait_for_frontier_navigation_start(
+      goal_handle);
+    if (navigation_start == ProgramDelayStatus::canceled) {
+      cancel_program(
+        goal_handle, "explore-frontier primitive canceled before navigation",
+        0U, objects_before, objects_after);
+      return;
+    }
+    if (navigation_start == ProgramDelayStatus::stopping) {
+      best_effort_stop_exploration();
+      return;
+    }
+    if (navigation_start == ProgramDelayStatus::timeout) {
+      abort_program(
+        goal_handle, "frontier exploration did not dispatch a navigation goal",
+        0U, objects_before, objects_after);
+      return;
+    }
+
+    publish_program_feedback(
+      goal_handle, kProgramExploringPhase,
+      navigation_start == ProgramDelayStatus::exploration_complete ?
+      "frontier exploration reports no reachable frontier" :
+      "bounded frontier navigation is active", 0U, objects_after);
     const auto exploration_wait = wait_program_delay(
       goal_handle, exploration_duration);
     if (exploration_wait == ProgramDelayStatus::canceled) {
@@ -3404,6 +3461,7 @@ private:
   double exploration_service_timeout_{5.0};
   double save_map_timeout_{10.0};
   double program_endpoint_timeout_{5.0};
+  double frontier_navigation_start_timeout_{15.0};
   double exploration_cycle_duration_{10.0};
   double observation_duration_{3.0};
   int64_t observation_min_detection_frames_{3};

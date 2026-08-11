@@ -84,7 +84,12 @@ controller_server:
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 0.4
+      # RPP clamps rotate-to-heading against measured odometry each 20 Hz
+      # cycle. At 0.4 rad/s^2 its first command was only 0.02 rad/s, below half
+      # the Muto gait's 0.0963 rad/s minimum yaw level, so the driver projected
+      # it to zero forever. 1.2 produces a 0.06 rad/s first step, which maps to
+      # an executable gait level while remaining below the 0.18 rad/s cap.
+      max_angular_accel: 1.2
 
 local_costmap:
   local_costmap:
@@ -184,7 +189,8 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
     max_velocity: [0.25, 0.0, 0.18]
     min_velocity: [-0.15, 0.0, -0.18]
-    max_accel: [0.25, 0.0, 0.4]
+    # Keep the smoother consistent with RPP's executable-yaw acceleration.
+    max_accel: [0.25, 0.0, 1.2]
     max_decel: [-0.3, 0.0, -0.5]
     odom_topic: /odometry/filtered
     odom_duration: 0.2

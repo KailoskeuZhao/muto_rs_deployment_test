@@ -46,6 +46,9 @@ command_layer:
     # Once frontiers are exhausted, walk geometry-selected viewpoints and
     # continue scanning the static scene instead of ending immediately.
     program_endpoint_timeout: 5.0
+    # Do not consume the bounded travel interval while the frontier planner is
+    # still computing and dispatching its first Nav2 goal.
+    frontier_navigation_start_timeout: 15.0
     # This is a minimum interval. If Nav2 is still driving to a frontier when
     # it elapses, finish that travel goal before pausing to scan.
     exploration_cycle_duration: 10.0
@@ -147,9 +150,11 @@ model_commander:
     find_object_action: /find_object
     explore_frontier_action: /command_primitives/explore_frontier
     spin_action: /spin
+    rotate_cmd_vel_topic: /cmd_vel
     registry_save_service: /sam2/save_stored_objects
     detection_heartbeat_topic: /sam2/detection_heartbeat
     registry_topic: /sam2/stored_objects
+    robot_pose_topic: /odometry/filtered
     visual_observation_topic: /camera/color/image_raw
     status_topic: /model_commander/status
     # One parent bag spans the complete model-supervised mission, including
@@ -188,12 +193,21 @@ model_commander:
     max_rotation_radians: 6.283185307179586
     max_observation_seconds: 30.0
     spin_time_allowance: 15.0
+    # Model-commanded rotate bypasses Nav2 Spin and publishes a constant yaw
+    # command that is above the Muto driver's minimum executable gait level.
+    # Completion is accepted only after odometry reports enough yaw change.
+    rotate_executable_yaw_velocity: 0.19
+    rotate_goal_tolerance: 0.08
+    rotate_control_period: 0.05
+    rotate_stop_publish_count: 3
     checkpoint_timeout: 10.0
     observation_min_detection_frames: 3
-    # A no-match finish needs search-area change, stationary observations,
-    # enough completed in-place rotation, and a registry checkpoint. These may
-    # occur in any order.
-    minimum_no_match_exploration_seconds: 10.0
+    # Frontier time is not coverage. A step below 0.10 m is reported as no
+    # spatial progress, and no-match requires at least 0.50 m of odometry-
+    # verified travel plus the other evidence below. These may occur in any
+    # order.
+    minimum_explore_progress_distance_m: 0.10
+    minimum_no_match_travel_distance_m: 0.50
     minimum_no_match_observations: 4
     minimum_no_match_rotation_radians: 6.283185307179586
     minimum_no_match_checkpoints: 1

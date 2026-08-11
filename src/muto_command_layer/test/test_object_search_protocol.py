@@ -61,6 +61,9 @@ def test_visual_prompt_and_tags_preserve_exact_ids():
         'object_request': 'the chair with a red back',
         'candidate_ids_in_image_order': ['chair', 'chair_2'],
     }
+    assert 'Every requested visual attribute is mandatory' in prompt
+    assert 'dominant on its primary visible body or upholstery' in prompt
+    assert 'Reject an occluded or ambiguous candidate' in prompt
     assert candidate_image_tag('chair_2') == \
         'CANDIDATE_IMAGE_ID_JSON:"chair_2"'
 

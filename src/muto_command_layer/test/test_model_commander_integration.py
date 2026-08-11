@@ -2,6 +2,7 @@
 
 from collections import deque
 import json
+import math
 import os
 import signal
 import subprocess
@@ -18,7 +19,8 @@ from muto_command_layer.action import (
 from muto_command_layer.msg import ObjectMatch
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
-from nav2_msgs.action import Spin
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 import pytest
 import rclpy
 from rclpy.action import (
@@ -95,6 +97,8 @@ class FakeCommanderBackends(Node):
         self.find_action = f'{prefix}/find_object'
         self.explore_action = f'{prefix}/explore_frontier'
         self.spin_action = f'{prefix}/spin'
+        self.rotate_cmd_vel_topic = f'{prefix}/cmd_vel'
+        self.odom_topic = f'{prefix}/odometry/filtered'
         self.checkpoint_service = f'{prefix}/save_stored_objects'
         self.detection_heartbeat_topic = f'{prefix}/detection_heartbeat'
         self.detections_topic = f'{prefix}/detections'
@@ -130,6 +134,11 @@ class FakeCommanderBackends(Node):
         self.inspected_images = []
         self.lifecycle_events = []
         self.camera_sequence = 0
+        self._yaw = 0.0
+        self._x = 0.0
+        self._last_rotate_cmd = 0.0
+        self._rotate_command_seen = False
+        self.simulate_explore_motion = True
 
         self.vlm_server = ActionServer(
             self,
@@ -155,14 +164,6 @@ class FakeCommanderBackends(Node):
             cancel_callback=self.accept_cancel,
             callback_group=self._callback_group,
         )
-        self.spin_server = ActionServer(
-            self,
-            Spin,
-            self.spin_action,
-            execute_callback=self.execute_spin,
-            cancel_callback=self.accept_cancel,
-            callback_group=self._callback_group,
-        )
         self.checkpoint_server = self.create_service(
             Trigger,
             self.checkpoint_service,
@@ -184,6 +185,15 @@ class FakeCommanderBackends(Node):
         self.camera_publisher = self.create_publisher(
             Image, self.image_topic, camera_qos)
         self.camera_timer = self.create_timer(0.03, self.publish_camera)
+        self.odom_publisher = self.create_publisher(
+            Odometry, self.odom_topic, 10)
+        self.odom_timer = self.create_timer(0.02, self.publish_odometry)
+        self.rotate_subscription = self.create_subscription(
+            Twist,
+            self.rotate_cmd_vel_topic,
+            self.rotate_cmd_callback,
+            10,
+        )
         self.detection_heartbeat_publisher = self.create_publisher(
             Header, self.detection_heartbeat_topic, 10)
         self.detections_publisher = self.create_publisher(
@@ -347,19 +357,39 @@ class FakeCommanderBackends(Node):
         self.primitive_names.append('explore_frontier')
         return self.execute_program(goal_handle)
 
-    def execute_spin(self, goal_handle):
-        self.primitive_names.append('rotate')
-        self.program_cycles.append(1)
-        while not goal_handle.is_cancel_requested and \
-                not self.release_program.is_set():
-            time.sleep(0.01)
-        result = Spin.Result()
-        if goal_handle.is_cancel_requested:
-            self.program_cancellations += 1
-            goal_handle.canceled()
-            return result
-        goal_handle.succeed()
-        return result
+    def rotate_cmd_callback(self, message):
+        angular_z = float(message.angular.z)
+        with self._lock:
+            was_active = abs(self._last_rotate_cmd) > 1.0e-6
+            self._last_rotate_cmd = angular_z
+            if abs(angular_z) > 1.0e-6 and not self._rotate_command_seen:
+                self._rotate_command_seen = True
+                self.primitive_names.append('rotate')
+                self.program_cycles.append(1)
+            if abs(angular_z) <= 1.0e-6 and was_active and \
+                    not self.release_program.is_set():
+                self.program_cancellations += 1
+            if abs(angular_z) <= 1.0e-6:
+                self._rotate_command_seen = False
+
+    def publish_odometry(self):
+        with self._lock:
+            angular_z = self._last_rotate_cmd
+            if abs(angular_z) > 1.0e-6:
+                if self.release_program.is_set():
+                    self._yaw += math.copysign(0.35, angular_z)
+                else:
+                    self._yaw += angular_z * 0.02
+            yaw = self._yaw
+            x = self._x
+        odom = Odometry()
+        odom.header.stamp = self.get_clock().now().to_msg()
+        odom.header.frame_id = 'map'
+        odom.child_frame_id = 'base_link'
+        odom.pose.pose.position.x = x
+        odom.pose.pose.orientation.z = math.sin(yaw * 0.5)
+        odom.pose.pose.orientation.w = math.cos(yaw * 0.5)
+        self.odom_publisher.publish(odom)
 
     def handle_checkpoint(self, _request, response):
         self.primitive_names.append('checkpoint_registry')
@@ -384,6 +414,11 @@ class FakeCommanderBackends(Node):
             result.message = 'fake exploration canceled'
             goal_handle.canceled()
             return result
+        if self.simulate_explore_motion:
+            with self._lock:
+                self._x += 0.6
+            self.publish_odometry()
+            time.sleep(0.05)
         result.success = True
         result.message = 'fake bounded exploration completed'
         result.completed_cycles = 1
@@ -475,10 +510,12 @@ def running_commander():
             '-p', f'find_object_action:={backend.find_action}',
             '-p', f'explore_frontier_action:={backend.explore_action}',
             '-p', f'spin_action:={backend.spin_action}',
+            '-p', f'rotate_cmd_vel_topic:={backend.rotate_cmd_vel_topic}',
             '-p', f'registry_save_service:={backend.checkpoint_service}',
             '-p', ('detection_heartbeat_topic:='
                    f'{backend.detection_heartbeat_topic}'),
             '-p', f'registry_topic:={backend.registry_topic}',
+            '-p', f'robot_pose_topic:={backend.odom_topic}',
             '-p', f'visual_observation_topic:={backend.image_topic}',
             '-p', f'status_topic:={backend.status_topic}',
             '-p', f'decision_event_topic:={backend.decision_topic}',
@@ -491,6 +528,10 @@ def running_commander():
             '-p', 'child_stop_timeout:=2.0',
             '-p', 'default_max_duration:=20.0',
             '-p', 'default_max_planning_steps:=12',
+            '-p', 'rotate_executable_yaw_velocity:=0.19',
+            '-p', 'rotate_goal_tolerance:=0.04',
+            '-p', 'rotate_control_period:=0.01',
+            '-p', 'rotate_stop_publish_count:=1',
             '-p', 'planner_retry_initial_delay:=0.05',
             '-p', 'planner_retry_max_delay:=0.1',
             '-p', 'command_retry_initial_delay:=0.05',
@@ -502,6 +543,8 @@ def running_commander():
             '-p', 'active_inspection_max_decision_age:=3.0',
             '-p', 'minimum_no_match_observations:=1',
             '-p', 'minimum_no_match_rotation_radians:=1.0',
+            '-p', 'minimum_explore_progress_distance_m:=0.1',
+            '-p', 'minimum_no_match_travel_distance_m:=0.5',
             '-p', 'observation_min_detection_frames:=1',
             '-p', 'monitor_period:=0.01',
             '-p', 'status_publish_period:=0.05',
@@ -561,6 +604,16 @@ def test_existing_match_finishes_without_planning_or_motion(
     assert [event['event'] for event in backend.lifecycle_events] == [
         'mission_started', 'succeeded']
     assert backend.lifecycle_events[-1]['matched_object_ids'] == ['red_mug_2']
+    wait_until(lambda: any(
+        event.get('event') == 'mission_result'
+        for event in backend.trace_events
+    ))
+    mission_result = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'mission_result'
+    )
+    assert mission_result['outcome'] == 'found'
+    assert mission_result['matched_object_ids'] == ['red_mug_2']
 
 
 def test_transient_registry_search_failure_retries_without_motion(
@@ -788,6 +841,35 @@ def test_premature_finish_is_rejected_until_search_evidence_is_current(
         LookForObject.Result.OUTCOME_NOT_FOUND
     assert backend.program_cycles == [1, 1]
     assert backend.vlm_requests == 7
+
+
+def test_stationary_frontier_timeout_does_not_count_as_search_travel(
+        running_commander):
+    backend, client = running_commander
+    backend.simulate_explore_motion = False
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
+    backend.queue_decision(
+        'finish_not_found', reason='incorrectly treating elapsed time as travel')
+    backend.queue_decision('wait', wait_seconds=10.0)
+    backend.release_program.set()
+
+    goal_handle = send_mission(client)
+    result_future = goal_handle.get_result_async()
+    wait_until(lambda: any(
+        event.get('command') == 'explore_frontier' and
+        event.get('outcome') == 'no_spatial_progress'
+        for event in backend.trace_events
+    ))
+    wait_until(lambda: any(
+        event.get('command') == 'finish_not_found' and
+        event.get('outcome') == 'premature_finish_rejected'
+        for event in backend.trace_events
+    ))
+
+    assert not result_future.done()
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(result_future)
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
 
 
 def test_registry_revision_discards_inflight_model_decision(

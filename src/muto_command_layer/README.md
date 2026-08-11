@@ -18,7 +18,8 @@ checkpoint_registry | wait | finish_not_found
 ```
 
 `/command_primitives/explore_frontier` performs bounded frontier travel and
-confirms it stopped. `rotate` owns one bounded Nav2 `/spin` goal, `observe`
+confirms it stopped. `rotate` sends one bounded executable yaw command and
+verifies the achieved angle from `/odometry/filtered`; `observe`
 holds the robot stationary while fresh `/sam2/detection_heartbeat` messages
 arrive, and
 `checkpoint_registry` calls `/sam2/save_stored_objects`. Rotation, observation,
@@ -445,7 +446,11 @@ the registry and sends ordered `candidate ID tag -> JPEG` pairs through
 `muto_vlm_socket`. By default, a missing, oversized, or invalid candidate JPEG
 aborts the search so candidates are not silently discarded.
 This pass receives a separate strict schema limited to the IDs whose JPEGs were
-actually included.
+actually included. Requested visual attributes are mandatory. A general color
+description must be dominant on the object's primary visible body or upholstery;
+small hardware, armrests, reflections, tinted lighting, and nearby objects do
+not qualify unless the request explicitly names that part. Occluded or ambiguous
+candidates are rejected.
 
 Every final result is returned in the `FindObject` action result and published
 individually as `muto_command_layer/msg/ObjectMatch` on
@@ -546,11 +551,13 @@ a newly received `/camera/color/image_raw` frame encoded as a bounded JPEG. The
 strict response must include a short visual observation and one of
 `not_visible`, `possible`, `likely`, or `unclear`. Local code owns every action
 client, limits duration and planning/dispatch counts, and rejects
-  `finish_not_found` until the configured counts of stationary observations,
-  completed rotation, registry checkpoints, and frontier evidence are followed
-  by a fresh registry check. The defaults are four observations, one full turn,
-  one checkpoint, and either frontier exhaustion or 10 seconds of completed
-  exploration. The primitive order remains unrestricted. `possible`
+`finish_not_found` until the configured counts of stationary observations,
+odometry-measured rotation, registry checkpoints, and translational travel are
+followed by a fresh registry check. Frontier time alone is not coverage: a step
+moving less than 0.10 m is reported as `no_spatial_progress`, and the default
+no-match gate requires at least 0.50 m of measured travel. The other defaults
+are four observations, one full turn, and one checkpoint. The primitive order
+remains unrestricted. `possible`
   or `likely` target evidence
   forces another registry check before any further motion or no-match finish.
   Visual evidence never sets `found`; only `/find_object` can confirm a registry
@@ -717,9 +724,11 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
 - `max_rotation_radians`, `max_observation_seconds`, `spin_time_allowance`,
   `checkpoint_timeout`, and `observation_min_detection_frames`: local bounds
   for the separated rotate, observe, and checkpoint primitives.
-- `minimum_no_match_observations`, `minimum_no_match_rotation_radians`,
-  `minimum_no_match_checkpoints`, and
-  `minimum_no_match_exploration_seconds`: evidence gates enforced before a
+- `minimum_explore_progress_distance_m`: displacement required before a
+  bounded frontier interval counts as useful travel.
+- `minimum_no_match_travel_distance_m`, `minimum_no_match_observations`,
+  `minimum_no_match_rotation_radians`, and
+  `minimum_no_match_checkpoints`: measured evidence gates enforced before a
   model-requested no-match finish.
 - `max_shortlist_size`: maximum number of metadata candidates allowed into
   visual refinement; default `7`. This keeps the tagged JPEG request within the

@@ -36,10 +36,14 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   "{data: 'observation: green chair visible beside the white desk'}"
 ```
 
-The default profile records the append-only decision trace, commander status,
+The default profile records the append-only decision trace, including a final
+`mission_result`, commander status,
 the exact bounded JPEGs inspected by the commander, registry/object changes,
 hidden action traffic, primitive lifecycle events, navigation context, TF,
-odometry, maps, scans, logs, and operator events. It excludes continuous raw
+odometry, maps, scans, logs, and operator events. Each decision trace event
+also includes the latest `/odometry/filtered` pose snapshot when available, so
+high-level replay can answer where the robot was when it planned, dispatched, or
+finished a primitive. It excludes continuous raw
 camera images, camera point clouds, SAM masks/annotations/instance point
 clouds, and legacy LiDAR point clouds.
 

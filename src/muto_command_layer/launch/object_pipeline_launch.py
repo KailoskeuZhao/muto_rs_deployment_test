@@ -135,6 +135,14 @@ def generate_launch_description():
             default_value='true',
         ),
         DeclareLaunchArgument(
+            'registry_load_existing',
+            default_value='false',
+            description=(
+                'Preserve persisted objects only when their saved map is '
+                'being restored.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'target_frame',
             default_value='map',
             description='Registry storage and Nav2 global frame.',
@@ -213,6 +221,8 @@ def generate_launch_description():
             'image_directory': LaunchConfiguration(
                 'registry_image_directory'),
             'store_images': LaunchConfiguration('registry_store_images'),
+            'load_existing': LaunchConfiguration(
+                'registry_load_existing'),
             'target_frame': LaunchConfiguration('target_frame'),
             'yolo_confidence': LaunchConfiguration('yolo_confidence'),
             'tf_retry_window': LaunchConfiguration(

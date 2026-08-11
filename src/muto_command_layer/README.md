@@ -41,6 +41,14 @@ export HKU_API_KEY='your-key'
 ros2 launch muto_command_layer command_layer_launch.py
 ```
 
+This default is a fresh-map startup and clears persisted object records. When
+the navigation stack is restoring the corresponding saved map, preserve its
+registry explicitly:
+
+```bash
+ros2 launch muto_command_layer command_layer_launch.py load_existing_map:=true
+```
+
 Credentials remain environment-only. The launch shares the annotator detection
 and point-cloud topics with the registry, and shares the registry service and
 VLM action endpoints with the command layer. Each included package is scoped so

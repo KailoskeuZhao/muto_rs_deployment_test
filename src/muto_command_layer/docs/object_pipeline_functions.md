@@ -187,7 +187,9 @@ confirmation. By default, images are written to `sam2_object_images` beside the
 registry YAML and their absolute paths are stored in the object record.
 
 An empty `registry_output_yaml` resolves to `sam2_objects.yaml` in the active
-ROS workspace root. Existing objects are loaded at startup, new objects are
+ROS workspace root. By default, startup clears the previous map-frame object
+state. Pass `load_existing_map:=true` only when restoring its saved map; then
+existing objects are loaded at startup and new objects are
 merged in memory, and the complete registry is atomically rewritten on clean
 shutdown.
 
@@ -604,7 +606,7 @@ The top-level launch exposes the controls most likely to vary by deployment:
 - inference: `yolo_model`, `yolo_device`, `yolo_confidence`,
   `detection_crop_jpeg_quality`, and `max_publish_rate`;
 - registry: `registry_output_yaml`, `registry_image_directory`,
-  `registry_store_images`, `registry_tf_retry_window`,
+  `registry_store_images`, `load_existing_map`, `registry_tf_retry_window`,
   `registry_tf_retry_rate`, and `global_frame`;
 - VLM: `vlm_params_file`, `vlm_action`, `vlm_base_url`, `vlm_wire_api`,
   `vlm_model`, `object_search_vlm_model`, `natural_language_vlm_model`, and

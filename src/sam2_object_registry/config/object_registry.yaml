@@ -31,4 +31,7 @@ object_registry:
     marker_scale: 0.12
     marker_text_height: 0.12
     marker_text_offset: 0.15
+    # A fresh run clears stale map-frame objects. Set true only when the
+    # corresponding saved map is restored.
+    load_existing: false
     save_on_shutdown: true

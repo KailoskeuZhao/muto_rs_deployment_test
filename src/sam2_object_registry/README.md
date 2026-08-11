@@ -68,12 +68,14 @@ By default, an empty `output_yaml` resolves to `sam2_objects.yaml` in the active
 colcon workspace root. For example, a package installed below
 `/opt/muto_rs_ws/install` writes `/opt/muto_rs_ws/sam2_objects.yaml`. Set the
 `ROS_WORKSPACE` environment variable to select the workspace explicitly, or
-pass `output_yaml:=/some/path/objects.yaml`. Existing objects are loaded at
-startup and merged with new observations. On clean SIGINT/SIGTERM shutdown, the
-complete merged database is written through a temporary file, `fsync`, and
-atomic rename. This is a valid YAML rewrite rather than literal text append,
-which would corrupt a single YAML document. A manual checkpoint is also
-available:
+pass `output_yaml:=/some/path/objects.yaml`. Fresh startup is the default:
+`load_existing:=false` clears persisted map-frame objects and their referenced
+registry images before accepting new observations. Set `load_existing:=true`
+only when restoring the corresponding saved map; those objects are then loaded
+and merged with new observations. On clean SIGINT/SIGTERM shutdown, the complete
+database is written through a temporary file, `fsync`, and atomic rename. This
+is a valid YAML rewrite rather than literal text append, which would corrupt a
+single YAML document. A manual checkpoint is also available:
 
 ```bash
 ros2 service call /sam2/save_stored_objects std_srvs/srv/Trigger "{}"

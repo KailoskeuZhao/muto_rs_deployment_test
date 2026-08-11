@@ -105,6 +105,8 @@ def generate_launch_description():
                 'registry_image_directory'),
             'registry_store_images': LaunchConfiguration(
                 'registry_store_images'),
+            'registry_load_existing': LaunchConfiguration(
+                'load_existing_map'),
             'target_frame': LaunchConfiguration('global_frame'),
             'registry_tf_retry_window': LaunchConfiguration(
                 'registry_tf_retry_window'),
@@ -177,6 +179,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'registry_store_images',
             default_value='true',
+        ),
+        DeclareLaunchArgument(
+            'load_existing_map',
+            default_value='false',
+            description=(
+                'Set true when Nav2 restores a saved map so its persisted '
+                'object registry is loaded. False starts with clean objects.'
+            ),
         ),
         DeclareLaunchArgument(
             'registry_tf_retry_window',

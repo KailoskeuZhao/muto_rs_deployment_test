@@ -58,6 +58,13 @@ def generate_launch_description():
         DeclareLaunchArgument('marker_scale', default_value='0.12'),
         DeclareLaunchArgument('marker_text_height', default_value='0.12'),
         DeclareLaunchArgument('marker_text_offset', default_value='0.15'),
+        DeclareLaunchArgument(
+            'load_existing',
+            default_value='false',
+            description=(
+                'Load persisted objects only when restoring their saved map; '
+                'false clears persistent object state at startup.'
+            )),
         DeclareLaunchArgument('save_on_shutdown', default_value='true'),
     ]
 
@@ -117,6 +124,8 @@ def generate_launch_description():
                 LaunchConfiguration('marker_text_height'), value_type=float),
             'marker_text_offset': ParameterValue(
                 LaunchConfiguration('marker_text_offset'), value_type=float),
+            'load_existing': ParameterValue(
+                LaunchConfiguration('load_existing'), value_type=bool),
             'save_on_shutdown': ParameterValue(
                 LaunchConfiguration('save_on_shutdown'), value_type=bool),
         }],

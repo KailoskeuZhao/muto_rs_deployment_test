@@ -182,6 +182,7 @@ public:
     marker_scale_ = declare_parameter<double>("marker_scale", 0.12);
     marker_text_height_ = declare_parameter<double>("marker_text_height", 0.12);
     marker_text_offset_ = declare_parameter<double>("marker_text_offset", 0.15);
+    load_existing_ = declare_parameter<bool>("load_existing", false);
     save_on_shutdown_ = declare_parameter<bool>("save_on_shutdown", true);
     validate_parameters();
 
@@ -221,6 +222,20 @@ public:
       query_service_name_.c_str(), save_service_name_.c_str(), clear_service_name_.c_str());
 
     load_database();
+    if (!load_existing_) {
+      const auto request = std::make_shared<Trigger::Request>();
+      const auto response = std::make_shared<Trigger::Response>();
+      clear_callback(request, response);
+      if (!response->success) {
+        throw std::runtime_error(
+                "Cannot establish a clean startup registry: " +
+                response->message);
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "Fresh startup requested; existing object state was cleared. Set "
+        "load_existing:=true only when restoring a saved map.");
+    }
     publish_snapshot();
     snapshot_timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1846,6 +1861,7 @@ private:
   double marker_scale_{};
   double marker_text_height_{};
   double marker_text_offset_{};
+  bool load_existing_{};
   bool save_on_shutdown_{};
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

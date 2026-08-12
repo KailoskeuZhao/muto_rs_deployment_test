@@ -1,5 +1,10 @@
 # Natural-language description of the kind of registered object to find.
 string prompt
+
+# Optional exact registry IDs to refine. Empty means search the whole registry.
+# Non-empty means the server may only return matches from this candidate set,
+# normally using the registry's stored JPEGs as a final visual selection tool.
+string[] candidate_ids
 ---
 bool success
 string message

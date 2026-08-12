@@ -20,6 +20,7 @@ from object_search_protocol import (
     format_judgement_log,
     parse_selection,
     SearchProtocolError,
+    Selection,
 )
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
@@ -184,6 +185,13 @@ class ObjectSearchNode(Node):
             self.get_logger().warning(
                 'Rejected FindObject goal with an empty or oversized prompt')
             return GoalResponse.REJECT
+        candidate_ids = [item.strip() for item in goal_request.candidate_ids]
+        if len(candidate_ids) > self.max_shortlist_size or \
+                any(not item.strip() for item in candidate_ids) or \
+                len(candidate_ids) != len(set(candidate_ids)):
+            self.get_logger().warning(
+                'Rejected FindObject goal with invalid candidate_ids')
+            return GoalResponse.REJECT
         with self._state_lock:
             if self._busy:
                 self.get_logger().warning(
@@ -274,6 +282,22 @@ class ObjectSearchNode(Node):
             raise SearchFailure(
                 'object registry contains empty or duplicate IDs')
         return registry.header, objects
+
+    @staticmethod
+    def _filter_requested_candidates(objects, candidate_ids):
+        """Return requested registry objects in candidate-id order."""
+        if not candidate_ids:
+            return objects
+        objects_by_id = {item.name: item for item in objects}
+        missing = [
+            object_id for object_id in candidate_ids
+            if object_id not in objects_by_id
+        ]
+        if missing:
+            raise SearchFailure(
+                'candidate_ids are not all present in the registry: ' +
+                ', '.join(missing))
+        return [objects_by_id[object_id] for object_id in candidate_ids]
 
     def _call_vlm(self, content, response_json_schema, goal_handle):
         """Send one child action goal and return its successful result."""
@@ -429,6 +453,9 @@ class ObjectSearchNode(Node):
         """Run metadata shortlisting and conditional visual refinement."""
         result = FindObject.Result()
         prompt = goal_handle.request.prompt.strip()
+        requested_candidate_ids = [
+            item.strip() for item in goal_handle.request.candidate_ids
+        ]
         try:
             self._publish_feedback(
                 goal_handle,
@@ -442,6 +469,13 @@ class ObjectSearchNode(Node):
                 result.message = 'object registry is empty'
                 goal_handle.succeed()
                 return result
+            objects = self._filter_requested_candidates(
+                objects, requested_candidate_ids)
+            if requested_candidate_ids and not objects:
+                result.success = True
+                result.message = 'no requested candidate IDs are registered'
+                goal_handle.succeed()
+                return result
             objects_by_id = {item.name: item for item in objects}
             inventory = [{
                 'id': item.name,
@@ -449,34 +483,49 @@ class ObjectSearchNode(Node):
                 'class_id': item.class_id,
             } for item in objects]
 
-            self._publish_feedback(
-                goal_handle,
-                FindObject.Feedback.PHASE_TEXT_SHORTLIST,
-                'asking VLM for metadata shortlist',
-                len(objects),
-            )
-            shortlist_prompt = build_shortlist_prompt(
-                prompt, inventory, self.max_shortlist_size)
-            shortlist_schema = build_selection_schema(
-                'candidates',
-                list(objects_by_id),
-                self.max_shortlist_size,
-                self.max_description_characters,
-            )
-            shortlist_result = self._call_vlm(
-                [self._text_content(shortlist_prompt)],
-                shortlist_schema,
-                goal_handle,
-            )
-            shortlist = parse_selection(
-                shortlist_result.response_text,
-                'candidates',
-                list(objects_by_id),
-                self.max_shortlist_size,
-                self.max_description_characters,
-            )
-            self._log_vlm_judgement(
-                'metadata shortlist', shortlist, list(objects_by_id))
+            if requested_candidate_ids:
+                self._publish_feedback(
+                    goal_handle,
+                    FindObject.Feedback.PHASE_TEXT_SHORTLIST,
+                    'using caller-provided registry candidate IDs',
+                    len(objects),
+                )
+                shortlist = [
+                    Selection(
+                        object_id=item.name,
+                        description='caller-provided confirmed registry '
+                        'candidate',
+                    ) for item in objects
+                ]
+            else:
+                self._publish_feedback(
+                    goal_handle,
+                    FindObject.Feedback.PHASE_TEXT_SHORTLIST,
+                    'asking VLM for metadata shortlist',
+                    len(objects),
+                )
+                shortlist_prompt = build_shortlist_prompt(
+                    prompt, inventory, self.max_shortlist_size)
+                shortlist_schema = build_selection_schema(
+                    'candidates',
+                    list(objects_by_id),
+                    self.max_shortlist_size,
+                    self.max_description_characters,
+                )
+                shortlist_result = self._call_vlm(
+                    [self._text_content(shortlist_prompt)],
+                    shortlist_schema,
+                    goal_handle,
+                )
+                shortlist = parse_selection(
+                    shortlist_result.response_text,
+                    'candidates',
+                    list(objects_by_id),
+                    self.max_shortlist_size,
+                    self.max_description_characters,
+                )
+                self._log_vlm_judgement(
+                    'metadata shortlist', shortlist, list(objects_by_id))
 
             final_selections = shortlist
             if shortlist:

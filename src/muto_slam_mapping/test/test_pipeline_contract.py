@@ -122,10 +122,14 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
 
     assert smoother['max_velocity'][1] == 0.0
     assert smoother['min_velocity'][1] == 0.0
-    assert smoother['max_velocity'][2] == 0.18
-    assert smoother['min_velocity'][2] == -0.18
-    assert controller['rotate_to_heading_angular_vel'] == 0.18
-    assert behavior['max_rotational_vel'] == 0.18
+    assert smoother['max_velocity'][2] == 0.80
+    assert smoother['min_velocity'][2] == -0.80
+    assert smoother['max_accel'][2] == 1.2
+    assert smoother['max_decel'][2] == -1.2
+    assert controller['rotate_to_heading_angular_vel'] == 0.80
+    assert controller['max_angular_accel'] == 1.2
+    assert behavior['max_rotational_vel'] == 0.80
+    assert behavior['rotational_acc_lim'] == 1.2
 
 
 def test_camera_launch_is_camera_only_and_matches_declared_fov():
@@ -181,7 +185,7 @@ def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():
         assert float(defaults['locomotion_update_rate_hz']) == 50.0
         assert defaults['batch_gait_phase_writes'] == 'true'
         assert float(defaults['cmd_vel_timeout']) == 0.5
-        assert defaults['locomotion_command_mapping'] == 'calibrated'
+        assert defaults['locomotion_command_mapping'] == 'geometric'
         assert defaults['locomotion_calibration_file'].endswith(
             'muto_locomotion_provisional_20260806.yaml'
         )

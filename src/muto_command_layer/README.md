@@ -25,7 +25,8 @@ arrive, and
 `checkpoint_registry` calls `/sam2/save_stored_objects`. Rotation, observation,
 and persistence are no longer hidden inside one model-visible scan command.
 The heartbeat contains only the detector frame header. The commander subscribes
-to it only for the lifetime of `observe`, so it never deserializes JPEG-bearing
+to it only for the lifetime of `observe`; the bounded observation clock starts
+after the first heartbeat confirms DDS matching. It never deserializes JPEG-bearing
 `/sam2/detections` messages and has no detector subscription while idle.
 
 See [Object pipeline functions](docs/object_pipeline_functions.md) for the
@@ -589,16 +590,21 @@ The VLM is a strategic monitor, not a real-time collision controller; Nav2 keeps
 that responsibility.
 
 The raw-image subscription exists only while one snapshot is being acquired, so
-the idle resident commander does not deserialize the full camera stream. Each
-inspection requires a frame received after the preceding inspection. Ordinary
-30 Hz camera updates neither trigger inference nor invalidate an in-flight model
-request. "Fresh" here means newly received with a bounded monotonic receipt age;
-it cannot detect a camera driver that republishes frozen pixels under new
-messages. A missing, stale, invalid, or oversized planning frame causes bounded
-no-motion retries. Repeated active-monitor failures stop the owned motion and
-abort rather than letting it run indefinitely without the promised monitor. One
-snapshot is the current forward view, not proof of complete 360-degree visual
-coverage.
+the idle resident commander does not deserialize the full camera stream. Camera
+and crop-free detector-heartbeat subscriptions are owned by dedicated
+single-thread executors: create, spin, and destroy occur sequentially on the
+same worker thread, outside the commander's multithread executor. Each worker
+accepts one bounded request at a time, has no unbounded queue, and is canceled
+without holding commander state locks. This prevents the Humble wait-set handle
+race and bounds shutdown if an input stalls. Each inspection requires a frame
+received after the preceding inspection. Ordinary 30 Hz camera updates neither
+trigger inference nor invalidate an in-flight model request. "Fresh" here means
+newly received with a bounded monotonic receipt age; it cannot detect a camera
+driver that republishes frozen pixels under new messages. A missing, stale,
+invalid, or oversized planning frame causes bounded no-motion retries. Repeated
+active-monitor failures stop the owned motion and abort rather than letting it
+run indefinitely without the promised monitor. One snapshot is the current
+forward view, not proof of complete 360-degree visual coverage.
 
 If the stop state of an accepted moving child cannot be confirmed, the
 commander fails closed: it retains the ownership handle, latches its status as
@@ -735,8 +741,12 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   `max_map_name_characters`: local input/output limits for natural-language
   routing; defaults `4096`, `1024`, and `128`.
 - `max_rotation_radians`, `max_observation_seconds`, `spin_time_allowance`,
+  `rotate_executable_yaw_velocity`, `rotate_timeout_reference_yaw_velocity`,
   `checkpoint_timeout`, and `observation_min_detection_frames`: local bounds
-  for the separated rotate, observe, and checkpoint primitives.
+  for the separated rotate, observe, and checkpoint primitives. Direct rotate
+  commands the custom gait's nominal level-20 geometric yaw (`0.80 rad/s`),
+  but sizes its timeout with a conservative ground-response rate and accepts
+  completion only from odometry.
 - `minimum_explore_progress_distance_m`: displacement required before a
   bounded frontier interval counts as useful travel.
 - `minimum_no_match_travel_distance_m`, `minimum_no_match_observations`,

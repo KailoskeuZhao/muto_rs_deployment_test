@@ -16,6 +16,7 @@ from muto_hexapod_interfaces_custom.msg import (
 from muto_hexapod_lib_custom.core.config import STANDBY_SERVO_ANGLES_DEG
 from muto_hexapod_lib_custom.core.MutoLibCore import Muto
 from muto_hexapod_lib_custom.movement.velocity_calibration import (
+    GeometricVelocityMapper,
     MotionLevels,
     PlanarVelocity,
     SaturationFlags,
@@ -33,6 +34,7 @@ import yaml
 
 
 CALIBRATED_MAPPING = 'calibrated'
+GEOMETRIC_MAPPING = 'geometric'
 LEGACY_MAPPING = 'legacy_100'
 DEFAULT_IMU_POLL_RATE_HZ = 10.0
 DEFAULT_IMU_ATTITUDE_POLL_RATE_HZ = 10.0
@@ -244,11 +246,18 @@ class yahboomcar_driver(Node):
                 'cmd_vel_timeout must be finite and non-negative; using 0.5')
             self.cmd_vel_timeout = 0.5
         self.locomotion_command_mapping = str(self.declare_parameter(
-            'locomotion_command_mapping', CALIBRATED_MAPPING).value)
+            'locomotion_command_mapping', GEOMETRIC_MAPPING).value)
         default_calibration_file = _default_calibration_file()
         self.locomotion_calibration_file = str(self.declare_parameter(
             'locomotion_calibration_file', default_calibration_file).value)
-        if self.locomotion_command_mapping == CALIBRATED_MAPPING:
+        if self.locomotion_command_mapping == GEOMETRIC_MAPPING:
+            self.velocity_mapper = GeometricVelocityMapper(
+                self.locomotion_update_rate_hz)
+            calibration_description = (
+                self.velocity_mapper.profile.profile_id
+                + ' commanded-gait geometry'
+            )
+        elif self.locomotion_command_mapping == CALIBRATED_MAPPING:
             self.velocity_mapper = load_velocity_calibration(
                 self.locomotion_calibration_file,
                 self.locomotion_update_rate_hz,
@@ -262,8 +271,8 @@ class yahboomcar_driver(Node):
             calibration_description = LEGACY_MAPPING + ' rollback'
         else:
             raise ValueError(
-                'locomotion_command_mapping must be calibrated or '
-                'legacy_100')
+                'locomotion_command_mapping must be geometric, calibrated, '
+                'or legacy_100')
 
         gait_state_qos = QoSProfile(
             depth=100,
@@ -667,7 +676,8 @@ class yahboomcar_driver(Node):
             return
 
         try:
-            if self.locomotion_command_mapping == CALIBRATED_MAPPING:
+            if self.locomotion_command_mapping in (
+                    GEOMETRIC_MAPPING, CALIBRATED_MAPPING):
                 selection = self.velocity_mapper.select(
                     msg.linear.x,
                     msg.linear.y,
@@ -709,7 +719,7 @@ class yahboomcar_driver(Node):
             )
         elif selection.saturated:
             self.get_logger().warn(
-                'cmd_vel projected onto calibrated gait envelope: '
+                'cmd_vel projected onto executable gait envelope: '
                 + selection.detail,
                 throttle_duration_sec=5.0,
             )

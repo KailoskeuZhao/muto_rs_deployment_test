@@ -1,6 +1,8 @@
 # Mapping of one requested physical body twist onto the discrete Muto gait.
 #
-# `predicted_twist` is feed-forward calibration output, not measured odometry.
+# `predicted_twist` is feed-forward mapping output, not measured odometry. In
+# geometric mode it is commanded gait kinematics; in calibrated mode it is the
+# selected measured-profile value.
 # The integer levels are the command actually selected for the gait generator.
 
 std_msgs/Header header
@@ -18,7 +20,7 @@ int16 active_y_level
 int16 active_z_level
 string active_mode
 bool replacement_pending
-# Upper calibrated-envelope clipping, separate from ordinary level projection.
+# Upper active-mapping/mechanical clipping, separate from level projection.
 bool saturated
 bool x_saturated
 bool y_saturated
@@ -36,8 +38,8 @@ bool unsupported
 bool unsupported_combination
 string detail
 string calibration_profile
-# The profile is valid only for this configured gait-phase rate.
+# The mapping is valid only for this configured gait-phase rate.
 float32 calibration_phase_rate_hz
 float32 configured_phase_rate_hz
-# Rolling diagnostic measurement; it is not used to rescale the profile.
+# Rolling diagnostic measurement; it does not rescale an active command.
 float32 observed_phase_rate_hz

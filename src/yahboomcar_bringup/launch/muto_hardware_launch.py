@@ -94,10 +94,11 @@ def generate_launch_description():
     )
     locomotion_command_mapping_arg = DeclareLaunchArgument(
         "locomotion_command_mapping",
-        default_value="calibrated",
+        default_value="geometric",
         description=(
-            "cmd_vel conversion mode. 'calibrated' uses the explicit Muto "
-            "physical-speed profile; 'legacy_100' is rollback-only."
+            "cmd_vel conversion mode. 'geometric' derives amplitudes from "
+            "the custom exact-SE(2) gait; 'calibrated' loads an external "
+            "measured profile; 'legacy_100' is rollback-only."
         ),
     )
     locomotion_calibration_file_arg = DeclareLaunchArgument(
@@ -108,8 +109,8 @@ def generate_launch_description():
             "muto_locomotion_provisional_20260806.yaml",
         ]),
         description=(
-            "Velocity-to-gait calibration profile. The provisional profile "
-            "must be replaced after controlled level trials."
+            "Velocity-to-gait calibration profile used only when "
+            "locomotion_command_mapping is 'calibrated'."
         ),
     )
     imu_calibration_sample_count_arg = DeclareLaunchArgument(

@@ -326,7 +326,9 @@ spatial displacement; a stationary timeout is reported as no progress.
 `rotate` publishes a bounded executable yaw command and verifies the achieved
 angle from `/odometry/filtered`. `observe` creates a
 temporary `/sam2/detection_heartbeat` subscription and waits for fresh crop-free
-frame completions without motion. The subscription is destroyed when the
+frame completions without motion. Its requested observation duration starts
+only after the first heartbeat arrives, so DDS endpoint matching does not
+consume a short observation window. The subscription is destroyed when the
 primitive ends. `checkpoint_registry` atomically saves
 the current registry. Their outcomes are appended to the mission blackboard
 before replanning, so their order is not fixed. The legacy
@@ -359,9 +361,14 @@ responsible for real-time collision response.
 
 Every inspection requires a camera frame received after the previous one. A
 raw-image subscription is created only while taking that snapshot; normal frame
-arrival does not invoke the model or cancel an in-flight decision. Newly
-received does not prove newly captured: a camera driver that republishes frozen
-pixels cannot be distinguished from a genuinely unchanged scene here.
+arrival does not invoke the model or cancel an in-flight decision. Dynamic
+camera and detector-heartbeat subscriptions belong to separate single-thread
+input workers. Each worker admits only one bounded collection request and
+performs subscription creation, executor spinning, and subscription destruction
+sequentially on the same thread. Commander locks are never held during the
+bounded wait, avoiding Humble executor-handle races and lock-order deadlocks.
+Newly received does not prove newly captured: a camera driver that republishes
+frozen pixels cannot be distinguished from a genuinely unchanged scene here.
 
 Local controls allow one mission and one owned child at a time, impose finite
 duration, planning-step, command-dispatch, wait, exploration-cycle, retry, and

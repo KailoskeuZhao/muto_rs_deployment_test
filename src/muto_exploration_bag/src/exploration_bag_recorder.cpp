@@ -36,7 +36,8 @@ constexpr char kDefaultOutputDirectory[] = "/opt/muto_rs_ws/bags";
 
 bool is_terminal_event(const std::string & event)
 {
-  return event == "succeeded" || event == "canceled" || event == "aborted";
+  return event == "succeeded" || event == "canceled" || event == "aborted" ||
+         event == "ownership_uncertain";
 }
 
 std::string json_escape(const std::string & value)
@@ -211,6 +212,10 @@ public:
       "status_schema", "muto_exploration_bag_status_v1");
     recording_label_ = declare_parameter<std::string>(
       "recording_label", "exploration");
+    owner_heartbeat_topic_ = declare_parameter<std::string>(
+      "owner_heartbeat_topic", "");
+    owner_heartbeat_timeout_ = declare_parameter<double>(
+      "owner_heartbeat_timeout", 10.0);
     include_hidden_topics_ =
       declare_parameter<bool>("include_hidden_topics", true);
     record_all_services_ =
@@ -245,6 +250,15 @@ public:
     stop_timer_ = create_wall_timer(
       20ms, std::bind(&ExplorationBagRecorderNode::check_pending_stop, this));
     stop_timer_->cancel();
+    if (!owner_heartbeat_topic_.empty()) {
+      owner_heartbeat_subscription_ = create_subscription<std_msgs::msg::String>(
+        owner_heartbeat_topic_, transient_qos,
+        std::bind(
+          &ExplorationBagRecorderNode::handle_owner_heartbeat, this,
+          std::placeholders::_1));
+      owner_watchdog_timer_ = create_wall_timer(
+        500ms, std::bind(&ExplorationBagRecorderNode::check_owner_heartbeat, this));
+    }
 
     RCLCPP_INFO(
       get_logger(),
@@ -306,6 +320,12 @@ private:
     if (manifest_schema_.empty() || status_schema_.empty() || recording_label_.empty()) {
       throw std::invalid_argument(
               "manifest_schema, status_schema and recording_label must not be empty");
+    }
+    if (!owner_heartbeat_topic_.empty() &&
+      (!std::isfinite(owner_heartbeat_timeout_) || owner_heartbeat_timeout_ <= 0.0))
+    {
+      throw std::invalid_argument(
+              "owner_heartbeat_timeout must be finite and positive when enabled");
     }
   }
 
@@ -402,6 +422,8 @@ private:
       {"topic_scope", topic_scope},
       {"exclude_regex", exclude_regex_},
       {"operator_event_topic", operator_event_topic_},
+      {"owner_heartbeat_topic", owner_heartbeat_topic_},
+      {"owner_heartbeat_timeout", std::to_string(owner_heartbeat_timeout_)},
       {"manifest_file", "muto_recording_manifest.json"},
     };
 
@@ -426,6 +448,7 @@ private:
     }
 
     active_goal_id_ = goal_id;
+    last_owner_heartbeat_ = std::chrono::steady_clock::now();
     pending_terminal_event_.clear();
     std_msgs::msg::String path_message;
     path_message.data = transport_->path();
@@ -446,6 +469,31 @@ private:
         get_logger(), "Operator event was not recorded because no %s bag is active: %s",
         recording_label_.c_str(), message->data.c_str());
     }
+  }
+
+  void handle_owner_heartbeat(const std_msgs::msg::String::ConstSharedPtr)
+  {
+    last_owner_heartbeat_ = std::chrono::steady_clock::now();
+  }
+
+  void check_owner_heartbeat()
+  {
+    if (!transport_ || !transport_->active() || owner_heartbeat_topic_.empty()) {
+      return;
+    }
+    const auto elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_owner_heartbeat_).count();
+    if (elapsed <= owner_heartbeat_timeout_) {
+      return;
+    }
+    RCLCPP_ERROR(
+      get_logger(),
+      "%s owner heartbeat %s has been silent for %.3f seconds; finalizing goal %s",
+      recording_label_.c_str(), owner_heartbeat_topic_.c_str(), elapsed,
+      active_goal_id_.c_str());
+    pending_terminal_event_.clear();
+    stop_timer_->cancel();
+    finalize_recording("owner_heartbeat_timeout");
   }
 
   void check_pending_stop()
@@ -484,6 +532,7 @@ private:
       publish_status("recording_error", finalized_goal, error.what());
     }
     active_goal_id_.clear();
+    last_owner_heartbeat_ = std::chrono::steady_clock::time_point{};
   }
 
   void publish_status(
@@ -517,11 +566,14 @@ private:
   std::string manifest_schema_;
   std::string status_schema_;
   std::string recording_label_;
+  std::string owner_heartbeat_topic_;
+  double owner_heartbeat_timeout_{10.0};
   bool include_hidden_topics_{true};
   bool record_all_services_{true};
   std::string active_goal_id_;
   std::string pending_terminal_event_;
   std::chrono::steady_clock::time_point stop_deadline_;
+  std::chrono::steady_clock::time_point last_owner_heartbeat_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr path_publisher_;
@@ -531,7 +583,10 @@ private:
     lifecycle_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     operator_event_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    owner_heartbeat_subscription_;
   rclcpp::TimerBase::SharedPtr stop_timer_;
+  rclcpp::TimerBase::SharedPtr owner_watchdog_timer_;
 };
 
 int main(int argc, char ** argv)

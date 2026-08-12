@@ -347,7 +347,7 @@ def test_supported_gait_limits_remain_inside_servo_command_range():
 
 
 def test_every_supported_composed_level_remains_ik_safe():
-    yaw_levels = tuple(range(-20, -9)) + tuple(range(10, 21))
+    yaw_levels = tuple(range(-20, -1)) + tuple(range(2, 21))
 
     for x_level in range(-30, 31):
         for z_level in yaw_levels:

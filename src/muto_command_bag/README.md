@@ -2,8 +2,17 @@
 
 `muto_command_bag` records one MCAP bag for the complete
 `/look_for_object` model-commander mission. It starts before the initial
-registry check and closes after success, cancellation, or abort, so waits and
-replanning gaps remain in the same timeline.
+registry check and closes after success, cancellation, abort, or a fail-closed
+`ownership_uncertain` terminal state, so waits and replanning gaps remain in
+the same timeline.
+
+The default recorder also watches the transient `/model_commander/status`
+heartbeat. If the commander process crashes or its executor stops publishing
+for 10 seconds while a bag is active, the independent recorder finalizes the
+MCAP with reason `owner_heartbeat_timeout`. This prevents a lost terminal
+lifecycle event from leaving an unbounded recording behind. The timeout and
+topic are configurable as `owner_heartbeat_timeout` and
+`owner_heartbeat_topic`; an empty topic disables the watchdog.
 
 The package reuses the Humble/Jazzy-compatible recorder engine from
 `muto_exploration_bag` with an independent lifecycle, output prefix, manifest

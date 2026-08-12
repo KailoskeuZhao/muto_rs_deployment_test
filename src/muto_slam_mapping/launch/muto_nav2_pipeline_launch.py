@@ -313,17 +313,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'locomotion_command_mapping',
-            default_value='calibrated',
+            default_value='geometric',
             description=(
-                'Map physical cmd_vel through the configured Muto velocity '
-                'profile. Use legacy_100 only as an explicit rollback.'
+                'Map cmd_vel through custom gait geometry by default. Use '
+                'calibrated for an external measured profile or legacy_100 '
+                'only as an explicit rollback.'
             ),
         ),
         DeclareLaunchArgument(
             'locomotion_calibration_file',
             default_value=default_locomotion_calibration_file,
             description=(
-                'Muto physical velocity-to-gait calibration profile.'
+                'Muto velocity profile used only by calibrated mapping.'
             ),
         ),
         DeclareLaunchArgument(

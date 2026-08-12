@@ -329,10 +329,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'rotate_executable_yaw_velocity',
-            default_value='0.19',
+            default_value='0.80',
             description=(
-                'Constant yaw rate for direct rotate, above the Muto minimum '
-                'executable gait level.'
+                'Custom-gait geometric yaw command for direct rotation.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'rotate_timeout_reference_yaw_velocity',
+            default_value='0.15',
+            description=(
+                'Conservative ground-yaw rate used only to size direct '
+                'rotation timeouts; odometry determines completion.'
             ),
         ),
         DeclareLaunchArgument(
@@ -568,6 +575,12 @@ def generate_launch_description():
             'command_operator_event_topic',
             default_value='/model_commander/operator_event',
         ),
+        DeclareLaunchArgument(
+            'command_bag_owner_heartbeat_topic',
+            default_value='/model_commander/status',
+        ),
+        DeclareLaunchArgument(
+            'command_bag_owner_heartbeat_timeout', default_value='10.0'),
         DeclareLaunchArgument(
             'model_commander_decision_event_topic',
             default_value='/model_commander/decision_event',
@@ -876,6 +889,15 @@ def generate_launch_description():
                     'operator_event_topic': LaunchConfiguration(
                         'command_operator_event_topic'
                     ),
+                    'owner_heartbeat_topic': LaunchConfiguration(
+                        'command_bag_owner_heartbeat_topic'
+                    ),
+                    'owner_heartbeat_timeout': ParameterValue(
+                        LaunchConfiguration(
+                            'command_bag_owner_heartbeat_timeout'
+                        ),
+                        value_type=float,
+                    ),
                     'bag_prefix': 'muto_command',
                     'manifest_schema': 'command_mission_v1',
                     'status_schema': 'muto_command_bag_status_v1',
@@ -1084,6 +1106,12 @@ def generate_launch_description():
                     ),
                     'rotate_executable_yaw_velocity': ParameterValue(
                         LaunchConfiguration('rotate_executable_yaw_velocity'),
+                        value_type=float,
+                    ),
+                    'rotate_timeout_reference_yaw_velocity': ParameterValue(
+                        LaunchConfiguration(
+                            'rotate_timeout_reference_yaw_velocity'
+                        ),
                         value_type=float,
                     ),
                     'rotate_goal_tolerance': ParameterValue(

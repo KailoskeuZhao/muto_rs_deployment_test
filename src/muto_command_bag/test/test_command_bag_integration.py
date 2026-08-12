@@ -130,7 +130,7 @@ def test_records_parent_lifecycle_decision_context_and_inspected_jpeg(
         terminal = String()
         terminal.data = json.dumps({
             'schema': 'muto_command_lifecycle_v1',
-            'event': 'succeeded',
+            'event': 'ownership_uncertain',
             'goal_id': 'abcdef0123456789',
             'outcome': 1,
         }, separators=(',', ':'))
@@ -173,3 +173,115 @@ def test_records_parent_lifecycle_decision_context_and_inspected_jpeg(
     assert '/model_commander/recording_event' in info
     assert '/model_commander/decision_event' in info
     assert '/model_commander/inspected_image' in info
+
+
+def test_finalizes_when_commander_heartbeat_disappears(tmp_path):
+    domain_id = int(os.environ.get('ROS_DOMAIN_ID', '185'))
+    rclpy.init(domain_id=domain_id)
+    node = Node('fake_crashed_model_commander')
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    status_messages = []
+    transient_qos = QoSProfile(
+        depth=10,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        reliability=ReliabilityPolicy.RELIABLE,
+    )
+    lifecycle_topic = '/test/model_commander/recording_event'
+    status_topic = '/test/model_commander/bag_status'
+    heartbeat_topic = '/test/model_commander/status'
+    lifecycle_publisher = node.create_publisher(
+        String, lifecycle_topic, transient_qos)
+    heartbeat_publisher = node.create_publisher(
+        String, heartbeat_topic, transient_qos)
+    status_subscription = node.create_subscription(
+        String,
+        status_topic,
+        lambda message: status_messages.append(json.loads(message.data)),
+        transient_qos,
+    )
+    assert status_subscription is not None
+
+    process_environment = os.environ.copy()
+    process_environment['ROS_DOMAIN_ID'] = str(domain_id)
+    process = subprocess.Popen(
+        [
+            'ros2', 'run', 'muto_exploration_bag',
+            'exploration_bag_recorder',
+            '--ros-args',
+            '-r', '__node:=command_bag_watchdog_test',
+            '-p', f'output_directory:={tmp_path}',
+            '-p', 'storage_id:=mcap',
+            '-p', 'post_terminal_delay:=0.1',
+            '-p', f'lifecycle_event_topic:={lifecycle_topic}',
+            '-p', f'status_topic:={status_topic}',
+            '-p', 'path_topic:=/test/model_commander/last_bag_path',
+            '-p', 'operator_event_topic:=/test/model_commander/operator_event',
+            '-p', 'bag_prefix:=muto_command_watchdog',
+            '-p', 'manifest_schema:=command_mission_v1',
+            '-p', 'status_schema:=muto_command_bag_status_v1',
+            '-p', 'recording_label:=command_mission',
+            '-p', f'owner_heartbeat_topic:={heartbeat_topic}',
+            '-p', 'owner_heartbeat_timeout:=0.6',
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=process_environment,
+    )
+    output = ''
+    try:
+        wait_until(lambda: node.count_subscribers(lifecycle_topic) >= 1)
+        heartbeat = String()
+        heartbeat.data = '{"schema_version":2,"active":true}'
+        heartbeat_publisher.publish(heartbeat)
+        start = String()
+        start.data = json.dumps({
+            'schema': 'muto_command_lifecycle_v1',
+            'event': 'mission_started',
+            'goal_id': 'crashedcommander1234',
+            'objective': 'green office chair',
+        }, separators=(',', ':'))
+        lifecycle_publisher.publish(start)
+
+        def recording_ready():
+            executor.spin_once(timeout_sec=0.05)
+            return any(
+                item.get('event') == 'recording_ready'
+                for item in status_messages)
+
+        wait_until(recording_ready)
+        ready = next(
+            item for item in status_messages
+            if item.get('event') == 'recording_ready')
+        bag_path = Path(ready['bag_path'])
+
+        # Simulate a hard commander crash: no terminal lifecycle event and no
+        # more heartbeat messages. The independent recorder must still close.
+        def recording_finalized():
+            executor.spin_once(timeout_sec=0.05)
+            return any(
+                item.get('event') == 'recording_finalized'
+                for item in status_messages)
+
+        wait_until(recording_finalized, timeout=5.0)
+        assert bag_path.exists()
+        assert (bag_path / 'metadata.yaml').exists()
+    finally:
+        os.killpg(process.pid, signal.SIGINT)
+        try:
+            output, _ = process.communicate(timeout=8.0)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate(timeout=5.0)
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+        assert process.returncode == 0, output
+
+    assert 'owner heartbeat' in output
+    manifest = json.loads(
+        (bag_path / 'muto_recording_manifest.json').read_text(
+            encoding='utf-8'))
+    assert manifest['owner_heartbeat_topic'] == heartbeat_topic

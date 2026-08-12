@@ -1,4 +1,7 @@
-# Provisional feed-forward mapping for the new composed x/yaw gait.
+# Historical provisional feed-forward mapping for explicit `calibrated` mode.
+# The normal runtime now uses `locomotion_command_mapping:=geometric`, derived
+# from the custom exact-SE(2) gait. Keep this file for replay, comparison, and
+# replacement by a future externally measured profile; it is not the default.
 #
 # This is intentionally explicit rather than hidden behind `cmd_vel * 100`.
 # The calibration condition is the configured 50 Hz gait timer. Its observed

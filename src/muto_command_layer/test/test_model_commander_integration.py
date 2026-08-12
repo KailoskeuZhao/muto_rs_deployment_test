@@ -777,6 +777,37 @@ def test_commander_schedules_rotate_observe_and_checkpoint_independently(
                backend.inspected_images)
 
 
+def test_repeated_transient_input_cycles_keep_commander_alive(
+        running_commander):
+    backend, client = running_commander
+    for _ in range(6):
+        backend.queue_decision('checkpoint_registry')
+    backend.queue_decision(
+        'wait', reason='hold after repeated snapshots', wait_seconds=10.0)
+
+    first_goal = send_mission(client)
+    wait_until(lambda: backend.checkpoint_requests == 6, timeout=12.0)
+    wait_until(lambda: backend.vlm_requests >= 7, timeout=12.0)
+    wait_future(first_goal.cancel_goal_async())
+    first_result = wait_future(first_goal.get_result_async())
+    assert first_result.status == GoalStatus.STATUS_CANCELED
+    wait_until(
+        lambda: backend.camera_publisher.get_subscription_count() == 0,
+        timeout=3.0,
+    )
+
+    # A second accepted mission demonstrates that rapid create/spin/destroy
+    # cycles did not crash the Humble executor or leave admission wedged.
+    backend.queue_decision(
+        'wait', reason='second mission proves liveness', wait_seconds=10.0)
+    requests_before = backend.vlm_requests
+    second_goal = send_mission(client)
+    wait_until(lambda: backend.vlm_requests > requests_before)
+    wait_future(second_goal.cancel_goal_async())
+    second_result = wait_future(second_goal.get_result_async())
+    assert second_result.status == GoalStatus.STATUS_CANCELED
+
+
 def test_unresponsive_inspector_cancellation_still_stops_moving_child(
         running_commander):
     backend, client = running_commander
@@ -851,7 +882,7 @@ def test_held_active_inspection_cannot_overrun_model_wait_deadline(
     backend, client = running_commander
     hold_inspector = threading.Event()
     backend.queue_decision(
-        'wait', reason='one-second bounded wait', wait_seconds=1.0)
+        'wait', reason='two-second bounded wait', wait_seconds=2.0)
     backend.queue_active_inspection(
         'continue_current_command', release_event=hold_inspector)
     backend.queue_decision(
@@ -860,14 +891,14 @@ def test_held_active_inspection_cannot_overrun_model_wait_deadline(
     goal_handle = send_mission(client)
     wait_until(lambda: any(
         status.get('phase') == 'deferred' and
-        status.get('status') == 'one-second bounded wait'
+        status.get('status') == 'two-second bounded wait'
         for status in backend.statuses
     ))
     wait_started = time.monotonic()
-    wait_until(lambda: backend.vlm_cancellations >= 1, timeout=2.0)
+    wait_until(lambda: backend.vlm_cancellations >= 1, timeout=3.0)
     elapsed = time.monotonic() - wait_started
 
-    assert elapsed < 1.8
+    assert elapsed < 2.8
     wait_future(goal_handle.cancel_goal_async())
     wrapped = wait_future(goal_handle.get_result_async())
     hold_inspector.set()

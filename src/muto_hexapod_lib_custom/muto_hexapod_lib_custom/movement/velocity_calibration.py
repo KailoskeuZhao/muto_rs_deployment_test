@@ -1,4 +1,4 @@
-"""Map planar SI velocity requests to calibrated integer gait levels.
+"""Map planar SI velocity requests to executable integer gait amplitudes.
 
 The low-level Muto gait API intentionally continues to accept raw integer
 levels.  This module is a ROS-independent boundary in front of that API: a
@@ -11,9 +11,15 @@ table value.  Zero is always an implicit candidate.  Values between calibration
 knots are linearly interpolated at integer levels; values outside the
 calibrated level interval are never extrapolated.
 
-``reference_phase_rate_hz`` names the configured gait cadence under which the
-profile was obtained.  It is a calibration condition, not a linear scale
-factor: using the profile at a different configured cadence is rejected.
+``reference_phase_rate_hz`` names the configured gait cadence under which a
+measured profile was obtained.  It is a calibration condition, not a linear
+scale factor: using the profile at a different configured cadence is rejected.
+
+The default custom-gait path does not need an empirical level table.
+:class:`GeometricVelocityMapper` derives nominal body motion directly from the
+20-phase exact-SE(2) foot trajectory.  Its output is commanded kinematics, not
+measured odometry; a measured :class:`VelocityCalibrationMapper` remains
+available when externally referenced calibration data exists.
 """
 
 from __future__ import annotations
@@ -22,12 +28,18 @@ from dataclasses import dataclass
 import math
 from typing import Mapping, Optional, Tuple
 
+from .gait import GAIT_STEPS, GAIT_TURN_EFFECTIVE_RADIUS_MM
+
 
 LINEAR_LEVEL_MIN = 1
 LINEAR_LEVEL_MAX = 30
-YAW_LEVEL_MIN = 10
+YAW_LEVEL_MIN = 2
 YAW_LEVEL_MAX = 20
 SUPPORTED_SCHEMA_VERSION = 1
+GEOMETRIC_PROFILE_ID = 'muto_exact_se2_geometric_v1'
+# One alternating-tripod cycle advances the commanded body transform through
+# four gait amplitudes.  See test_gait.py's endpoint/cycle geometry checks.
+GAIT_BODY_EXCURSION_MULTIPLIER = 4.0
 
 
 def _finite_float(value, field_name):
@@ -305,7 +317,7 @@ class MotionLevels:
 
 @dataclass(frozen=True)
 class SaturationFlags:
-    """Requests above the calibrated upper envelope, by physical axis."""
+    """Requests above the active mapping or mechanical bound, by axis."""
 
     x: bool = False
     y: bool = False
@@ -565,7 +577,7 @@ class VelocityCalibrationMapper:
             saturated_axes.append('yaw')
         if saturated_axes:
             details.append(
-                'requested %s velocity exceeds calibrated range'
+                'requested %s velocity exceeds executable range'
                 % '/'.join(saturated_axes))
 
         zero_axes = []
@@ -591,16 +603,78 @@ class VelocityCalibrationMapper:
             quantized_axes.append('yaw')
         if quantized_axes:
             details.append(
-                'requested %s velocity quantized to the nearest calibrated '
+                'requested %s velocity quantized to the nearest executable '
                 'integer level'
                 % '/'.join(quantized_axes))
         return '; '.join(details)
+
+
+def geometric_velocity_profile(phase_rate_hz):
+    """Build the exact custom-gait kinematic profile for one phase rate.
+
+    A complete gait contains ``GAIT_STEPS`` phases.  Per cycle, a unit linear
+    amplitude produces four millimetres of nominal body translation and a
+    unit yaw amplitude produces ``4 / R_eff`` radians of nominal body yaw.
+    These are feed-forward trajectory kinematics, deliberately independent of
+    the inherited Muto speed table.
+    """
+    phase_rate_hz = _finite_float(phase_rate_hz, 'phase_rate_hz')
+    if phase_rate_hz <= 0.0:
+        raise ValueError('phase_rate_hz must be positive')
+    cycle_rate_hz = phase_rate_hz / float(GAIT_STEPS)
+    linear_speed_per_level = (
+        GAIT_BODY_EXCURSION_MULTIPLIER * cycle_rate_hz / 1000.0
+    )
+    yaw_speed_per_level = (
+        GAIT_BODY_EXCURSION_MULTIPLIER
+        * cycle_rate_hz
+        / GAIT_TURN_EFFECTIVE_RADIUS_MM
+    )
+
+    def axis(minimum_level, maximum_level, speed_per_level):
+        points = (
+            CalibrationPoint(
+                minimum_level, minimum_level * speed_per_level),
+            CalibrationPoint(
+                maximum_level, maximum_level * speed_per_level),
+        )
+        curve = CalibrationCurve(points)
+        return AxisCalibration(positive=curve, negative=curve)
+
+    return VelocityCalibrationProfile(
+        schema_version=SUPPORTED_SCHEMA_VERSION,
+        profile_id=GEOMETRIC_PROFILE_ID,
+        provenance=(
+            'nominal body twist derived from the custom exact-SE(2) gait '
+            'geometry, configured phase rate, and whole-degree-servo '
+            'effective amplitude limits; not measured ground motion'
+        ),
+        reference_phase_rate_hz=phase_rate_hz,
+        x=axis(LINEAR_LEVEL_MIN, LINEAR_LEVEL_MAX,
+               linear_speed_per_level),
+        y=axis(LINEAR_LEVEL_MIN, LINEAR_LEVEL_MAX,
+               linear_speed_per_level),
+        yaw=axis(YAW_LEVEL_MIN, YAW_LEVEL_MAX, yaw_speed_per_level),
+    )
+
+
+class GeometricVelocityMapper(VelocityCalibrationMapper):
+    """Map SI twist through the custom gait's exact commanded geometry."""
+
+    def __init__(self, phase_rate_hz):
+        super().__init__(
+            geometric_velocity_profile(phase_rate_hz),
+            phase_rate_hz=phase_rate_hz,
+        )
 
 
 __all__ = (
     'AxisCalibration',
     'CalibrationCurve',
     'CalibrationPoint',
+    'GAIT_BODY_EXCURSION_MULTIPLIER',
+    'GEOMETRIC_PROFILE_ID',
+    'GeometricVelocityMapper',
     'LINEAR_LEVEL_MAX',
     'LINEAR_LEVEL_MIN',
     'MotionLevels',
@@ -613,4 +687,5 @@ __all__ = (
     'VelocitySelection',
     'YAW_LEVEL_MAX',
     'YAW_LEVEL_MIN',
+    'geometric_velocity_profile',
 )

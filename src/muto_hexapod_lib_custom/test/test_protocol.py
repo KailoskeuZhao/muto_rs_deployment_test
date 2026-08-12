@@ -276,6 +276,12 @@ def test_nonzero_command_update_waits_for_completed_cycle(monkeypatch):
     assert states[-1].sequence == 21
 
 
+def test_custom_motion_command_uses_servo_effective_yaw_floor_not_vendor_ten():
+    assert Muto._normalize_motion_command(0, 0, 1) == (0, 0, 2)
+    assert Muto._normalize_motion_command(0, 0, -1) == (0, 0, -2)
+    assert Muto._normalize_motion_command(0, 0, 5) == (0, 0, 5)
+
+
 def test_latest_queued_nonzero_command_wins(monkeypatch):
     disable_protocol_delays(monkeypatch)
     serial = FakeSerial()

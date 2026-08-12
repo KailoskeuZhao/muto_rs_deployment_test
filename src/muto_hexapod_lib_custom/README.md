@@ -63,14 +63,15 @@ while pairing a gait snapshot with joint feedback. A sensor read therefore
 cannot be inserted between legs and a phase cannot change during the paired
 read if the caller later becomes multithreaded.
 
-The raw angular input is a gait level, not a calibrated angular velocity. It
-is constrained to `[-20, -10]`, zero, or `[10, 20]`. The ROS driver now maps
-`m/s` and `rad/s` through an explicit, sign-specific calibration profile and
-publishes the selected level and feed-forward prediction on
-`/muto/motion_command_state`. The installed 2026-08-06 profile is provisional:
-its straight axes are geometric predictions and its yaw data is transferred
-from RF2O observations of the inherited turn path, not an external measurement
-of the corrected gait.
+The raw angular input is a gait amplitude, not an angular velocity. It is
+constrained to `[-20, -2]`, zero, or `[2, 20]`; level 2 is the first amplitude
+that changes the whole-degree servo packets, whereas level 1 quantizes to the
+zero-yaw trajectory. The ROS driver defaults to a geometric mapper derived
+from this custom gait's cycle geometry and configured phase rate. It publishes
+the selected amplitude and nominal commanded-kinematics prediction on
+`/muto/motion_command_state`. An explicit measured calibration profile remains
+available as `locomotion_command_mapping:=calibrated`, but the inherited
+2026-08-06 yaw curve is no longer the runtime default.
 
 The inherited `x * sin(z)` combined gait has been removed. Forward-plus-yaw
 targets now apply the exact finite planar body transform to each nominal foot:
@@ -85,12 +86,14 @@ The ROS-independent mapping API is available for tests and offline tools:
 
 ```python
 from muto_hexapod_lib_custom.movement.velocity_calibration import (
+    GeometricVelocityMapper,
     VelocityCalibrationMapper,
     VelocityCalibrationProfile,
 )
 
 profile = VelocityCalibrationProfile.from_mapping(profile_data)
 selection = VelocityCalibrationMapper(profile).select(vx, vy, wz)
+geometric_selection = GeometricVelocityMapper(50.0).select(vx, vy, wz)
 ```
 
 See `docs/locomotion_calibration.md` in the deployment workspace for the

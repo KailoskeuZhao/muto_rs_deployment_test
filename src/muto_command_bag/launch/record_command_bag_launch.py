@@ -46,6 +46,11 @@ def generate_launch_description():
             'operator_event_topic',
             default_value='/model_commander/operator_event',
         ),
+        DeclareLaunchArgument(
+            'owner_heartbeat_topic',
+            default_value='/model_commander/status',
+        ),
+        DeclareLaunchArgument('owner_heartbeat_timeout', default_value='10.0'),
         Node(
             package='muto_exploration_bag',
             executable='exploration_bag_recorder',
@@ -74,6 +79,12 @@ def generate_launch_description():
                     'path_topic': LaunchConfiguration('path_topic'),
                     'operator_event_topic': LaunchConfiguration(
                         'operator_event_topic'),
+                    'owner_heartbeat_topic': LaunchConfiguration(
+                        'owner_heartbeat_topic'),
+                    'owner_heartbeat_timeout': ParameterValue(
+                        LaunchConfiguration('owner_heartbeat_timeout'),
+                        value_type=float,
+                    ),
                     'bag_prefix': 'muto_command',
                     'manifest_schema': 'command_mission_v1',
                     'status_schema': 'muto_command_bag_status_v1',

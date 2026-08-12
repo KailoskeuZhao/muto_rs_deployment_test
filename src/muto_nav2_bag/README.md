@@ -35,9 +35,10 @@ ros2 topic echo --once --qos-durability transient_local \
 ```
 
 The bag also contains a manifest plus snapshots of the active Nav2, frontier,
-SLAM, and Muto locomotion-calibration files and both behavior trees. If the
-active pipeline used an override file, pass that same path to this launch, for
-example:
+SLAM, and both behavior-tree files. The default geometric locomotion mapping
+has no external profile; `/muto/motion_command_state` records its profile ID,
+selected amplitudes, and configured/observed phase rates. If the pipeline used
+`locomotion_command_mapping:=calibrated`, pass that measured profile explicitly:
 
 ```bash
 ros2 launch muto_nav2_bag record_nav2_bag_launch.py \

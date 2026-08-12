@@ -1,7 +1,12 @@
 from dataclasses import FrozenInstanceError
 import math
 
+from muto_hexapod_lib_custom.movement.gait import (
+    GAIT_TURN_EFFECTIVE_RADIUS_MM,
+)
 from muto_hexapod_lib_custom.movement.velocity_calibration import (
+    GEOMETRIC_PROFILE_ID,
+    GeometricVelocityMapper,
     MotionLevels,
     VelocityCalibrationMapper,
     VelocityCalibrationProfile,
@@ -91,9 +96,59 @@ def test_profile_rejects_non_finite_non_monotone_and_out_of_range_tables():
         VelocityCalibrationProfile.from_mapping(bad_linear_level)
 
     bad_yaw_level = profile_mapping()
-    bad_yaw_level['yaw']['positive'] = {9: 0.10, 20: 0.60}
-    with pytest.raises(ValueError, match=r'inside \[10, 20\]'):
+    bad_yaw_level['yaw']['positive'] = {1: 0.10, 20: 0.60}
+    with pytest.raises(ValueError, match=r'inside \[2, 20\]'):
         VelocityCalibrationProfile.from_mapping(bad_yaw_level)
+
+
+def test_geometric_mapper_derives_exact_gait_kinematics_at_50_hz():
+    local_mapper = GeometricVelocityMapper(50.0)
+
+    assert local_mapper.profile.profile_id == GEOMETRIC_PROFILE_ID
+    assert math.isclose(
+        local_mapper.predict_levels(x_level=25).linear_x_m_s,
+        0.25,
+    )
+    # 20 phases/cycle and four amplitudes/cycle: level 20 yields
+    # 4 * 20 / R_eff radians per cycle at 2.5 cycles/s.
+    maximum_yaw = local_mapper.predict_levels(z_level=20)
+    maximum_geometric_yaw = 10.0 * 20.0 / GAIT_TURN_EFFECTIVE_RADIUS_MM
+    assert math.isclose(
+        maximum_yaw.angular_z_rad_s,
+        maximum_geometric_yaw,
+        rel_tol=1.0e-12,
+    )
+
+
+def test_geometric_mapper_removes_inherited_level_ten_yaw_floor():
+    local_mapper = GeometricVelocityMapper(50.0)
+
+    selected = local_mapper.select(angular_z_rad_s=0.18)
+    assert selected.levels == MotionLevels(z_level=4)
+    assert selected.mode == 'turn_z'
+    assert math.isclose(
+        selected.predicted.angular_z_rad_s,
+        10.0 * 4.0 / GAIT_TURN_EFFECTIVE_RADIUS_MM,
+        rel_tol=1.0e-12,
+    )
+    assert not selected.projection.yaw_to_zero
+
+
+def test_geometric_mapper_keeps_quantization_and_mechanical_bounds_explicit():
+    local_mapper = GeometricVelocityMapper(50.0)
+
+    below_resolution = local_mapper.select(angular_z_rad_s=0.03)
+    assert below_resolution.levels.z_level == 0
+    assert below_resolution.projection.yaw_to_zero
+
+    saturated = local_mapper.select(angular_z_rad_s=1.2)
+    assert saturated.levels.z_level == 20
+    assert saturated.saturation.yaw
+    assert math.isclose(
+        saturated.predicted.angular_z_rad_s,
+        10.0 * 20.0 / GAIT_TURN_EFFECTIVE_RADIUS_MM,
+        rel_tol=1.0e-12,
+    )
 
 
 def test_inverse_selection_interpolates_only_integer_levels():
@@ -108,7 +163,7 @@ def test_inverse_selection_interpolates_only_integer_levels():
     assert result.quantized
     assert result.projection.x
     assert not result.projection.x_to_zero
-    assert 'nearest calibrated integer level' in result.detail
+    assert 'nearest executable integer level' in result.detail
     assert result.profile_id == 'test-bench-v1'
 
 

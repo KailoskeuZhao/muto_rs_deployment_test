@@ -126,8 +126,11 @@ class Muto:
         x_level = max(-30, min(30, int(x)))
         y_level = max(-30, min(30, int(y)))
         z_level = max(-20, min(20, int(z)))
-        if z_level != 0 and abs(z_level) < 10:
-            z_level = 10 if z_level > 0 else -10
+        # The inherited library forced every non-zero turn to level 10.  The
+        # custom exact-SE(2) gait has useful whole-degree servo changes from
+        # level 2 onward; level 1 quantizes to the same packets as zero.
+        if z_level != 0 and abs(z_level) < 2:
+            z_level = 2 if z_level > 0 else -2
         return x_level, y_level, z_level
 
     def read_motor(self):

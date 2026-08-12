@@ -130,10 +130,12 @@ The driver consumes `/cmd_vel` as a desired command rather than executing a
 whole gait inside the subscription callback. Defaults are a 50 Hz trajectory
 phase loop and a 0.5 s command timeout. These are exposed as
 `locomotion_update_rate_hz` and `cmd_vel_timeout` by both the hardware and
-one-shot launches. `locomotion_command_mapping:=calibrated` loads
-`locomotion_calibration_file` and publishes each requested/projected twist and
-selected raw levels on `/muto/motion_command_state`; `legacy_100` is an
-explicit rollback only. Nonzero level changes wait for the next complete gait
+one-shot launches. `locomotion_command_mapping:=geometric` derives the
+requested gait amplitude directly from the custom trajectory geometry and
+cadence. `calibrated` optionally loads `locomotion_calibration_file`, while
+`legacy_100` is explicit rollback only. Every mode publishes the requested and
+projected twist plus selected raw levels on `/muto/motion_command_state`.
+Nonzero level changes wait for the next complete gait
 boundary; selected and active levels plus pending state are carried separately
 by `/muto/motion_command_state`. Stop and timeout directly command nominal
 stance and are abrupt rather than a smooth deceleration. Motor feedback never

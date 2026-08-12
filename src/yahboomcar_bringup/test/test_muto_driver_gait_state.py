@@ -7,6 +7,7 @@ from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Twist
 from muto_hexapod_interfaces_custom.msg import CommandedGaitState
 from muto_hexapod_lib_custom.movement.velocity_calibration import (
+    GeometricVelocityMapper,
     VelocityCalibrationMapper,
     VelocityCalibrationProfile,
 )
@@ -661,6 +662,23 @@ def test_cmd_vel_callback_matches_vendor_angular_level_limit(monkeypatch):
     yahboomcar_driver.cmd_vel_callback(driver, message)
 
     assert driver.desired_motion_levels == (0.0, 0.0, 20)
+
+
+def test_geometric_cmd_vel_uses_custom_gait_yaw_not_inherited_curve(
+        monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.0)
+    driver = timer_driver(last_cmd_vel_monotonic=None)
+    driver.locomotion_command_mapping = muto_driver_module.GEOMETRIC_MAPPING
+    driver.velocity_mapper = GeometricVelocityMapper(50.0)
+    message = Twist()
+    message.angular.z = 0.18
+
+    yahboomcar_driver.cmd_vel_callback(driver, message)
+
+    assert driver.desired_motion_levels == (0, 0, 4)
+    status = driver.motion_command_state_pub.message
+    assert status.calibration_profile == 'muto_exact_se2_geometric_v1'
+    assert math.isclose(status.predicted_twist.angular.z, 0.1600358628402579)
 
 
 def test_cmd_vel_callback_rejects_nonfinite_input_and_stops(monkeypatch):

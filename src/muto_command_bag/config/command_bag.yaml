@@ -22,3 +22,7 @@ command_bag_recorder:
     manifest_schema: command_mission_v1
     status_schema: muto_command_bag_status_v1
     recording_label: command_mission
+    # Finalize independently if the commander process crashes before it can
+    # publish a terminal lifecycle event.
+    owner_heartbeat_topic: /model_commander/status
+    owner_heartbeat_timeout: 10.0

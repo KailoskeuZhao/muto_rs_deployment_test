@@ -136,8 +136,8 @@ Useful top-level switches include:
 | `locomotion_update_rate_hz` | `50.0` | Advances one custom-library gait phase per driver tick. |
 | `batch_gait_phase_writes` | `true` | Sends the six unchanged leg frames in one contiguous write; `false` restores per-leg pacing. |
 | `cmd_vel_timeout` | `0.5` | Returns the gait to standby when velocity commands stop. |
-| `locomotion_command_mapping` | `calibrated` | Uses an explicit physical velocity profile; `legacy_100` is rollback-only. |
-| `locomotion_calibration_file` | `muto_locomotion_provisional_20260806.yaml` | Provisional gait-level mapping; replace after marked-field trials. |
+| `locomotion_command_mapping` | `geometric` | Derives gait amplitudes from the custom exact-SE(2) trajectory; `calibrated` loads a measured profile and `legacy_100` is rollback-only. |
+| `locomotion_calibration_file` | `muto_locomotion_provisional_20260806.yaml` | Optional profile used only when `locomotion_command_mapping:=calibrated`. |
 | `imu_publish_rate_hz` | `10.0` | Runtime host poll rate for the roughly 1.033 Hz controller-cached raw snapshot; retaining 10 Hz preserves its prior transition-time observation window for the `0x60` comparison. |
 | `imu_attitude_publish_rate_hz` | `10.0` | Host poll rate for fused `0x60` attitude; the gait-slotted scheduler observes roughly 5 Hz changed snapshots without starving during motion. `0.0` disables it. |
 | `imu_suppress_identical_snapshots` | `true` | Avoids assigning repeated accel/gyro values new ROS timestamps. |
@@ -417,14 +417,15 @@ docking, or a full saved-map localization workflow.
 The Humble behavior trees explicitly compute a Navfn path, collision-check a
 Simple Smoother result, and feed that `smoothed_path` to Regulated Pure
 Pursuit. They replan at 1 Hz. The controller reads `/odometry/filtered`, uses a
-fixed 0.25 m lookahead, requests up to 0.25 m/s linear motion, and is capped at
-0.18 rad/s angular motion by the provisional yaw envelope transferred from the
-2026-08-06 pure-turn observation. Its
+fixed 0.25 m lookahead and requests up to 0.25 m/s linear motion. Its 0.80
+rad/s yaw request corresponds to custom-gait level 20 at 50 phases/s under the
+exact trajectory geometry; this is commanded kinematics, while odometry
+remains authoritative for achieved motion and completion. Its
 output is remapped to `/cmd_vel_nav`; the lifecycle-managed
 velocity smoother publishes the normal follow-path `/cmd_vel` at 20 Hz.
 Recovery behaviors currently publish directly to `/cmd_vel` and therefore
-bypass the smoother, while retaining the behavior server's conservative
-rotation limits and the BT's bounded backup speed.
+bypass the smoother, while retaining the same level-20 geometric rotation
+limit and the BT's bounded backup speed.
 
 ## Main Runtime Contract
 

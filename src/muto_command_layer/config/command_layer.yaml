@@ -194,10 +194,13 @@ model_commander:
     max_rotation_radians: 6.283185307179586
     max_observation_seconds: 30.0
     spin_time_allowance: 15.0
-    # Model-commanded rotate bypasses Nav2 Spin and publishes a constant yaw
-    # command that is above the Muto driver's minimum executable gait level.
-    # Completion is accepted only after odometry reports enough yaw change.
-    rotate_executable_yaw_velocity: 0.19
+    # Model-commanded rotate bypasses Nav2 Spin. The command is the custom
+    # gait's level-20 geometric yaw at 50 phases/s; completion remains based
+    # on odometry, not the feed-forward prediction.
+    rotate_executable_yaw_velocity: 0.80
+    # Ground motion can be slower than commanded-foot geometry. Use a
+    # conservative observed-rate floor only for timeout sizing.
+    rotate_timeout_reference_yaw_velocity: 0.15
     rotate_goal_tolerance: 0.08
     rotate_control_period: 0.05
     rotate_stop_publish_count: 3
@@ -223,7 +226,8 @@ model_commander:
     max_repeated_no_progress_decisions: 4
 
     # Every VLM scheduling request must inspect a newly received color frame.
-    # Frames are buffered at camera rate but JPEG-encoded only when replanning.
+    # A bounded worker subscribes only during capture and JPEG-encodes only
+    # when replanning.
     visual_observation_timeout: 5.0
     visual_observation_max_age: 2.0
     visual_observation_jpeg_quality: 80
@@ -233,6 +237,11 @@ model_commander:
     visual_observation_max_source_width: 8192
     visual_observation_max_source_height: 8192
     visual_observation_max_source_bytes: 67108864
+    # Dynamic camera and detector subscriptions are owned by dedicated
+    # single-thread executors. Capacity-one admission and bounded shutdown
+    # prevent executor handle races, unbounded queues, and lock-order stalls.
+    input_worker_poll_period: 0.02
+    input_worker_stop_timeout: 2.0
 
     # The VLM periodically inspects long-running exploration/wait commands.
     # It may only continue the owned command or stop it for deterministic

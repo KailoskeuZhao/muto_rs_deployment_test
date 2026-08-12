@@ -4,6 +4,7 @@
 from dataclasses import dataclass
 import json
 import math
+import queue
 import threading
 import time
 import traceback
@@ -33,7 +34,7 @@ import numpy as np
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sam2_object_registry.msg import StoredObjectArray
@@ -76,6 +77,191 @@ class WaitCompletedDuringInspection(RuntimeError):
 
 class MissionBudgetExhausted(RuntimeError):
     """Raised when a locally enforced mission budget expires."""
+
+
+class InputFlowFailure(RuntimeError):
+    """Raised when a bounded transient-input worker cannot make progress."""
+
+
+class _TransientSubscriptionRequest:
+    """Thread-safe state for one bounded subscription collection window."""
+
+    def __init__(self, message_type, topic, qos, maximum_messages):
+        self.message_type = message_type
+        self.topic = topic
+        self.qos = qos
+        self.maximum_messages = maximum_messages
+        self.cancel_requested = threading.Event()
+        self.done = threading.Event()
+        self.started = threading.Event()
+        self._lock = threading.Lock()
+        self._message_count = 0
+        self._latest_message = None
+        self._latest_receipt_time = None
+        self._error = None
+
+    def record(self, message):
+        with self._lock:
+            if self.cancel_requested.is_set():
+                return
+            self._message_count += 1
+            self._latest_message = message
+            self._latest_receipt_time = time.monotonic()
+
+    def target_reached(self):
+        with self._lock:
+            return self.maximum_messages is not None and \
+                self._message_count >= self.maximum_messages
+
+    def set_error(self, error):
+        with self._lock:
+            self._error = error
+
+    def snapshot(self):
+        with self._lock:
+            return (
+                self._message_count,
+                self._latest_message,
+                self._latest_receipt_time,
+                self._error,
+            )
+
+
+class _TransientSubscriptionWorker:
+    """
+    Own dynamic subscriptions outside the commander's ROS executor.
+
+    All create, spin, and destroy operations occur sequentially on this
+    worker's single thread.  The commander executor therefore never retains a
+    wait-set reference to a subscription while another callback destroys it.
+    Admission is single-flight and every caller has a bounded cancellation
+    wait, preventing unbounded queues and lock-order deadlocks.
+    """
+
+    _STOP = object()
+
+    def __init__(self, context, node_name, poll_period):
+        self._context = context
+        self._node_name = node_name
+        self._poll_period = poll_period
+        self._queue = queue.Queue(maxsize=1)
+        self._admission_lock = threading.Lock()
+        self._active_request = None
+        self._closed = False
+        self._startup_error = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f'{node_name}_thread',
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=5.0):
+            raise InputFlowFailure(
+                f'{node_name} worker did not initialize within 5 seconds')
+        if self._startup_error is not None:
+            raise InputFlowFailure(
+                f'{node_name} worker could not initialize') from \
+                self._startup_error
+
+    def start(self, message_type, topic, qos, maximum_messages=None):
+        with self._admission_lock:
+            if self._closed:
+                raise InputFlowFailure(
+                    f'{self._node_name} worker is closed')
+            if self._active_request is not None:
+                raise InputFlowFailure(
+                    f'{self._node_name} worker already has an active request')
+            request = _TransientSubscriptionRequest(
+                message_type, topic, qos, maximum_messages)
+            self._active_request = request
+            try:
+                self._queue.put_nowait(request)
+            except queue.Full as error:
+                self._active_request = None
+                raise InputFlowFailure(
+                    f'{self._node_name} worker request queue is full') from error
+            return request
+
+    def cancel_and_wait(self, request, timeout):
+        request.cancel_requested.set()
+        return request.done.wait(timeout=timeout)
+
+    def close(self, timeout):
+        with self._admission_lock:
+            if self._closed:
+                return not self._thread.is_alive()
+            self._closed = True
+            active_request = self._active_request
+        if active_request is not None:
+            active_request.cancel_requested.set()
+            active_request.done.wait(timeout=timeout)
+        try:
+            self._queue.put(self._STOP, timeout=timeout)
+        except queue.Full:
+            return False
+        self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
+    def _run(self):
+        node = None
+        executor = None
+        try:
+            node = Node(
+                self._node_name,
+                context=self._context,
+                use_global_arguments=False,
+            )
+            executor = SingleThreadedExecutor(context=self._context)
+            executor.add_node(node)
+        except Exception as error:
+            self._startup_error = error
+            self._ready.set()
+            return
+        self._ready.set()
+        try:
+            while True:
+                request = self._queue.get()
+                if request is self._STOP:
+                    break
+                self._serve_request(node, executor, request)
+        finally:
+            try:
+                executor.remove_node(node)
+                executor.shutdown()
+            finally:
+                node.destroy_node()
+
+    def _serve_request(self, node, executor, request):
+        subscription = None
+        try:
+            subscription = node.create_subscription(
+                request.message_type,
+                request.topic,
+                request.record,
+                request.qos,
+            )
+            request.started.set()
+            while not request.cancel_requested.is_set() and \
+                    not request.target_reached():
+                if not rclpy.ok(context=self._context):
+                    raise InputFlowFailure(
+                        f'{self._node_name} ROS context is shutting down')
+                executor.spin_once(timeout_sec=self._poll_period)
+        except Exception as error:
+            request.set_error(error)
+        finally:
+            if subscription is not None:
+                try:
+                    # This worker is the only thread that spins its executor,
+                    # so destruction cannot race an executor wait-set access.
+                    node.destroy_subscription(subscription)
+                except Exception as error:
+                    request.set_error(error)
+            with self._admission_lock:
+                if self._active_request is request:
+                    self._active_request = None
+            request.done.set()
 
 
 @dataclass(frozen=True)
@@ -163,16 +349,34 @@ class ModelCommanderNode(Node):
         self._latest_command_bag_status_goal_id = ''
         self._latest_command_bag_status_path = ''
         self._latest_command_bag_status_detail = ''
-        self._camera_subscription = None
         self._camera_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.VOLATILE,
             reliability=ReliabilityPolicy.BEST_EFFORT,
         )
-        self._latest_camera_image = None
-        self._latest_camera_receipt_time = None
         self._camera_sequence = 0
+        self._latest_camera_receipt_time = None
         self._last_inspected_camera_sequence = 0
+        self._input_workers_closed = False
+        self._input_worker_close_lock = threading.Lock()
+        self._camera_input_worker = None
+        self._heartbeat_input_worker = None
+        try:
+            self._camera_input_worker = _TransientSubscriptionWorker(
+                self.context,
+                'model_commander_camera_input',
+                self.input_worker_poll_period,
+            )
+            self._heartbeat_input_worker = _TransientSubscriptionWorker(
+                self.context,
+                'model_commander_detector_input',
+                self.input_worker_poll_period,
+            )
+        except Exception:
+            if self._camera_input_worker is not None:
+                self._camera_input_worker.close(
+                    self.input_worker_stop_timeout)
+            raise
         self._status = {
             'schema_version': 2,
             'active': False,
@@ -325,7 +529,8 @@ class ModelCommanderNode(Node):
         self.declare_parameter('max_rotation_radians', 6.283185307179586)
         self.declare_parameter('max_observation_seconds', 30.0)
         self.declare_parameter('spin_time_allowance', 15.0)
-        self.declare_parameter('rotate_executable_yaw_velocity', 0.19)
+        self.declare_parameter('rotate_executable_yaw_velocity', 0.80)
+        self.declare_parameter('rotate_timeout_reference_yaw_velocity', 0.15)
         self.declare_parameter('rotate_goal_tolerance', 0.08)
         self.declare_parameter('rotate_control_period', 0.05)
         self.declare_parameter('rotate_stop_publish_count', 3)
@@ -357,6 +562,8 @@ class ModelCommanderNode(Node):
         self.declare_parameter('visual_observation_max_source_height', 8192)
         self.declare_parameter(
             'visual_observation_max_source_bytes', 67108864)
+        self.declare_parameter('input_worker_poll_period', 0.02)
+        self.declare_parameter('input_worker_stop_timeout', 2.0)
         self.declare_parameter('active_visual_monitoring', True)
         self.declare_parameter('active_inspection_period', 20.0)
         self.declare_parameter('active_inspection_timeout', 30.0)
@@ -409,6 +616,7 @@ class ModelCommanderNode(Node):
             'max_observation_seconds',
             'spin_time_allowance',
             'rotate_executable_yaw_velocity',
+            'rotate_timeout_reference_yaw_velocity',
             'rotate_goal_tolerance',
             'rotate_control_period',
             'rotate_stop_publish_count',
@@ -435,6 +643,8 @@ class ModelCommanderNode(Node):
             'visual_observation_max_source_width',
             'visual_observation_max_source_height',
             'visual_observation_max_source_bytes',
+            'input_worker_poll_period',
+            'input_worker_stop_timeout',
             'active_visual_monitoring',
             'active_inspection_period',
             'active_inspection_timeout',
@@ -467,6 +677,7 @@ class ModelCommanderNode(Node):
                 'max_wait_seconds', 'max_exploration_seconds',
                 'max_rotation_radians', 'max_observation_seconds',
                 'spin_time_allowance', 'rotate_executable_yaw_velocity',
+                'rotate_timeout_reference_yaw_velocity',
                 'rotate_goal_tolerance', 'rotate_control_period',
                 'checkpoint_timeout',
                 'minimum_explore_progress_distance_m',
@@ -478,7 +689,8 @@ class ModelCommanderNode(Node):
                 'visual_observation_max_age', 'active_inspection_period',
                 'active_inspection_timeout',
                 'active_inspection_max_decision_age', 'monitor_period',
-                'status_publish_period', 'command_bag_start_timeout'):
+                'status_publish_period', 'command_bag_start_timeout',
+                'input_worker_poll_period', 'input_worker_stop_timeout'):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) \
                     or not math.isfinite(value) or value <= 0.0:
@@ -826,66 +1038,16 @@ class ModelCommanderNode(Node):
             'jpeg_bytes': len(observation.jpeg_data),
         }
 
-    def _camera_callback(self, message):
-        """Retain only the newest raw frame; encoding happens on demand."""
-        receipt_time = time.monotonic()
-        with self._state_lock:
-            self._latest_camera_image = message
-            self._latest_camera_receipt_time = receipt_time
-            self._camera_sequence += 1
-            self._status['visual_observation_available'] = True
-            self._status['visual_observation_sequence'] = (
-                self._camera_sequence
-            )
-
-    def _start_camera_subscription(self):
-        """Subscribe only while a mission actually requests a snapshot."""
-        with self._state_lock:
-            if self._camera_subscription is not None:
-                return
-            self._latest_camera_image = None
-            self._latest_camera_receipt_time = None
-            self._status['visual_observation_available'] = False
-            self._status['visual_subscription_active'] = True
-        try:
-            subscription = self.create_subscription(
-                Image,
-                self.visual_observation_topic,
-                self._camera_callback,
-                self._camera_qos,
-                callback_group=self._callback_group,
-            )
-        except Exception as error:
-            with self._state_lock:
-                self._status['visual_subscription_active'] = False
-            raise PlannerFailure(
-                'camera snapshot subscription could not be created') from error
-        with self._state_lock:
-            self._camera_subscription = subscription
-
-    def _stop_camera_subscription(self):
-        """Release the high-bandwidth raw camera reader between snapshots."""
-        with self._state_lock:
-            subscription = self._camera_subscription
-            self._camera_subscription = None
-            self._status['visual_subscription_active'] = False
-        if subscription is not None:
-            try:
-                self.destroy_subscription(subscription)
-            except Exception as error:
-                self.get_logger().warning(
-                    'Could not release camera snapshot subscription: '
-                    f'{type(error).__name__}')
-
-    def _wait_for_visual_message(
-            self, after_sequence, goal_handle, deadline,
+    def _wait_for_camera_request(
+            self, request, goal_handle, deadline,
             expected_world_revision=None, child_result_future=None,
             child_token=None):
+        """Wait for one worker-owned frame without holding commander locks."""
         wait_deadline = min(
             deadline,
             time.monotonic() + self.visual_observation_timeout,
         )
-        while True:
+        while not request.done.is_set():
             self._check_parent_state(goal_handle, deadline)
             if expected_world_revision is not None:
                 revision, _, _ = self._registry_state()
@@ -903,18 +1065,24 @@ class ModelCommanderNode(Node):
                 if not child_is_current:
                     raise ChildCompletedDuringInspection()
             now = time.monotonic()
-            with self._state_lock:
-                message = self._latest_camera_image
-                receipt_time = self._latest_camera_receipt_time
-                sequence = self._camera_sequence
-            age = math.inf if receipt_time is None else now - receipt_time
-            if message is not None and sequence > after_sequence and \
-                    0.0 <= age <= self.visual_observation_max_age:
-                return message, sequence, receipt_time
             if now >= wait_deadline:
                 raise PlannerFailure(
                     'fresh visual observation is unavailable')
-            time.sleep(self.monitor_period)
+            request.done.wait(timeout=min(
+                self.monitor_period,
+                max(0.0, wait_deadline - now),
+            ))
+
+        message_count, message, receipt_time, error = request.snapshot()
+        if error is not None:
+            raise PlannerFailure(
+                'camera snapshot input worker failed') from error
+        if message_count < 1 or message is None or receipt_time is None:
+            raise PlannerFailure('fresh visual observation is unavailable')
+        age = time.monotonic() - receipt_time
+        if age < 0.0 or age > self.visual_observation_max_age:
+            raise PlannerFailure('fresh visual observation is unavailable')
+        return message, receipt_time
 
     def _encode_visual_observation(
             self, message, sequence, receipt_time):
@@ -1052,16 +1220,40 @@ class ModelCommanderNode(Node):
             self, after_sequence, goal_handle, deadline,
             expected_world_revision=None, child_result_future=None,
             child_token=None):
-        self._start_camera_subscription()
+        request = None
+        worker_stopped = True
+        observation = None
+        with self._state_lock:
+            self._status['visual_observation_available'] = False
+            self._status['visual_subscription_active'] = True
         try:
-            message, sequence, receipt_time = self._wait_for_visual_message(
-                after_sequence,
+            try:
+                request = self._camera_input_worker.start(
+                    Image,
+                    self.visual_observation_topic,
+                    self._camera_qos,
+                    maximum_messages=1,
+                )
+            except InputFlowFailure as error:
+                raise PlannerFailure(
+                    'camera snapshot flow-control admission failed') from error
+            message, receipt_time = self._wait_for_camera_request(
+                request,
                 goal_handle,
                 deadline,
                 expected_world_revision=expected_world_revision,
                 child_result_future=child_result_future,
                 child_token=child_token,
             )
+            with self._state_lock:
+                sequence = max(
+                    self._camera_sequence,
+                    int(after_sequence),
+                ) + 1
+                self._camera_sequence = sequence
+                self._latest_camera_receipt_time = receipt_time
+                self._status['visual_observation_available'] = True
+                self._status['visual_observation_sequence'] = sequence
             observation = self._encode_visual_observation(
                 message, sequence, receipt_time)
             if expected_world_revision is not None:
@@ -1080,9 +1272,20 @@ class ModelCommanderNode(Node):
                     )
                 if not child_is_current:
                     raise ChildCompletedDuringInspection()
-            return observation
         finally:
-            self._stop_camera_subscription()
+            if request is not None:
+                worker_stopped = self._camera_input_worker.cancel_and_wait(
+                    request, self.input_worker_stop_timeout)
+            with self._state_lock:
+                self._status['visual_subscription_active'] = False
+            if not worker_stopped:
+                self.get_logger().error(
+                    'Camera input worker did not stop within its bounded '
+                    'flow-control timeout')
+        if not worker_stopped:
+            raise PlannerFailure(
+                'camera snapshot input worker did not stop safely')
+        return observation
 
     def _goal_callback(self, goal_request):
         prompt = goal_request.prompt.strip()
@@ -1132,6 +1335,30 @@ class ModelCommanderNode(Node):
             handles = (self._active_vlm_goal, self._active_child_goal)
         for handle in handles:
             self._cancel_goal_best_effort(handle)
+
+    def close_input_workers(self):
+        """Boundedly stop executor-isolated transient subscription workers."""
+        with self._input_worker_close_lock:
+            if self._input_workers_closed:
+                return True
+            all_closed = True
+            for label, worker in (
+                    ('camera', self._camera_input_worker),
+                    ('detector-heartbeat', self._heartbeat_input_worker)):
+                if worker is None:
+                    continue
+                if not worker.close(self.input_worker_stop_timeout):
+                    all_closed = False
+                    self.get_logger().error(
+                        f'{label} input worker did not close within '
+                        f'{self.input_worker_stop_timeout:.3f} seconds')
+            self._input_workers_closed = all_closed
+            return all_closed
+
+    def destroy_node(self):
+        """Release helper executors before destroying the commander node."""
+        self.close_input_workers()
+        return super().destroy_node()
 
     def _mark_ownership_uncertain(self, message):
         """Latch the commander closed when moving-child stop is unconfirmed."""
@@ -1938,9 +2165,17 @@ class ModelCommanderNode(Node):
         command.angular.z = yaw_rate
         required_observed = max(
             0.0, target_radians - float(self.rotate_goal_tolerance))
+        # Commanded gait geometry may exceed ground motion because of slip and
+        # servo dynamics. Keep timeout estimation independent of the nominal
+        # feed-forward command so odometry, rather than a geometric prediction,
+        # remains authoritative for completion.
+        timeout_yaw_rate = min(
+            abs(yaw_rate),
+            float(self.rotate_timeout_reference_yaw_velocity),
+        )
         run_timeout = max(
             self.spin_time_allowance,
-            target_radians / max(1.0e-6, abs(yaw_rate)) * 2.0 + 3.0,
+            target_radians / max(1.0e-6, timeout_yaw_rate) * 2.0 + 3.0,
         )
         rotate_deadline = min(deadline, time.monotonic() + run_timeout)
         max_observed = 0.0
@@ -2253,35 +2488,66 @@ class ModelCommanderNode(Node):
     def _run_observe(
             self, observation_seconds, expected_revision, goal_handle,
             deadline, planning_steps, commands_dispatched):
-        heartbeat_state = {'frames': 0}
-        heartbeat_lock = threading.Lock()
-
-        def heartbeat_callback(_message):
-            with heartbeat_lock:
-                heartbeat_state['frames'] += 1
-
-        heartbeat_subscription = self.create_subscription(
-            Header,
-            self.detection_heartbeat_topic,
-            heartbeat_callback,
-            10,
-            callback_group=self._callback_group,
-        )
+        request = None
+        worker_stopped = True
         try:
-            outcome = self._wait_while_monitoring(
-                observation_seconds,
-                expected_revision,
-                goal_handle,
+            try:
+                request = self._heartbeat_input_worker.start(
+                    Header,
+                    self.detection_heartbeat_topic,
+                    10,
+                )
+            except InputFlowFailure as error:
+                raise CommanderFailure(
+                    'detector-heartbeat flow-control admission failed') from \
+                    error
+            heartbeat_ready_deadline = min(
                 deadline,
-                planning_steps,
-                commands_dispatched,
-                'stationary detector observation is active',
-                command='observe',
+                time.monotonic() + self.endpoint_timeout,
             )
+            while True:
+                self._check_parent_state(goal_handle, deadline)
+                revision, _, _ = self._registry_state()
+                if revision != expected_revision:
+                    outcome = 'registry_changed'
+                    break
+                detection_frames, _, _, worker_error = request.snapshot()
+                if worker_error is not None:
+                    raise CommanderFailure(
+                        'detector-heartbeat input worker failed') from \
+                        worker_error
+                if detection_frames > 0:
+                    outcome = self._wait_while_monitoring(
+                        observation_seconds,
+                        expected_revision,
+                        goal_handle,
+                        deadline,
+                        planning_steps,
+                        commands_dispatched,
+                        'stationary detector observation is active',
+                        command='observe',
+                    )
+                    break
+                if time.monotonic() >= heartbeat_ready_deadline:
+                    raise CommanderFailure(
+                        'detector heartbeat did not become ready before the '
+                        'bounded endpoint timeout')
+                request.done.wait(timeout=self.monitor_period)
         finally:
-            self.destroy_subscription(heartbeat_subscription)
-        with heartbeat_lock:
-            detection_frames = heartbeat_state['frames']
+            if request is not None:
+                worker_stopped = self._heartbeat_input_worker.cancel_and_wait(
+                    request, self.input_worker_stop_timeout)
+            if not worker_stopped:
+                self.get_logger().error(
+                    'Detector-heartbeat input worker did not stop within its '
+                    'bounded flow-control timeout')
+        if not worker_stopped:
+            raise CommanderFailure(
+                'detector-heartbeat input worker did not stop safely')
+        detection_frames, _, _, worker_error = request.snapshot()
+        if worker_error is not None:
+            raise CommanderFailure(
+                'detector-heartbeat input worker failed') from worker_error
         if outcome != 'wait_complete':
             return {
                 'outcome': outcome,
@@ -2849,7 +3115,6 @@ class ModelCommanderNode(Node):
 
         try:
             with self._state_lock:
-                self._latest_camera_image = None
                 self._latest_camera_receipt_time = None
                 self._last_inspected_camera_sequence = 0
                 self._status.update({
@@ -3576,7 +3841,6 @@ class ModelCommanderNode(Node):
                 f'{traceback.format_exc()}')
             return result
         finally:
-            self._stop_camera_subscription()
             with self._state_lock:
                 ownership_uncertain = self._ownership_uncertain
                 if not ownership_uncertain:
@@ -3680,6 +3944,7 @@ def main(args=None):
         pass
     finally:
         node.cancel_outstanding_work()
+        node.close_input_workers()
         executor.shutdown()
         node.destroy_node()
         if rclpy.ok():

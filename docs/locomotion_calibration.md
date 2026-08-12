@@ -1,4 +1,4 @@
-# Muto physical velocity mapping
+# Muto locomotion velocity mapping
 
 ## Why the old mapping was wrong
 
@@ -31,24 +31,23 @@ The corrected command path is:
 /cmd_vel in m/s and rad/s
         |
         v
-validated, sign-specific calibration curves
+exact gait-cycle geometry at the configured phase rate
         |
         v
-integer x/y/z gait levels + predicted achievable Twist
+nearest servo-effective integer gait amplitudes
         |
         v
 tripod foot targets -> per-leg inverse kinematics -> controller packets
 ```
 
-The mapper never extrapolates beyond a calibrated table. It chooses the
-closest executable integer level, separately reports quantization,
-projection-to-zero, and upper-envelope saturation, and rejects a lateral
-command combined with forward or yaw motion. The selected request and
-feed-forward prediction are published on `/muto/motion_command_state`. The same
-message is emitted for every motor phase with selected and active raw levels
-kept separate and a replacement-pending flag. `/muto/commanded_gait_state`
-retains its older wire schema so existing bags remain replayable. Neither topic
-is measured odometry.
+The default `geometric` mapper chooses the closest servo-effective integer
+amplitude, separately reports quantization, projection-to-zero, and mechanical
+amplitude saturation, and rejects a lateral command combined with forward or
+yaw motion. The selected request and nominal commanded-kinematics prediction
+are published on `/muto/motion_command_state`. The same message is emitted for
+every motor phase with selected and active amplitudes kept separate and a
+replacement-pending flag. `/muto/commanded_gait_state` retains its older wire
+schema so existing bags remain replayable. Neither topic is measured odometry.
 
 For simultaneous forward/yaw motion, the gait applies the requested finite
 planar body transform to every nominal foot location while preserving the
@@ -71,16 +70,36 @@ The common yaw level is converted with the least-squares stance radius
 nominal commanded-foot displacement `4*x_level` mm and yaw
 `4*z_level/R_eff` rad. These are kinematics, not proof of ground motion.
 
+At 50 phases/s, the 20-phase gait runs at 2.5 cycles/s. The resulting nominal
+mapping is therefore:
+
+```text
+v_x = 0.01 * x_level m/s
+omega_z = 10 * z_level / R_eff rad/s
+```
+
+For the current `R_eff`, yaw level 20 is approximately `0.80 rad/s`. Level 2
+is the minimum yaw amplitude because it is the first to change the rounded
+whole-degree servo packets; the inherited vendor level-10 floor is removed.
+IK and raw amplitudes remain bounded to linear level 30 and yaw level 20.
+
 Nonzero command changes are queued until the next complete 20-phase boundary.
 This prevents Nav2's 20 Hz updates from rebuilding a trajectory several times
 inside one roughly 0.4 s gait cycle. A stop, timeout, or transition to standby
 still directly commands nominal stance; this is an abrupt safety return, not a
 smooth stopping trajectory.
 
-## Provisional profile
+## Optional measured profile
 
-The deployed default file is
-`yahboomcar_bringup/config/muto_locomotion_provisional_20260806.yaml`.
+The previous file
+`yahboomcar_bringup/config/muto_locomotion_provisional_20260806.yaml`
+is retained for replay and controlled comparisons, but is no longer the
+runtime default. Select it explicitly with:
+
+```bash
+ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py \
+  locomotion_command_mapping:=calibrated
+```
 
 - Straight and lateral curves are commanded-foot kinematic predictions.
 - Positive yaw transfers a descriptive RF2O fit from the inherited pure-turn
@@ -97,10 +116,10 @@ telemetry only. A Nav2 bag records the selected/active split in
 `/muto/motion_command_state`, retains `/muto/commanded_gait_state`, and copies
 the exact calibration YAML beside the MCAP file.
 
-Because levels are discrete, Nav2 limits are request-side limits rather than
-strict achieved caps: for example, `0.18 rad/s` currently selects level 19,
-whose provisional prediction is `0.18295 rad/s`. The structured projection
-fields make that difference explicit.
+Because amplitudes are discrete, Nav2 limits remain request-side limits rather
+than guaranteed achieved speeds. In geometric mode, `0.18 rad/s` selects level
+4 (nominally `0.160 rad/s`), while `0.80 rad/s` selects level 20. Odometry—not
+the feed-forward prediction—determines whether the body actually rotated.
 
 Use the former conversion only for rollback or raw-level field trials:
 

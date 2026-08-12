@@ -111,6 +111,10 @@ install(PROGRAMS scripts/model_commander_node.py
   RENAME model_commander_node
 )
 install(FILES
+  scripts/model_commander_config.py
+  scripts/model_commander_errors.py
+  scripts/model_commander_inputs.py
+  scripts/model_commander_memory.py
   scripts/model_commander_protocol.py
   scripts/object_search_protocol.py
   scripts/natural_language_command_protocol.py
@@ -167,6 +171,11 @@ if(BUILD_TESTING)
 
   ament_add_pytest_test(test_model_commander_protocol
     test/test_model_commander_protocol.py
+    TIMEOUT 30
+  )
+
+  ament_add_pytest_test(test_model_commander_support
+    test/test_model_commander_support.py
     TIMEOUT 30
   )
 

@@ -49,12 +49,22 @@ def wait_until(predicate, timeout=8.0):
     assert predicate(), 'condition did not become true before timeout'
 
 
-def intent_response(command, object_query='', **overrides):
+def intent_response(mission_type, target_description='', **overrides):
+    desired_end_states = {
+        'locate_object': 'report_object',
+        'locate_and_approach_object': 'approach_object',
+        'approach_known_object': 'approach_object',
+        'query_object_registry': 'report_object',
+        'start_manual_exploration': 'manual_exploration_started',
+        'stop_manual_exploration': 'manual_exploration_stopped',
+        'save_current_map': 'map_saved',
+        'cancel_active_mission': 'active_mission_canceled',
+        'unsupported': 'none',
+    }
     response = {
-        'command': command,
-        'completion_mode': (
-            'report_object' if command == 'look_for_object' else ''),
-        'object_query': object_query,
+        'mission_type': mission_type,
+        'desired_end_state': desired_end_states.get(mission_type, 'none'),
+        'target_description': target_description,
         'map_name': '',
     }
     response.update(overrides)
@@ -142,10 +152,10 @@ class FakeCommandBackends(Node):
             trace_qos,
         )
 
-    def queue_intent(self, command, object_query='', **overrides):
+    def queue_intent(self, mission_type, target_description='', **overrides):
         with self._lock:
             self._vlm_responses.append(intent_response(
-                command, object_query, **overrides))
+                mission_type, target_description, **overrides))
 
     def execute_vlm(self, goal_handle):
         with self._lock:
@@ -293,10 +303,10 @@ def send_command(client, query):
 def test_service_and_object_search_commands_are_typed(running_router):
     backend, client = running_router
 
-    backend.queue_intent('start_exploration')
+    backend.queue_intent('start_manual_exploration')
     started = send_command(client, 'please start exploring')
     stopped = send_command(client, 'stop exploration')
-    backend.queue_intent('find_object', 'the red chair')
+    backend.queue_intent('query_object_registry', 'the red chair')
     found = send_command(client, 'which red chair did you record?')
 
     assert started.status == GoalStatus.STATUS_SUCCEEDED
@@ -312,7 +322,7 @@ def test_service_and_object_search_commands_are_typed(running_router):
 def test_save_map_dispatches_only_validated_basename(running_router):
     backend, client = running_router
 
-    backend.queue_intent('save_map', map_name='warehouse.v2')
+    backend.queue_intent('save_current_map', map_name='warehouse.v2')
     saved = send_command(client, 'save the map as warehouse version two')
 
     assert saved.status == GoalStatus.STATUS_SUCCEEDED

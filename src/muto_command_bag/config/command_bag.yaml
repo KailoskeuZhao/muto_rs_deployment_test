@@ -12,6 +12,7 @@ command_bag_recorder:
     include_hidden_topics: true
     record_all_services: true
     max_cache_size: 104857600
+    max_bag_directories: 20
     post_terminal_delay: 0.5
 
     lifecycle_event_topic: /model_commander/recording_event

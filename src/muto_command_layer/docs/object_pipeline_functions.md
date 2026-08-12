@@ -440,7 +440,9 @@ any plain-text `/explore_and_record/operator_event`. It excludes raw camera
 images, derived mask/annotation images, and point clouds. The finalized path is
 published on `/explore_and_record/last_bag_path`; metadata includes the action
 goal context, recorder build git state, and active exclusion regex. Bags are
-finalized on success, cancel, and abort.
+finalized on success, cancel, and abort. The recorder keeps the newest 20
+recognized Muto bag directories in the parent directory by default;
+`max_bag_directories:=0` disables pruning.
 
 ### 11. Navigate to and face a registered object
 
@@ -508,17 +510,19 @@ ros2 action send_goal /natural_language_command \
   "{query: 'run exploration and record static objects'}" --feedback
 ```
 
-The VLM is an intent parser, not a ROS executor. It must return one strict JSON
-object whose command is one of `find_object`, `look_for_object`,
-`go_to_object`, `start_exploration`, `stop_exploration`, `save_map`,
-`cancel_active_command`, or `unsupported`. A `look_for_object` intent also
-declares `completion_mode=report_object` or `approach_object`; it does not
-predefine the primitive sequence.
+The VLM is a mission-spec parser, not a ROS executor. It must return one strict
+JSON object whose `mission_type` is one of `locate_object`,
+`locate_and_approach_object`, `approach_known_object`,
+`query_object_registry`, `start_manual_exploration`,
+`stop_manual_exploration`, `save_current_map`, `cancel_active_mission`, or
+`unsupported`. Object missions also declare the desired end state, such as
+`report_object` or `approach_object`; they do not predefine the primitive
+sequence.
 The command router independently checks the exact object shape, argument types,
 and configured numeric bounds.
-It then dispatches only the corresponding compiled action or service client;
-model-provided ROS names, arbitrary parameters, and code cannot reach the ROS
-graph.
+It then adapts the mission to the corresponding compiled action or service
+client; model-provided ROS names, arbitrary parameters, primitive commands, and
+code cannot reach the ROS graph.
 
 Object descriptions sent to `go_to_object` are resolved through
 `/find_object`. Exactly one persistent registry ID must match before the router

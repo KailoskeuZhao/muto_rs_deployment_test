@@ -31,6 +31,11 @@ Bags are saved under:
 /opt/muto_rs_ws/bags/muto_command_<timestamp>_<mission-id>
 ```
 
+By default, the recorder keeps the newest 20 recognized Muto bag directories in
+that parent directory across command, exploration, nav2, and odometry bags.
+Older Muto bags are pruned after a new bag finalizes. Unrelated directories are
+not touched. Set `max_bag_directories:=0` to disable pruning.
+
 Find the current or latest path:
 
 ```bash

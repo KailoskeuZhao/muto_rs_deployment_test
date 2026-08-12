@@ -203,6 +203,9 @@ class NaturalLanguageCommandNode(Node):
             payload.update({
                 'command': intent.command,
                 'arguments': json.loads(intent.arguments_json()),
+                'mission_type': intent.mission_type,
+                'desired_end_state': intent.desired_end_state,
+                'target_description': intent.object_query,
                 'model': self.vlm_model if source == 'model' else '',
             })
         message = String()

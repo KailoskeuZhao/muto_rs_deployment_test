@@ -40,6 +40,11 @@ The default directory on the robot is:
 /opt/muto_rs_ws/bags/muto_explore_<timestamp>_<goal-id>
 ```
 
+By default, the recorder keeps the newest 20 recognized Muto bag directories in
+that parent directory across command, exploration, nav2, and odometry bags.
+Older Muto bags are pruned only after a new bag finalizes. Unrelated
+directories are not touched. Set `max_bag_directories:=0` to disable pruning.
+
 Read the latest path and inspect it with:
 
 ```bash

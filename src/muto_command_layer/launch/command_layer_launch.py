@@ -488,6 +488,11 @@ def generate_launch_description():
             description='Recorder write cache in bytes; zero disables it.',
         ),
         DeclareLaunchArgument(
+            'exploration_bag_max_directories',
+            default_value='20',
+            description='Maximum retained Muto bag directories in the parent.',
+        ),
+        DeclareLaunchArgument(
             'exploration_bag_post_result_delay',
             default_value='0.25',
             description='Time to capture terminal events before bag closure.',
@@ -557,6 +562,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'command_bag_max_cache_size', default_value='104857600'),
+        DeclareLaunchArgument(
+            'command_bag_max_directories',
+            default_value='20',
+            description='Maximum retained Muto bag directories in the parent.',
+        ),
         DeclareLaunchArgument(
             'command_bag_post_result_delay', default_value='0.5'),
         DeclareLaunchArgument(
@@ -815,6 +825,11 @@ def generate_launch_description():
                         LaunchConfiguration('exploration_bag_max_cache_size'),
                         value_type=int,
                     ),
+                    'max_bag_directories': ParameterValue(
+                        LaunchConfiguration(
+                            'exploration_bag_max_directories'),
+                        value_type=int,
+                    ),
                     'post_terminal_delay': ParameterValue(
                         LaunchConfiguration(
                             'exploration_bag_post_result_delay'
@@ -871,6 +886,10 @@ def generate_launch_description():
                     ),
                     'max_cache_size': ParameterValue(
                         LaunchConfiguration('command_bag_max_cache_size'),
+                        value_type=int,
+                    ),
+                    'max_bag_directories': ParameterValue(
+                        LaunchConfiguration('command_bag_max_directories'),
                         value_type=int,
                     ),
                     'post_terminal_delay': ParameterValue(

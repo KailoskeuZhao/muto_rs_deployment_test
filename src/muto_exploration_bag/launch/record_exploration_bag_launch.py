@@ -57,6 +57,7 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument('max_cache_size', default_value='104857600'),
+        DeclareLaunchArgument('max_bag_directories', default_value='20'),
         DeclareLaunchArgument('post_terminal_delay', default_value='0.25'),
         DeclareLaunchArgument(
             'lifecycle_event_topic',
@@ -95,6 +96,10 @@ def generate_launch_description():
                     'exclude_regex': LaunchConfiguration('exclude_regex'),
                     'max_cache_size': ParameterValue(
                         LaunchConfiguration('max_cache_size'),
+                        value_type=int,
+                    ),
+                    'max_bag_directories': ParameterValue(
+                        LaunchConfiguration('max_bag_directories'),
                         value_type=int,
                     ),
                     'post_terminal_delay': ParameterValue(

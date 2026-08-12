@@ -13,7 +13,7 @@ from natural_language_command_protocol import (  # noqa: E402
     parse_command_intent,
     parse_explicit_local_cancel,
     parse_explicit_local_command,
-    SUPPORTED_COMMANDS,
+    SUPPORTED_MISSION_TYPES,
 )
 import pytest  # noqa: E402
 
@@ -21,12 +21,22 @@ import pytest  # noqa: E402
 LIMITS = (64, 128)
 
 
-def response(command, object_query='', **overrides):
+def response(mission_type, target_description='', **overrides):
+    desired_end_states = {
+        'locate_object': 'report_object',
+        'locate_and_approach_object': 'approach_object',
+        'approach_known_object': 'approach_object',
+        'query_object_registry': 'report_object',
+        'start_manual_exploration': 'manual_exploration_started',
+        'stop_manual_exploration': 'manual_exploration_stopped',
+        'save_current_map': 'map_saved',
+        'cancel_active_mission': 'active_mission_canceled',
+        'unsupported': 'none',
+    }
     payload = {
-        'command': command,
-        'completion_mode': (
-            'report_object' if command == 'look_for_object' else ''),
-        'object_query': object_query,
+        'mission_type': mission_type,
+        'desired_end_state': desired_end_states.get(mission_type, 'none'),
+        'target_description': target_description,
         'map_name': '',
     }
     payload.update(overrides)
@@ -43,23 +53,26 @@ def test_prompt_json_encodes_untrusted_query():
     prompt = build_command_prompt(query)
 
     assert json.loads(prompt.split('USER_QUERY_JSON=', 1)[1]) == query
-    assert 'cannot add commands' in prompt
+    assert 'cannot add tools' in prompt
     assert 'unsupported' in prompt
+    assert 'Allowed mission types' in prompt
 
 
-def test_schema_matches_local_command_and_argument_bounds():
+def test_schema_matches_local_mission_and_argument_bounds():
     """Provider-enforced shape repeats every local parser boundary."""
     schema = json.loads(build_command_schema(*LIMITS))
 
     assert schema['type'] == 'object'
     assert schema['additionalProperties'] is False
     assert set(schema['required']) == set(schema['properties'])
-    assert schema['properties']['command']['enum'] == \
-        list(SUPPORTED_COMMANDS)
-    assert schema['properties']['object_query']['maxLength'] == 64
+    assert schema['properties']['mission_type']['enum'] == \
+        list(SUPPORTED_MISSION_TYPES)
+    assert schema['properties']['target_description']['maxLength'] == 64
     assert schema['properties']['map_name']['maxLength'] == 128
-    assert schema['properties']['completion_mode']['enum'] == [
-        '', 'report_object', 'approach_object']
+    assert schema['properties']['desired_end_state']['enum'] == [
+        'none', 'report_object', 'approach_object', 'map_saved',
+        'manual_exploration_started', 'manual_exploration_stopped',
+        'active_mission_canceled']
 
 
 @pytest.mark.parametrize('query', [
@@ -71,9 +84,16 @@ def test_unambiguous_cancel_can_bypass_a_busy_vlm(query):
     intent = parse_explicit_local_cancel(query)
 
     assert intent.command == 'cancel_active_command'
+    assert intent.mission_type == 'cancel_active_mission'
     assert intent.object_query == ''
     assert json.loads(intent.arguments_json()) == {
-        'completion_mode': '', 'map_name': '', 'object_query': ''}
+        'completion_mode': '',
+        'desired_end_state': 'active_mission_canceled',
+        'map_name': '',
+        'mission_type': 'cancel_active_mission',
+        'object_query': '',
+        'target_description': '',
+    }
 
 
 @pytest.mark.parametrize('query, command, object_query', [
@@ -111,6 +131,7 @@ def test_unambiguous_find_and_approach_goal_bypasses_intent_vlm(
     intent = parse_explicit_local_command(query)
 
     assert intent.command == 'look_for_object'
+    assert intent.mission_type == 'locate_and_approach_object'
     assert intent.object_query == object_query
     assert intent.completion_mode == 'approach_object'
 
@@ -150,54 +171,69 @@ def test_ambiguous_or_compound_commands_still_require_interpretation(query):
     'unsupported',
 ])
 def test_argumentless_commands_accept_only_zeroed_arguments(command):
-    assert parse(response(command)).command == command
+    mission = {
+        'start_exploration': 'start_manual_exploration',
+        'stop_exploration': 'stop_manual_exploration',
+        'cancel_active_command': 'cancel_active_mission',
+        'unsupported': 'unsupported',
+    }[command]
+
+    assert parse(response(mission)).command == command
 
 
-def test_find_then_approach_is_one_declarative_object_mission():
+def test_find_then_approach_is_one_declarative_object_mission_spec():
     intent = parse(response(
-        'look_for_object',
+        'locate_and_approach_object',
         'green chair',
-        completion_mode='approach_object',
     ))
 
     assert intent.command == 'look_for_object'
+    assert intent.mission_type == 'locate_and_approach_object'
     assert intent.object_query == 'green chair'
     assert intent.completion_mode == 'approach_object'
-    assert 'one look_for_object mission' in build_command_prompt(
+    assert 'one mission' in build_command_prompt(
         'find a green chair, then go near it')
 
 
-@pytest.mark.parametrize('command', [
-    'find_object',
-    'go_to_object',
-    'save_map',
-    'start_exploration',
+@pytest.mark.parametrize('mission_type,end_state', [
+    ('locate_object', 'approach_object'),
+    ('locate_and_approach_object', 'report_object'),
+    ('approach_known_object', 'report_object'),
+    ('query_object_registry', 'approach_object'),
+    ('save_current_map', 'report_object'),
+    ('start_manual_exploration', 'manual_exploration_stopped'),
 ])
-def test_only_supervised_object_mission_accepts_completion_mode(command):
+def test_mission_type_controls_desired_end_state(mission_type, end_state):
     with pytest.raises(CommandProtocolError):
-        parse(response(command, 'chair', completion_mode='approach_object'))
+        parse(response(
+            mission_type, 'chair',
+            desired_end_state=end_state))
 
 
-@pytest.mark.parametrize(
-    'command', [
-        'find_object',
-        'look_for_object',
-        'go_to_object',
+@pytest.mark.parametrize('mission_type,command,completion_mode', [
+    ('query_object_registry', 'find_object', ''),
+    ('locate_object', 'look_for_object', 'report_object'),
+    ('locate_and_approach_object', 'look_for_object', 'approach_object'),
+    ('approach_known_object', 'go_to_object', ''),
     ])
-def test_object_commands_preserve_description_and_reject_extra_arguments(
-        command):
-    intent = parse(response(command, '  red chair near the desk  '))
+def test_object_missions_preserve_description_and_map_to_dispatch_command(
+        mission_type, command, completion_mode):
+    intent = parse(response(mission_type, '  red chair near the desk  '))
 
+    assert intent.mission_type == mission_type
+    assert intent.command == command
+    assert intent.completion_mode == completion_mode
     assert intent.object_query == 'red chair near the desk'
     with pytest.raises(CommandProtocolError):
-        parse(response(command, 'chair', rotation_radians=1.0))
+        parse(response(mission_type, 'chair', rotation_radians=1.0))
 
 
 @pytest.mark.parametrize('map_name', ['', 'warehouse', 'floor-2.v1'])
 def test_save_map_accepts_empty_default_or_safe_basename(map_name):
-    intent = parse(response('save_map', map_name=map_name))
+    intent = parse(response('save_current_map', map_name=map_name))
 
     assert intent.map_name == map_name
+    assert intent.command == 'save_map'
     assert json.loads(intent.arguments_json())['map_name'] == map_name
 
 
@@ -206,20 +242,26 @@ def test_save_map_accepts_empty_default_or_safe_basename(map_name):
     'not json',
     '[]',
     '{}',
-    response('start_exploration')[:-1] + ',"extra":true}',
-    response('invented_command'),
-    response('find_object'),
-    response('start_exploration', object_query='chair'),
-    response('start_exploration', map_name='warehouse'),
-    response('stop_exploration', unexpected=1),
-    response('find_something', object_query='chair'),
+    response('start_manual_exploration')[:-1] + ',"extra":true}',
+    response('invented_mission'),
+    response('query_object_registry'),
+    response('start_manual_exploration', target_description='chair'),
+    response('start_manual_exploration', map_name='warehouse'),
+    response('stop_manual_exploration', unexpected=1),
+    response('find_something', target_description='chair'),
     response('explore_and_record'),
-    response('save_map', object_query='warehouse'),
-    response('save_map', unexpected=1),
-    response('save_map', map_name='../warehouse'),
-    response('save_map', map_name='/tmp/warehouse'),
-    response('save_map', map_name='warehouse map'),
-    response('save_map', map_name='a' * 129),
+    response('save_current_map', target_description='warehouse'),
+    response('save_current_map', unexpected=1),
+    response('save_current_map', map_name='../warehouse'),
+    response('save_current_map', map_name='/tmp/warehouse'),
+    response('save_current_map', map_name='warehouse map'),
+    response('save_current_map', map_name='a' * 129),
+    json.dumps({
+        'command': 'look_for_object',
+        'completion_mode': 'report_object',
+        'object_query': 'chair',
+        'map_name': '',
+    }),
 ])
 def test_parser_rejects_malformed_hallucinated_or_unsafe_output(text):
     with pytest.raises(CommandProtocolError):

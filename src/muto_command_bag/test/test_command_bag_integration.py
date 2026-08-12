@@ -175,6 +175,124 @@ def test_records_parent_lifecycle_decision_context_and_inspected_jpeg(
     assert '/model_commander/inspected_image' in info
 
 
+def test_prunes_old_muto_bag_directories_by_total_count(tmp_path):
+    old_bag = tmp_path / 'muto_command_20260101_000000_old00000'
+    newer_explore_bag = tmp_path / 'muto_explore_20260102_000000_new00000'
+    unrelated = tmp_path / 'not_a_muto_bag_20260101_000000_keep0000'
+    for path in (old_bag, newer_explore_bag, unrelated):
+        path.mkdir()
+        (path / 'marker.txt').write_text(path.name, encoding='utf-8')
+
+    domain_id = int(os.environ.get('ROS_DOMAIN_ID', '185'))
+    rclpy.init(domain_id=domain_id)
+    node = Node('fake_command_mission_retention')
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    status_messages = []
+    transient_qos = QoSProfile(
+        depth=10,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        reliability=ReliabilityPolicy.RELIABLE,
+    )
+    lifecycle_publisher = node.create_publisher(
+        String, '/model_commander/recording_event', transient_qos)
+    status_subscription = node.create_subscription(
+        String,
+        '/model_commander/bag_status',
+        lambda message: status_messages.append(json.loads(message.data)),
+        transient_qos,
+    )
+    assert status_subscription is not None
+
+    process_environment = os.environ.copy()
+    process_environment['ROS_DOMAIN_ID'] = str(domain_id)
+    process = subprocess.Popen(
+        [
+            'ros2', 'run', 'muto_exploration_bag',
+            'exploration_bag_recorder',
+            '--ros-args',
+            '-r', '__node:=command_bag_retention_test',
+            '-p', f'output_directory:={tmp_path}',
+            '-p', 'storage_id:=mcap',
+            '-p', 'post_terminal_delay:=0.1',
+            '-p', 'max_bag_directories:=2',
+            '-p',
+            'lifecycle_event_topic:=/model_commander/recording_event',
+            '-p', 'status_topic:=/model_commander/bag_status',
+            '-p', 'path_topic:=/model_commander/last_bag_path',
+            '-p', 'operator_event_topic:=/model_commander/operator_event',
+            '-p', 'bag_prefix:=muto_command',
+            '-p', 'manifest_schema:=command_mission_v1',
+            '-p', 'status_schema:=muto_command_bag_status_v1',
+            '-p', 'recording_label:=command_mission',
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=process_environment,
+    )
+    try:
+        wait_until(
+            lambda: node.count_subscribers(
+                '/model_commander/recording_event') >= 1)
+        start = String()
+        start.data = json.dumps({
+            'schema': 'muto_command_lifecycle_v1',
+            'event': 'mission_started',
+            'goal_id': 'retentiontest0001',
+            'objective': 'green office chair',
+            'model': 'test-model',
+        }, separators=(',', ':'))
+        lifecycle_publisher.publish(start)
+
+        def recording_ready():
+            executor.spin_once(timeout_sec=0.05)
+            return any(
+                item.get('event') == 'recording_ready'
+                for item in status_messages)
+
+        wait_until(recording_ready)
+        terminal = String()
+        terminal.data = json.dumps({
+            'schema': 'muto_command_lifecycle_v1',
+            'event': 'succeeded',
+            'goal_id': 'retentiontest0001',
+            'outcome': 1,
+        }, separators=(',', ':'))
+        lifecycle_publisher.publish(terminal)
+
+        def recording_finalized():
+            executor.spin_once(timeout_sec=0.05)
+            return any(
+                item.get('event') == 'recording_finalized'
+                for item in status_messages)
+
+        wait_until(recording_finalized)
+    finally:
+        os.killpg(process.pid, signal.SIGINT)
+        try:
+            output, _ = process.communicate(timeout=8.0)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate(timeout=5.0)
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+        assert process.returncode == 0, output
+
+    retained_muto_bags = sorted(
+        path.name for path in tmp_path.iterdir()
+        if path.is_dir() and (
+            path.name.startswith('muto_command_') or
+            path.name.startswith('muto_explore_')))
+    assert len(retained_muto_bags) == 2
+    assert old_bag.name not in retained_muto_bags
+    assert newer_explore_bag.name in retained_muto_bags
+    assert any(name.startswith('muto_command_') for name in retained_muto_bags)
+    assert unrelated.exists()
+
+
 def test_finalizes_when_commander_heartbeat_disappears(tmp_path):
     domain_id = int(os.environ.get('ROS_DOMAIN_ID', '185'))
     rclpy.init(domain_id=domain_id)

@@ -1,17 +1,42 @@
 #!/usr/bin/env python3
 """Persistent, event-driven model supervisor for described-object search."""
 
-from dataclasses import dataclass
 import json
 import math
-import queue
 import threading
 import time
 import traceback
 
 from action_msgs.msg import GoalStatus
-import cv2
 from geometry_msgs.msg import Twist
+from model_commander_config import (
+    declare_parameters,
+    read_parameters,
+    validate_parameters,
+)
+from model_commander_errors import (
+    ActiveMonitoringFailure,
+    ChildCompletedDuringInspection,
+    CommanderCanceled,
+    CommanderFailure,
+    InputFlowFailure,
+    MissionBudgetExhausted,
+    OwnedGoalStateUnknown,
+    PlannerFailure,
+    StalePlan,
+    WaitCompletedDuringInspection,
+)
+from model_commander_inputs import (
+    TransientSubscriptionWorker,
+    VisualCodecLimits,
+    VisualObservation,
+    VisualObservationCodec,
+)
+from model_commander_memory import (
+    angle_delta,
+    primitive_memory_entry,
+    RobotPoseSnapshot,
+)
 from model_commander_protocol import (
     build_active_inspection_prompt,
     build_active_inspection_schema,
@@ -30,11 +55,10 @@ from muto_command_layer.action import (
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
 from nav_msgs.msg import Odometry
-import numpy as np
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sam2_object_registry.msg import StoredObjectArray
@@ -43,265 +67,14 @@ from std_msgs.msg import Header, String
 from std_srvs.srv import Trigger
 
 
-class CommanderCanceled(RuntimeError):
-    """Raised when the parent mission is canceled."""
-
-
-class CommanderFailure(RuntimeError):
-    """Raised when an owned dependency cannot complete safely."""
-
-
-class OwnedGoalStateUnknown(CommanderFailure):
-    """Raised when an accepted owned goal cannot be confirmed stopped."""
-
-
-class PlannerFailure(CommanderFailure):
-    """Raised for model transport or validated-protocol failures."""
-
-
-class ActiveMonitoringFailure(CommanderFailure):
-    """Raised when required in-flight visual monitoring is unavailable."""
-
-
-class StalePlan(RuntimeError):
-    """Raised when monitored state changes during model inference."""
-
-
-class ChildCompletedDuringInspection(RuntimeError):
-    """Raised when the command under inspection reaches a terminal state."""
-
-
-class WaitCompletedDuringInspection(RuntimeError):
-    """Raised when a bounded wait ends during a visual inspection."""
-
-
-class MissionBudgetExhausted(RuntimeError):
-    """Raised when a locally enforced mission budget expires."""
-
-
-class InputFlowFailure(RuntimeError):
-    """Raised when a bounded transient-input worker cannot make progress."""
-
-
-class _TransientSubscriptionRequest:
-    """Thread-safe state for one bounded subscription collection window."""
-
-    def __init__(self, message_type, topic, qos, maximum_messages):
-        self.message_type = message_type
-        self.topic = topic
-        self.qos = qos
-        self.maximum_messages = maximum_messages
-        self.cancel_requested = threading.Event()
-        self.done = threading.Event()
-        self.started = threading.Event()
-        self._lock = threading.Lock()
-        self._message_count = 0
-        self._latest_message = None
-        self._latest_receipt_time = None
-        self._error = None
-
-    def record(self, message):
-        with self._lock:
-            if self.cancel_requested.is_set():
-                return
-            self._message_count += 1
-            self._latest_message = message
-            self._latest_receipt_time = time.monotonic()
-
-    def target_reached(self):
-        with self._lock:
-            return self.maximum_messages is not None and \
-                self._message_count >= self.maximum_messages
-
-    def set_error(self, error):
-        with self._lock:
-            self._error = error
-
-    def snapshot(self):
-        with self._lock:
-            return (
-                self._message_count,
-                self._latest_message,
-                self._latest_receipt_time,
-                self._error,
-            )
-
-
-class _TransientSubscriptionWorker:
-    """
-    Own dynamic subscriptions outside the commander's ROS executor.
-
-    All create, spin, and destroy operations occur sequentially on this
-    worker's single thread.  The commander executor therefore never retains a
-    wait-set reference to a subscription while another callback destroys it.
-    Admission is single-flight and every caller has a bounded cancellation
-    wait, preventing unbounded queues and lock-order deadlocks.
-    """
-
-    _STOP = object()
-
-    def __init__(self, context, node_name, poll_period):
-        self._context = context
-        self._node_name = node_name
-        self._poll_period = poll_period
-        self._queue = queue.Queue(maxsize=1)
-        self._admission_lock = threading.Lock()
-        self._active_request = None
-        self._closed = False
-        self._startup_error = None
-        self._ready = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f'{node_name}_thread',
-            daemon=True,
-        )
-        self._thread.start()
-        if not self._ready.wait(timeout=5.0):
-            raise InputFlowFailure(
-                f'{node_name} worker did not initialize within 5 seconds')
-        if self._startup_error is not None:
-            raise InputFlowFailure(
-                f'{node_name} worker could not initialize') from \
-                self._startup_error
-
-    def start(self, message_type, topic, qos, maximum_messages=None):
-        with self._admission_lock:
-            if self._closed:
-                raise InputFlowFailure(
-                    f'{self._node_name} worker is closed')
-            if self._active_request is not None:
-                raise InputFlowFailure(
-                    f'{self._node_name} worker already has an active request')
-            request = _TransientSubscriptionRequest(
-                message_type, topic, qos, maximum_messages)
-            self._active_request = request
-            try:
-                self._queue.put_nowait(request)
-            except queue.Full as error:
-                self._active_request = None
-                raise InputFlowFailure(
-                    f'{self._node_name} worker request queue is full') from error
-            return request
-
-    def cancel_and_wait(self, request, timeout):
-        request.cancel_requested.set()
-        return request.done.wait(timeout=timeout)
-
-    def close(self, timeout):
-        with self._admission_lock:
-            if self._closed:
-                return not self._thread.is_alive()
-            self._closed = True
-            active_request = self._active_request
-        if active_request is not None:
-            active_request.cancel_requested.set()
-            active_request.done.wait(timeout=timeout)
-        try:
-            self._queue.put(self._STOP, timeout=timeout)
-        except queue.Full:
-            return False
-        self._thread.join(timeout=timeout)
-        return not self._thread.is_alive()
-
-    def _run(self):
-        node = None
-        executor = None
-        try:
-            node = Node(
-                self._node_name,
-                context=self._context,
-                use_global_arguments=False,
-            )
-            executor = SingleThreadedExecutor(context=self._context)
-            executor.add_node(node)
-        except Exception as error:
-            self._startup_error = error
-            self._ready.set()
-            return
-        self._ready.set()
-        try:
-            while True:
-                request = self._queue.get()
-                if request is self._STOP:
-                    break
-                self._serve_request(node, executor, request)
-        finally:
-            try:
-                executor.remove_node(node)
-                executor.shutdown()
-            finally:
-                node.destroy_node()
-
-    def _serve_request(self, node, executor, request):
-        subscription = None
-        try:
-            subscription = node.create_subscription(
-                request.message_type,
-                request.topic,
-                request.record,
-                request.qos,
-            )
-            request.started.set()
-            while not request.cancel_requested.is_set() and \
-                    not request.target_reached():
-                if not rclpy.ok(context=self._context):
-                    raise InputFlowFailure(
-                        f'{self._node_name} ROS context is shutting down')
-                executor.spin_once(timeout_sec=self._poll_period)
-        except Exception as error:
-            request.set_error(error)
-        finally:
-            if subscription is not None:
-                try:
-                    # This worker is the only thread that spins its executor,
-                    # so destruction cannot race an executor wait-set access.
-                    node.destroy_subscription(subscription)
-                except Exception as error:
-                    request.set_error(error)
-            with self._admission_lock:
-                if self._active_request is request:
-                    self._active_request = None
-            request.done.set()
-
-
-@dataclass(frozen=True)
-class VisualObservation:
-    """One bounded camera snapshot supplied to a VLM planning request."""
-
-    sequence: int
-    jpeg_data: bytes
-    receipt_monotonic: float
-    frame_id: str
-    stamp_seconds: float
-    receipt_age_seconds: float
-    source_width: int
-    source_height: int
-    encoded_width: int
-    encoded_height: int
-
-
-@dataclass(frozen=True)
-class RobotPoseSnapshot:
-    """Latest robot odometry pose included in high-level decision memory."""
-
-    frame_id: str
-    child_frame_id: str
-    stamp_seconds: float
-    receipt_monotonic: float
-    x: float
-    y: float
-    z: float
-    yaw: float
-
-
 class ModelCommanderNode(Node):
     """Plan bounded typed commands while continuously monitoring the mission."""
 
     def __init__(self):
         super().__init__('model_commander')
-        self._declare_parameters()
-        self._read_parameters()
-        self._validate_parameters()
+        declare_parameters(self)
+        read_parameters(self)
+        validate_parameters(self)
 
         self._callback_group = ReentrantCallbackGroup()
         self._vlm_client = ActionClient(
@@ -362,12 +135,12 @@ class ModelCommanderNode(Node):
         self._camera_input_worker = None
         self._heartbeat_input_worker = None
         try:
-            self._camera_input_worker = _TransientSubscriptionWorker(
+            self._camera_input_worker = TransientSubscriptionWorker(
                 self.context,
                 'model_commander_camera_input',
                 self.input_worker_poll_period,
             )
-            self._heartbeat_input_worker = _TransientSubscriptionWorker(
+            self._heartbeat_input_worker = TransientSubscriptionWorker(
                 self.context,
                 'model_commander_detector_input',
                 self.input_worker_poll_period,
@@ -377,6 +150,15 @@ class ModelCommanderNode(Node):
                 self._camera_input_worker.close(
                     self.input_worker_stop_timeout)
             raise
+        self._visual_codec = VisualObservationCodec(VisualCodecLimits(
+            max_width=self.visual_observation_max_width,
+            max_height=self.visual_observation_max_height,
+            jpeg_quality=self.visual_observation_jpeg_quality,
+            max_jpeg_bytes=self.visual_observation_max_jpeg_bytes,
+            max_source_width=self.visual_observation_max_source_width,
+            max_source_height=self.visual_observation_max_source_height,
+            max_source_bytes=self.visual_observation_max_source_bytes,
+        ))
         self._status = {
             'schema_version': 2,
             'active': False,
@@ -479,272 +261,6 @@ class ModelCommanderNode(Node):
             f'pose={self.robot_pose_topic} '
             f'status={self.status_topic} '
             f'decisions={self.decision_event_topic}')
-
-    def _declare_parameters(self):
-        self.declare_parameter('action_name', '/look_for_object')
-        self.declare_parameter('vlm_action', '/vlm/generate')
-        self.declare_parameter('find_object_action', '/find_object')
-        self.declare_parameter('go_to_object_action', '/go_to_object')
-        self.declare_parameter(
-            'explore_frontier_action',
-            '/command_primitives/explore_frontier')
-        self.declare_parameter('spin_action', '/spin')
-        self.declare_parameter('rotate_cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter(
-            'registry_save_service', '/sam2/save_stored_objects')
-        self.declare_parameter(
-            'detection_heartbeat_topic', '/sam2/detection_heartbeat')
-        self.declare_parameter('registry_topic', '/sam2/stored_objects')
-        self.declare_parameter('robot_pose_topic', '/odometry/filtered')
-        self.declare_parameter(
-            'visual_observation_topic', '/camera/color/image_raw')
-        self.declare_parameter('status_topic', '/model_commander/status')
-        self.declare_parameter('command_bag_enabled', True)
-        self.declare_parameter('command_bag_required', False)
-        self.declare_parameter('command_bag_start_timeout', 2.0)
-        self.declare_parameter(
-            'command_bag_event_topic', '/model_commander/recording_event')
-        self.declare_parameter(
-            'command_bag_status_topic', '/model_commander/bag_status')
-        self.declare_parameter(
-            'decision_event_topic', '/model_commander/decision_event')
-        self.declare_parameter(
-            'inspected_image_topic', '/model_commander/inspected_image')
-        self.declare_parameter('vlm_model', 'gpt-5.6-luna')
-        self.declare_parameter('endpoint_timeout', 5.0)
-        self.declare_parameter('vlm_result_timeout', 60.0)
-        self.declare_parameter('find_result_timeout', 400.0)
-        self.declare_parameter('child_stop_timeout', 10.0)
-        self.declare_parameter('default_max_duration', 1800.0)
-        self.declare_parameter('maximum_mission_duration', 7200.0)
-        self.declare_parameter('default_max_planning_steps', 64)
-        self.declare_parameter('maximum_planning_steps', 256)
-        self.declare_parameter('maximum_command_dispatches', 128)
-        self.declare_parameter('max_prompt_characters', 8192)
-        self.declare_parameter('max_reason_characters', 512)
-        self.declare_parameter('max_visual_observation_characters', 512)
-        self.declare_parameter('max_state_message_characters', 512)
-        self.declare_parameter('max_wait_seconds', 60.0)
-        self.declare_parameter('max_exploration_seconds', 60.0)
-        self.declare_parameter('max_rotation_radians', 6.283185307179586)
-        self.declare_parameter('max_observation_seconds', 30.0)
-        self.declare_parameter('spin_time_allowance', 15.0)
-        self.declare_parameter('rotate_executable_yaw_velocity', 0.80)
-        self.declare_parameter('rotate_timeout_reference_yaw_velocity', 0.15)
-        self.declare_parameter('rotate_goal_tolerance', 0.08)
-        self.declare_parameter('rotate_control_period', 0.05)
-        self.declare_parameter('rotate_stop_publish_count', 3)
-        self.declare_parameter('checkpoint_timeout', 10.0)
-        self.declare_parameter('observation_min_detection_frames', 3)
-        self.declare_parameter(
-            'minimum_explore_progress_distance_m', 0.1)
-        self.declare_parameter(
-            'minimum_no_match_travel_distance_m', 0.5)
-        self.declare_parameter('minimum_no_match_observations', 4)
-        self.declare_parameter('minimum_no_match_checkpoints', 1)
-        self.declare_parameter(
-            'minimum_no_match_rotation_radians', 6.283185307179586)
-        self.declare_parameter('planner_retry_initial_delay', 2.0)
-        self.declare_parameter('planner_retry_max_delay', 30.0)
-        self.declare_parameter('command_retry_initial_delay', 1.0)
-        self.declare_parameter('command_retry_max_delay', 10.0)
-        self.declare_parameter('max_consecutive_planner_failures', 3)
-        self.declare_parameter('max_consecutive_command_failures', 3)
-        self.declare_parameter('max_repeated_no_progress_decisions', 4)
-        self.declare_parameter('visual_observation_timeout', 5.0)
-        self.declare_parameter('visual_observation_max_age', 2.0)
-        self.declare_parameter('visual_observation_jpeg_quality', 80)
-        self.declare_parameter('visual_observation_max_width', 960)
-        self.declare_parameter('visual_observation_max_height', 720)
-        self.declare_parameter(
-            'visual_observation_max_jpeg_bytes', 1048576)
-        self.declare_parameter('visual_observation_max_source_width', 8192)
-        self.declare_parameter('visual_observation_max_source_height', 8192)
-        self.declare_parameter(
-            'visual_observation_max_source_bytes', 67108864)
-        self.declare_parameter('input_worker_poll_period', 0.02)
-        self.declare_parameter('input_worker_stop_timeout', 2.0)
-        self.declare_parameter('active_visual_monitoring', True)
-        self.declare_parameter('active_inspection_period', 20.0)
-        self.declare_parameter('active_inspection_timeout', 30.0)
-        self.declare_parameter('active_inspection_max_decision_age', 90.0)
-        self.declare_parameter(
-            'max_consecutive_active_inspection_failures', 3)
-        self.declare_parameter('max_visual_interrupts', 8)
-        self.declare_parameter('monitor_period', 0.05)
-        self.declare_parameter('status_publish_period', 1.0)
-
-    def _read_parameters(self):
-        names = (
-            'action_name',
-            'vlm_action',
-            'find_object_action',
-            'go_to_object_action',
-            'explore_frontier_action',
-            'spin_action',
-            'rotate_cmd_vel_topic',
-            'registry_save_service',
-            'detection_heartbeat_topic',
-            'registry_topic',
-            'robot_pose_topic',
-            'visual_observation_topic',
-            'status_topic',
-            'command_bag_enabled',
-            'command_bag_required',
-            'command_bag_start_timeout',
-            'command_bag_event_topic',
-            'command_bag_status_topic',
-            'decision_event_topic',
-            'inspected_image_topic',
-            'vlm_model',
-            'endpoint_timeout',
-            'vlm_result_timeout',
-            'find_result_timeout',
-            'child_stop_timeout',
-            'default_max_duration',
-            'maximum_mission_duration',
-            'default_max_planning_steps',
-            'maximum_planning_steps',
-            'maximum_command_dispatches',
-            'max_prompt_characters',
-            'max_reason_characters',
-            'max_visual_observation_characters',
-            'max_state_message_characters',
-            'max_wait_seconds',
-            'max_exploration_seconds',
-            'max_rotation_radians',
-            'max_observation_seconds',
-            'spin_time_allowance',
-            'rotate_executable_yaw_velocity',
-            'rotate_timeout_reference_yaw_velocity',
-            'rotate_goal_tolerance',
-            'rotate_control_period',
-            'rotate_stop_publish_count',
-            'checkpoint_timeout',
-            'minimum_explore_progress_distance_m',
-            'minimum_no_match_travel_distance_m',
-            'minimum_no_match_rotation_radians',
-            'minimum_no_match_observations',
-            'minimum_no_match_checkpoints',
-            'observation_min_detection_frames',
-            'planner_retry_initial_delay',
-            'planner_retry_max_delay',
-            'command_retry_initial_delay',
-            'command_retry_max_delay',
-            'max_consecutive_planner_failures',
-            'max_consecutive_command_failures',
-            'max_repeated_no_progress_decisions',
-            'visual_observation_timeout',
-            'visual_observation_max_age',
-            'visual_observation_jpeg_quality',
-            'visual_observation_max_width',
-            'visual_observation_max_height',
-            'visual_observation_max_jpeg_bytes',
-            'visual_observation_max_source_width',
-            'visual_observation_max_source_height',
-            'visual_observation_max_source_bytes',
-            'input_worker_poll_period',
-            'input_worker_stop_timeout',
-            'active_visual_monitoring',
-            'active_inspection_period',
-            'active_inspection_timeout',
-            'active_inspection_max_decision_age',
-            'max_consecutive_active_inspection_failures',
-            'max_visual_interrupts',
-            'monitor_period',
-            'status_publish_period',
-        )
-        for name in names:
-            setattr(self, name, self.get_parameter(name).value)
-
-    def _validate_parameters(self):
-        for name in (
-                'action_name', 'vlm_action', 'find_object_action',
-                'go_to_object_action',
-                'explore_frontier_action', 'spin_action',
-                'rotate_cmd_vel_topic', 'registry_save_service',
-                'detection_heartbeat_topic', 'registry_topic',
-                'robot_pose_topic',
-                'visual_observation_topic', 'status_topic',
-                'command_bag_event_topic', 'command_bag_status_topic',
-                'decision_event_topic', 'inspected_image_topic'):
-            if not getattr(self, name):
-                raise ValueError(f'{name} must not be empty')
-        for name in (
-                'endpoint_timeout', 'vlm_result_timeout',
-                'find_result_timeout', 'child_stop_timeout',
-                'default_max_duration', 'maximum_mission_duration',
-                'max_wait_seconds', 'max_exploration_seconds',
-                'max_rotation_radians', 'max_observation_seconds',
-                'spin_time_allowance', 'rotate_executable_yaw_velocity',
-                'rotate_timeout_reference_yaw_velocity',
-                'rotate_goal_tolerance', 'rotate_control_period',
-                'checkpoint_timeout',
-                'minimum_explore_progress_distance_m',
-                'minimum_no_match_travel_distance_m',
-                'minimum_no_match_rotation_radians',
-                'planner_retry_initial_delay',
-                'planner_retry_max_delay', 'command_retry_initial_delay',
-                'command_retry_max_delay', 'visual_observation_timeout',
-                'visual_observation_max_age', 'active_inspection_period',
-                'active_inspection_timeout',
-                'active_inspection_max_decision_age', 'monitor_period',
-                'status_publish_period', 'command_bag_start_timeout',
-                'input_worker_poll_period', 'input_worker_stop_timeout'):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                    or not math.isfinite(value) or value <= 0.0:
-                raise ValueError(f'{name} must be finite and positive')
-        if self.default_max_duration > self.maximum_mission_duration:
-            raise ValueError(
-                'default_max_duration exceeds maximum_mission_duration')
-        if self.planner_retry_initial_delay > self.planner_retry_max_delay:
-            raise ValueError(
-                'planner_retry_initial_delay exceeds its maximum')
-        if self.command_retry_initial_delay > self.command_retry_max_delay:
-            raise ValueError(
-                'command_retry_initial_delay exceeds its maximum')
-        for name in (
-                'default_max_planning_steps', 'maximum_planning_steps',
-                'maximum_command_dispatches', 'max_prompt_characters',
-                'max_reason_characters',
-                'max_visual_observation_characters',
-                'max_state_message_characters',
-                'minimum_no_match_observations',
-                'minimum_no_match_checkpoints',
-                'observation_min_detection_frames',
-                'max_consecutive_planner_failures',
-                'max_consecutive_command_failures',
-                'max_repeated_no_progress_decisions',
-                'visual_observation_jpeg_quality',
-                'visual_observation_max_width',
-                'visual_observation_max_height',
-                'visual_observation_max_jpeg_bytes',
-                'visual_observation_max_source_width',
-                'visual_observation_max_source_height',
-                'visual_observation_max_source_bytes',
-                'rotate_stop_publish_count',
-                'max_consecutive_active_inspection_failures',
-                'max_visual_interrupts'):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) \
-                    or value <= 0:
-                raise ValueError(f'{name} must be a positive integer')
-        if self.default_max_planning_steps > self.maximum_planning_steps:
-            raise ValueError(
-                'default_max_planning_steps exceeds its maximum')
-        if not 1 <= self.visual_observation_jpeg_quality <= 100:
-            raise ValueError(
-                'visual_observation_jpeg_quality must be in [1, 100]')
-        for name in (
-                'active_visual_monitoring', 'command_bag_enabled',
-                'command_bag_required'):
-            if not isinstance(getattr(self, name), bool):
-                raise ValueError(f'{name} must be boolean')
-        if self.command_bag_required and not self.command_bag_enabled:
-            raise ValueError(
-                'command_bag_required cannot be true when recording is '
-                'disabled')
 
     @staticmethod
     def _registry_object_signature(item):
@@ -865,48 +381,19 @@ class ModelCommanderNode(Node):
             contexts.append(context)
         return contexts
 
-    @staticmethod
-    def _angle_delta(end_yaw, start_yaw):
-        return math.atan2(
-            math.sin(end_yaw - start_yaw),
-            math.cos(end_yaw - start_yaw),
-        )
-
-    def _pose_delta_context(self, start_pose, end_pose):
-        if start_pose is None or end_pose is None:
-            return None
-        dx = float(end_pose['x']) - float(start_pose['x'])
-        dy = float(end_pose['y']) - float(start_pose['y'])
-        dz = float(end_pose['z']) - float(start_pose['z'])
-        dyaw = self._angle_delta(
-            float(end_pose['yaw_rad']),
-            float(start_pose['yaw_rad']),
-        )
-        return {
-            'dx': round(dx, 4),
-            'dy': round(dy, 4),
-            'dz': round(dz, 4),
-            'distance_xy': round(math.hypot(dx, dy), 4),
-            'dyaw_rad': round(dyaw, 6),
-            'dyaw_abs_rad': round(abs(dyaw), 6),
-        }
-
     def _primitive_memory_entry(
             self, primitive, outcome, message, world_revision,
             started_pose, ended_pose, **fields):
-        entry = {
-            'primitive': primitive,
-            'outcome': outcome,
-            'message': message[:self.max_state_message_characters],
-            'world_revision': world_revision,
-            'started_pose': started_pose,
-            'ended_pose': ended_pose,
-            'delta_pose': self._pose_delta_context(started_pose, ended_pose),
-        }
-        for key, value in fields.items():
-            if value is not None:
-                entry[key] = value
-        return entry
+        return primitive_memory_entry(
+            self.max_state_message_characters,
+            primitive,
+            outcome,
+            message,
+            world_revision,
+            started_pose,
+            ended_pose,
+            **fields,
+        )
 
     def _command_bag_status_callback(self, message):
         try:
@@ -1084,138 +571,6 @@ class ModelCommanderNode(Node):
             raise PlannerFailure('fresh visual observation is unavailable')
         return message, receipt_time
 
-    def _encode_visual_observation(
-            self, message, sequence, receipt_time):
-        if message.width <= 0 or message.height <= 0 or \
-                message.width > self.visual_observation_max_source_width or \
-                message.height > self.visual_observation_max_source_height:
-            raise PlannerFailure('camera frame source dimensions are invalid')
-        if len(message.data) <= 0 or \
-                len(message.data) > self.visual_observation_max_source_bytes:
-            raise PlannerFailure('camera frame source payload is invalid')
-        image = self._decode_image_to_bgr(message)
-        if image is None or image.ndim != 3 or image.shape[2] != 3:
-            raise PlannerFailure('camera frame did not convert to BGR image')
-        source_height, source_width = image.shape[:2]
-        if source_width <= 0 or source_height <= 0:
-            raise PlannerFailure('camera frame has invalid dimensions')
-
-        scale = min(
-            1.0,
-            self.visual_observation_max_width / float(source_width),
-            self.visual_observation_max_height / float(source_height),
-        )
-        try:
-            if scale < 1.0:
-                image = cv2.resize(
-                    image,
-                    (
-                        max(1, int(round(source_width * scale))),
-                        max(1, int(round(source_height * scale))),
-                    ),
-                    interpolation=cv2.INTER_AREA,
-                )
-
-            jpeg_data = b''
-            for attempt in range(7):
-                encoded_ok, encoded = cv2.imencode(
-                    '.jpg',
-                    image,
-                    [cv2.IMWRITE_JPEG_QUALITY,
-                     self.visual_observation_jpeg_quality],
-                )
-                if not encoded_ok:
-                    raise PlannerFailure('camera frame JPEG encoding failed')
-                jpeg_data = encoded.tobytes()
-                if len(jpeg_data) <= \
-                        self.visual_observation_max_jpeg_bytes:
-                    break
-                height, width = image.shape[:2]
-                if attempt == 6 or width <= 64 or height <= 64:
-                    break
-                reduction = min(
-                    0.85,
-                    math.sqrt(
-                        self.visual_observation_max_jpeg_bytes
-                        / float(len(jpeg_data))
-                    ) * 0.9,
-                )
-                image = cv2.resize(
-                    image,
-                    (
-                        max(64, int(round(width * reduction))),
-                        max(64, int(round(height * reduction))),
-                    ),
-                    interpolation=cv2.INTER_AREA,
-                )
-        except cv2.error as error:
-            raise PlannerFailure(
-                'camera frame OpenCV processing failed') from error
-        if len(jpeg_data) > self.visual_observation_max_jpeg_bytes:
-            raise PlannerFailure(
-                'camera observation exceeds the JPEG byte limit')
-        if len(jpeg_data) < 4 or not jpeg_data.startswith(b'\xff\xd8') or \
-                not jpeg_data.endswith(b'\xff\xd9'):
-            raise PlannerFailure(
-                'camera observation is not a complete JPEG stream')
-
-        stamp = message.header.stamp
-        observation = VisualObservation(
-            sequence=sequence,
-            jpeg_data=jpeg_data,
-            receipt_monotonic=receipt_time,
-            frame_id=message.header.frame_id.strip(),
-            stamp_seconds=float(stamp.sec) + float(stamp.nanosec) * 1e-9,
-            receipt_age_seconds=max(0.0, time.monotonic() - receipt_time),
-            source_width=source_width,
-            source_height=source_height,
-            encoded_width=int(image.shape[1]),
-            encoded_height=int(image.shape[0]),
-        )
-        return observation
-
-    def _decode_image_to_bgr(self, message):
-        encoding = message.encoding.strip().lower()
-        channel_counts = {
-            'bgr8': 3,
-            'rgb8': 3,
-            'mono8': 1,
-            'bgra8': 4,
-            'rgba8': 4,
-        }
-        channels = channel_counts.get(encoding)
-        if channels is None:
-            raise PlannerFailure(
-                f'unsupported camera image encoding: {message.encoding}')
-        minimum_step = message.width * channels
-        if message.step < minimum_step:
-            raise PlannerFailure('camera frame row stride is invalid')
-        required_bytes = message.step * (message.height - 1) + minimum_step
-        if len(message.data) < required_bytes:
-            raise PlannerFailure('camera frame payload is shorter than layout')
-        try:
-            flat = np.frombuffer(message.data, dtype=np.uint8)
-            rows = flat[:message.step * message.height].reshape(
-                (message.height, message.step))
-            image = rows[:, :minimum_step].reshape(
-                (message.height, message.width, channels))
-            if encoding == 'bgr8':
-                return image.copy()
-            if encoding == 'rgb8':
-                return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            if encoding == 'mono8':
-                return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            if encoding == 'bgra8':
-                return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-            if encoding == 'rgba8':
-                return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
-        except (AttributeError, ImportError, RuntimeError, TypeError,
-                ValueError, cv2.error) as error:
-            raise PlannerFailure(
-                'camera frame could not be converted to bgr8') from error
-        raise PlannerFailure(
-            f'unsupported camera image encoding: {message.encoding}')
-
     def _capture_visual_observation(
             self, after_sequence, goal_handle, deadline,
             expected_world_revision=None, child_result_future=None,
@@ -1254,7 +609,7 @@ class ModelCommanderNode(Node):
                 self._latest_camera_receipt_time = receipt_time
                 self._status['visual_observation_available'] = True
                 self._status['visual_observation_sequence'] = sequence
-            observation = self._encode_visual_observation(
+                observation = self._visual_codec.encode(
                 message, sequence, receipt_time)
             if expected_world_revision is not None:
                 revision, _, _ = self._registry_state()
@@ -2206,7 +1561,7 @@ class ModelCommanderNode(Node):
                 current_pose = self._robot_pose_snapshot()
                 if current_pose is not None:
                     observed = abs(
-                        self._angle_delta(current_pose.yaw, start_pose.yaw))
+                        angle_delta(current_pose.yaw, start_pose.yaw))
                     max_observed = max(max_observed, observed)
                     if max_observed >= required_observed:
                         return {

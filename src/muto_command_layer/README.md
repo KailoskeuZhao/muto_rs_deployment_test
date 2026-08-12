@@ -360,22 +360,23 @@ The computed goal is also published with transient-local durability on
 ## Natural-language command router
 
 `/natural_language_command` accepts one natural-language request and asks the
-VLM for a bounded typed intent. For an object mission, the intent separates the
-target description from the requested completion condition: report the
-confirmed object, or approach it after confirmation. The VLM does not select
-ROS names or execute code. Its strict JSON response is validated locally,
-including all argument types and bounds, before the router can call an existing
-typed service/action.
+VLM for a bounded mission spec, not a user-visible command enum. For an object
+mission, the spec separates the target description from the desired end state:
+report the confirmed object, or approach it after confirmation. The VLM does
+not select ROS names, primitive commands, or code. Its strict JSON response is
+validated locally before the router adapts the mission to the existing typed
+service/action surface.
 
-Supported commands are:
+Supported mission types are:
 
-- `find_object`
-- `look_for_object`
-- `go_to_object`
-- `start_exploration`
-- `stop_exploration`
-- `save_map`
-- `cancel_active_command`
+- `locate_object`
+- `locate_and_approach_object`
+- `approach_known_object`
+- `query_object_registry`
+- `start_manual_exploration`
+- `stop_manual_exploration`
+- `save_current_map`
+- `cancel_active_mission`
 - `unsupported`, which never dispatches anything
 
 Send a request through the normal object pipeline:
@@ -386,13 +387,13 @@ ros2 action send_goal /natural_language_command \
   "{query: 'go to the red chair'}" --feedback
 ```
 
-For `go_to_object`, the router first calls `/find_object` with the interpreted
-description. Navigation is dispatched only when exactly one static registry ID
-matches; no VLM-generated ID is sent directly to navigation. For
-`find_object`, the action waits for search completion and returns the exact IDs.
+For `approach_known_object`, the router first calls `/find_object` with the
+interpreted description. Navigation is dispatched only when exactly one static
+registry ID matches; no VLM-generated ID is sent directly to navigation. For
+`query_object_registry`, the action waits for search completion and returns the
+exact IDs.
 
-Long-running `look_for_object` and `go_to_object` commands return once the typed
-child action accepts the
+Long-running object missions return once the typed child action accepts the
 goal. This leaves the router available for a later request such as `cancel the
 active command`; the child result is tracked asynchronously. To wait for the
 complete model-supervised outcome, call `/look_for_object` directly. Manual
@@ -402,15 +403,19 @@ executor so one thread can wait on a bounded child operation while the other
 processes ROS progress and cancel responses.
 
 Plain `find X`, `look for X`, and `search for X` all enter
-`/look_for_object`. Registry-only lookup is deliberately explicit:
-`check registry for X` or `query registry for X`. Unambiguous phrases such as
-`cancel the active command` are recognized locally
+`/look_for_object` as `locate_object` or `locate_and_approach_object`.
+Registry-only lookup is deliberately explicit: `check registry for X` or
+`query registry for X`. Unambiguous phrases such as `cancel the active command`
+are recognized locally
 and do not use the single-request VLM socket. This keeps cancellation available
 while the model commander is planning. An object search followed by approaching
 that same object is one declarative mission rather than two router-dispatched
 commands. For example, `find a green chair and then go near it` enters
-`/look_for_object` with `completion_mode=approach_object`. Unrelated compound
-requests remain unsupported.
+`/look_for_object` as `locate_and_approach_object`. The commander then
+assembles smaller primitives internally. Unrelated compound requests remain
+unsupported. The `NaturalLanguageCommand` result still includes the legacy
+`command` field for CLI and integration compatibility; `arguments_json` and the
+decision-event topic carry the mission spec fields.
 
 ## Find-object pipeline
 
@@ -523,6 +528,20 @@ This compatibility node is disabled by default
 `model_commander` node stays alive with the command stack, but model inference
 is event-driven: it runs only when a mission needs a new decision. It does not
 poll the model continuously.
+
+The implementation is split by responsibility:
+
+- `model_commander_node.py` owns ROS endpoints and coordinates the mission.
+- `model_commander_protocol.py` owns the strict model input/output contract.
+- `model_commander_config.py` owns parameter defaults and startup validation.
+- `model_commander_inputs.py` owns bounded subscriptions and camera encoding.
+- `model_commander_memory.py` owns pose deltas and bounded primitive records.
+- `model_commander_errors.py` defines the failure and ownership taxonomy.
+
+The support modules contain no scheduling policy. In particular, moving them
+out of the node does not weaken the fail-closed rule: if an accepted moving
+child cannot be confirmed stopped, the node keeps ownership latched and rejects
+new missions until restart.
 
 ```text
 check the current registry
@@ -655,7 +674,9 @@ the validated response, model latency, command outcomes, and the original
 natural-language decision event when the mission came through the router.
 Continuous raw camera images and high-bandwidth point-cloud/mask products stay
 excluded. The latest parent path is published on
-`/model_commander/last_bag_path`.
+`/model_commander/last_bag_path`. The command recorder keeps the newest 20
+recognized Muto bag directories in the parent directory by default. Set
+`command_bag_max_directories:=0` to disable pruning.
 
 Add a manual mission observation with:
 

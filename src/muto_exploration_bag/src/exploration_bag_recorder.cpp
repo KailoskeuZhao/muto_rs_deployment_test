@@ -33,6 +33,12 @@ namespace
 
 constexpr char kStartedEvent[] = "mission_started";
 constexpr char kDefaultOutputDirectory[] = "/opt/muto_rs_ws/bags";
+constexpr const char * kManagedBagPrefixes[] = {
+  "muto_command_",
+  "muto_explore_",
+  "muto_nav2_",
+  "muto_odometry_",
+};
 
 bool is_terminal_event(const std::string & event)
 {
@@ -174,6 +180,27 @@ void write_recording_manifest(
   }
 }
 
+std::filesystem::file_time_type directory_sort_time(
+  const std::filesystem::directory_entry & entry)
+{
+  std::error_code error;
+  const auto last_write = entry.last_write_time(error);
+  if (!error) {
+    return last_write;
+  }
+  return std::filesystem::file_time_type::min();
+}
+
+bool is_managed_muto_bag_directory(const std::filesystem::path & path)
+{
+  const auto name = path.filename().string();
+  return std::any_of(
+    std::begin(kManagedBagPrefixes), std::end(kManagedBagPrefixes),
+    [&name](const char * prefix) {
+      return name.rfind(prefix, 0U) == 0U;
+    });
+}
+
 }  // namespace
 
 class ExplorationBagRecorderNode : public rclcpp::Node
@@ -220,6 +247,8 @@ public:
       declare_parameter<bool>("include_hidden_topics", true);
     record_all_services_ =
       declare_parameter<bool>("record_all_services", true);
+    max_bag_directories_ =
+      declare_parameter<int64_t>("max_bag_directories", 20);
 
     resolve_and_validate_parameters();
     transport_ =
@@ -327,6 +356,9 @@ private:
       throw std::invalid_argument(
               "owner_heartbeat_timeout must be finite and positive when enabled");
     }
+    if (max_bag_directories_ < 0) {
+      throw std::invalid_argument("max_bag_directories must be nonnegative");
+    }
   }
 
   void handle_lifecycle_event(const std_msgs::msg::String::ConstSharedPtr message)
@@ -424,6 +456,7 @@ private:
       {"operator_event_topic", operator_event_topic_},
       {"owner_heartbeat_topic", owner_heartbeat_topic_},
       {"owner_heartbeat_timeout", std::to_string(owner_heartbeat_timeout_)},
+      {"max_bag_directories", std::to_string(max_bag_directories_)},
       {"manifest_file", "muto_recording_manifest.json"},
     };
 
@@ -525,6 +558,7 @@ private:
         get_logger(), "Finalized %s bag after %s: %s",
         recording_label_.c_str(), reason.c_str(), finalized_path.c_str());
       publish_status("recording_finalized", finalized_goal, "");
+      prune_old_bag_directories(finalized_path);
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
         get_logger(), "Could not finalize exploration bag %s: %s",
@@ -533,6 +567,75 @@ private:
     }
     active_goal_id_.clear();
     last_owner_heartbeat_ = std::chrono::steady_clock::time_point{};
+  }
+
+  void prune_old_bag_directories(const std::string & preserve_path)
+  {
+    if (max_bag_directories_ <= 0) {
+      return;
+    }
+
+    std::error_code error;
+    if (!std::filesystem::exists(output_directory_, error) ||
+      !std::filesystem::is_directory(output_directory_, error))
+    {
+      return;
+    }
+
+    const auto preserved = std::filesystem::path(preserve_path).lexically_normal();
+    std::vector<std::filesystem::directory_entry> candidates;
+    for (const auto & entry : std::filesystem::directory_iterator(output_directory_, error)) {
+      if (error) {
+        RCLCPP_WARN(
+          get_logger(), "Could not inspect %s retention directory: %s",
+          recording_label_.c_str(), error.message().c_str());
+        return;
+      }
+      if (!entry.is_directory(error) || error) {
+        error.clear();
+        continue;
+      }
+      if (!is_managed_muto_bag_directory(entry.path())) {
+        continue;
+      }
+      if (entry.path().lexically_normal() == preserved) {
+        continue;
+      }
+      candidates.push_back(entry);
+    }
+
+    const auto keep_count = static_cast<std::size_t>(max_bag_directories_);
+    if (candidates.size() + 1U <= keep_count) {
+      return;
+    }
+    std::sort(
+      candidates.begin(), candidates.end(),
+      [](const auto & left, const auto & right) {
+        const auto left_time = directory_sort_time(left);
+        const auto right_time = directory_sort_time(right);
+        if (left_time == right_time) {
+          return left.path().filename().string() < right.path().filename().string();
+        }
+        return left_time < right_time;
+      });
+
+    const auto remove_count = candidates.size() + 1U - keep_count;
+    for (std::size_t index = 0U; index < remove_count; ++index) {
+      const auto & path = candidates[index].path();
+      std::uintmax_t removed = 0U;
+      error.clear();
+      removed = std::filesystem::remove_all(path, error);
+      if (error) {
+        RCLCPP_WARN(
+          get_logger(), "Could not prune old Muto bag %s for %s retention: %s",
+          path.string().c_str(), recording_label_.c_str(), error.message().c_str());
+        continue;
+      }
+      RCLCPP_INFO(
+        get_logger(), "Pruned old Muto bag %s for %s retention (%ju filesystem entries)",
+        path.string().c_str(), recording_label_.c_str(),
+        static_cast<std::uintmax_t>(removed));
+    }
   }
 
   void publish_status(
@@ -570,6 +673,7 @@ private:
   double owner_heartbeat_timeout_{10.0};
   bool include_hidden_topics_{true};
   bool record_all_services_{true};
+  int64_t max_bag_directories_{20};
   std::string active_goal_id_;
   std::string pending_terminal_event_;
   std::chrono::steady_clock::time_point stop_deadline_;

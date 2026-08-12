@@ -18,6 +18,7 @@ exploration_bag_recorder:
     # exposed service-event topics are still included by all-topic recording.
     record_all_services: true
     max_cache_size: 104857600
+    max_bag_directories: 20
     post_terminal_delay: 0.25
 
     lifecycle_event_topic: /explore_and_record/recording_event

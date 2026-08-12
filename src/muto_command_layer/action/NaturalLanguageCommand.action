@@ -1,10 +1,10 @@
-# Untrusted natural-language instruction to classify and dispatch.
+# Untrusted natural-language instruction to interpret as one mission.
 string query
 ---
 bool success
 string message
 
-# Validated command enum and its canonical JSON arguments.
+# Backward-compatible dispatch command plus canonical mission-spec JSON.
 string command
 string arguments_json
 

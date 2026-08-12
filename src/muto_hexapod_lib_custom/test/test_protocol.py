@@ -1,3 +1,4 @@
+import math
 import struct
 
 from muto_hexapod_lib_custom.core import MutoLibCore
@@ -276,10 +277,18 @@ def test_nonzero_command_update_waits_for_completed_cycle(monkeypatch):
     assert states[-1].sequence == 21
 
 
-def test_custom_motion_command_uses_servo_effective_yaw_floor_not_vendor_ten():
-    assert Muto._normalize_motion_command(0, 0, 1) == (0, 0, 2)
-    assert Muto._normalize_motion_command(0, 0, -1) == (0, 0, -2)
-    assert Muto._normalize_motion_command(0, 0, 5) == (0, 0, 5)
+def test_custom_motion_command_accepts_continuous_gait_amplitudes():
+    assert Muto._normalize_motion_command(0, 0, 1) == (0.0, 0.0, 1.0)
+    assert Muto._normalize_motion_command(0, 0, -1.5) == (
+        0.0, 0.0, -1.5)
+    assert Muto._normalize_motion_command(0.25, 0, 5.5) == (
+        0.25, 0.0, 5.5)
+
+
+def test_custom_motion_command_rejects_nonfinite_amplitudes():
+    for value in (math.nan, math.inf, -math.inf):
+        with pytest.raises(ValueError, match='motion command'):
+            Muto._normalize_motion_command(value, 0, 0)
 
 
 def test_latest_queued_nonzero_command_wins(monkeypatch):

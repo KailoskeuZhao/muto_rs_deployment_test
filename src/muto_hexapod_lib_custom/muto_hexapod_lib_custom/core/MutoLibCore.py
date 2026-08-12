@@ -31,6 +31,17 @@ COMMANDS = {
 }
 
 
+def _finite_motion_value(value, axis_name):
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f'motion command {axis_name} must be finite') from error
+    if not math.isfinite(result):
+        raise ValueError(f'motion command {axis_name} must be finite')
+    return result
+
+
 class Muto:
     """Muto serial device plus the host-generated gait used by this workspace."""
 
@@ -123,14 +134,12 @@ class Muto:
 
     @staticmethod
     def _normalize_motion_command(x, y, z):
-        x_level = max(-30, min(30, int(x)))
-        y_level = max(-30, min(30, int(y)))
-        z_level = max(-20, min(20, int(z)))
-        # The inherited library forced every non-zero turn to level 10.  The
-        # custom exact-SE(2) gait has useful whole-degree servo changes from
-        # level 2 onward; level 1 quantizes to the same packets as zero.
-        if z_level != 0 and abs(z_level) < 2:
-            z_level = 2 if z_level > 0 else -2
+        x_level = _finite_motion_value(x, 'x')
+        y_level = _finite_motion_value(y, 'y')
+        z_level = _finite_motion_value(z, 'z')
+        x_level = max(-30.0, min(30.0, x_level))
+        y_level = max(-30.0, min(30.0, y_level))
+        z_level = max(-20.0, min(20.0, z_level))
         return x_level, y_level, z_level
 
     def read_motor(self):

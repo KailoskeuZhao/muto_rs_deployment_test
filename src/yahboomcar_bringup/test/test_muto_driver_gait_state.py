@@ -178,6 +178,18 @@ class FakeMuto:
         return self.commanded_gait_state, self.read_motor()
 
 
+class FaultyTickMuto(FakeMuto):
+    def __init__(self, state):
+        super().__init__(state)
+        self.fail_next_tick = True
+
+    def tick_motion(self):
+        if self.fail_next_tick:
+            self.fail_next_tick = False
+            raise ValueError('unreachable leg target')
+        super().tick_motion()
+
+
 def gait_state(mode='standby'):
     return SimpleNamespace(
         sequence=0,
@@ -253,6 +265,30 @@ def test_locomotion_timer_does_not_recommand_released_motors(monkeypatch):
     assert driver.muto.tick_count == 0
     assert driver.last_locomotion_tick_monotonic == 10.0
     assert calls == ['telemetry', 'status']
+
+
+def test_locomotion_timer_fails_safe_when_gait_ik_rejects_command(
+        monkeypatch):
+    monkeypatch.setattr(muto_driver_module.time, 'monotonic', lambda: 10.0)
+    driver = timer_driver(last_cmd_vel_monotonic=9.8)
+    driver.muto = FaultyTickMuto(gait_state())
+    calls = []
+    driver.service_imu_telemetry = lambda: calls.append('telemetry')
+    driver.maybe_publish_imu_telemetry_status = (
+        lambda: calls.append('status'))
+
+    yahboomcar_driver.update_locomotion(driver)
+
+    assert driver.muto.commands == [(10.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
+    assert driver.desired_motion_levels == (0, 0, 0)
+    assert driver.last_cmd_vel_monotonic is None
+    assert driver.cmd_vel_timed_out
+    assert driver.motion_command_state_pub.message.unsupported
+    assert 'locomotion command rejected' in (
+        driver.motion_command_state_pub.message.detail)
+    assert calls == ['telemetry', 'status']
+    assert any('unreachable leg target' in warning
+               for warning in driver.warnings)
 
 
 def test_locomotion_timer_reports_a_missed_tick_deadline(monkeypatch):
@@ -675,10 +711,12 @@ def test_geometric_cmd_vel_uses_custom_gait_yaw_not_inherited_curve(
 
     yahboomcar_driver.cmd_vel_callback(driver, message)
 
-    assert driver.desired_motion_levels == (0, 0, 4)
+    assert math.isclose(driver.desired_motion_levels[2], 4.498991583646963)
     status = driver.motion_command_state_pub.message
     assert status.calibration_profile == 'muto_exact_se2_geometric_v1'
-    assert math.isclose(status.predicted_twist.angular.z, 0.1600358628402579)
+    assert math.isclose(status.predicted_twist.angular.z, 0.18)
+    assert status.z_level == 4
+    assert not status.quantized
 
 
 def test_cmd_vel_callback_rejects_nonfinite_input_and_stops(monkeypatch):

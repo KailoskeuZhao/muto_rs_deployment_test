@@ -7,6 +7,8 @@ used by this workspace. It provides:
 - the generated 20-step walking and turning trajectories;
 - a latched-command, one-phase-per-tick locomotion API;
 - leg inverse kinematics and one vendor `LEG` packet per leg and phase; and
+- nominal forward kinematics from calibrated logical motor angles to foot tips
+  or full per-leg segment chains in body coordinates; and
 - a callback containing the continuous pre-quantization foot targets and
   nominal stance/swing classification for every emitted gait step.
 
@@ -63,15 +65,22 @@ while pairing a gait snapshot with joint feedback. A sensor read therefore
 cannot be inserted between legs and a phase cannot change during the paired
 read if the caller later becomes multithreaded.
 
+Given true calibrated logical joint states, the Muto leg segment geometry is
+deterministic. `servo_angles_to_leg_joint_positions()` returns one leg's full
+body-frame chain `(leg_root, joint1_yaw, joint2_pitch, joint3_knee, foot_tip)`;
+`servo_angles_to_leg_joint_chains()` applies the same FK to all six legs.
+`servo_angles_to_foot_positions()` remains the foot-tip-only helper used by
+measured-joint foot odometry.
+
 The raw angular input is a gait amplitude, not an angular velocity. It is
-constrained to `[-20, -2]`, zero, or `[2, 20]`; level 2 is the first amplitude
-that changes the whole-degree servo packets, whereas level 1 quantizes to the
-zero-yaw trajectory. The ROS driver defaults to a geometric mapper derived
+clipped to `[-20, 20]` but is no longer rounded to integer gait levels on the
+default path. The ROS driver defaults to a continuous geometric mapper derived
 from this custom gait's cycle geometry and configured phase rate. It publishes
-the selected amplitude and nominal commanded-kinematics prediction on
-`/muto/motion_command_state`. An explicit measured calibration profile remains
-available as `locomotion_command_mapping:=calibrated`, but the inherited
-2026-08-06 yaw curve is no longer the runtime default.
+the selected float amplitude, rounded legacy level diagnostics, and nominal
+commanded-kinematics prediction on `/muto/motion_command_state`. An explicit
+measured calibration profile remains available as
+`locomotion_command_mapping:=calibrated`, but that profile still selects from
+measured integer levels and is not the runtime default.
 
 The inherited `x * sin(z)` combined gait has been removed. Forward-plus-yaw
 targets now apply the exact finite planar body transform to each nominal foot:

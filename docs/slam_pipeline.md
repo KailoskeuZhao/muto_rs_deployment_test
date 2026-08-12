@@ -287,8 +287,9 @@ The optional, default-off foot input is generated from a fixed-rate locomotion s
 `/cmd_vel` changes the desired command; the driver advances one trajectory phase
 per 50 Hz tick and publishes the phase after sending its motor targets. A newer
 nonzero command waits for the next complete gait boundary. The accompanying
-motion-command state reports selected and active raw levels separately and
-whether a replacement is pending.
+motion-command state reports selected and active float amplitudes separately,
+keeps rounded legacy level diagnostics, and states whether a replacement is
+pending.
 A stale or zero command returns directly to nominal stance instead of performing
 a smooth deceleration. Motor service reads use the gait target current during
 that serial read and add no artificial settling delay. The read still holds the
@@ -417,15 +418,16 @@ docking, or a full saved-map localization workflow.
 The Humble behavior trees explicitly compute a Navfn path, collision-check a
 Simple Smoother result, and feed that `smoothed_path` to Regulated Pure
 Pursuit. They replan at 1 Hz. The controller reads `/odometry/filtered`, uses a
-fixed 0.25 m lookahead and requests up to 0.25 m/s linear motion. Its 0.80
-rad/s yaw request corresponds to custom-gait level 20 at 50 phases/s under the
-exact trajectory geometry; this is commanded kinematics, while odometry
-remains authoritative for achieved motion and completion. Its
+fixed 0.25 m lookahead and requests up to 0.20 m/s linear motion. Its 0.30
+rad/s yaw request is a conservative physical envelope for the current Muto
+gait: higher geometric commands are possible, but field bags showed poor
+achieved yaw and weak simultaneous forward-turn response. Odometry remains
+authoritative for achieved motion and completion. Its
 output is remapped to `/cmd_vel_nav`; the lifecycle-managed
 velocity smoother publishes the normal follow-path `/cmd_vel` at 20 Hz.
-Recovery behaviors currently publish directly to `/cmd_vel` and therefore
-bypass the smoother, while retaining the same level-20 geometric rotation
-limit and the BT's bounded backup speed.
+Recovery behavior output and model-commander direct-rotate output are also
+sent to `/cmd_vel_nav`, so the velocity smoother remains the final limiter
+before the Muto driver.
 
 ## Main Runtime Contract
 
@@ -440,8 +442,8 @@ limit and the BT's bounded backup speed.
 | `odom -> base_frame` | EKF | SLAM Toolbox and Nav2. |
 | `/camera/filtered_laserscan` | Depth-to-scan node | Both Nav2 obstacle layers. |
 | `/map` and `map -> odom` | SLAM Toolbox | Nav2 global planning and TF. |
-| `/cmd_vel_nav` | Nav2 controller | Nav2 velocity smoother. |
-| `/cmd_vel` | Nav2 velocity smoother or recovery behavior server | Muto driver and RF2O command-aware guard. |
+| `/cmd_vel_nav` | Nav2 controller, behavior server, and model commander direct rotate | Nav2 velocity smoother. |
+| `/cmd_vel` | Nav2 velocity smoother | Muto driver and RF2O command-aware guard. |
 | `/muto/commanded_gait_state` | Fixed-rate Muto locomotion loop | Backward-compatible stance/swing and continuous foot targets for foot odometry and motor validation. |
 | `/muto/motion_command_state` | Muto driver | Requested twist, selected/active levels, pending and projection flags, profile, and feed-forward prediction. |
 | `/foot_odom` | Commanded-stance estimator with motor FK validation | EKF planar velocity overlay. |

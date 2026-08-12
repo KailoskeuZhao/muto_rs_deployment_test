@@ -85,8 +85,22 @@ def motion_state_is_stationary(
     angular_threshold=DEFAULT_ANGULAR_COMMAND_THRESHOLD,
 ):
     """Require both selected and active locomotion states to be at rest."""
-    selected_levels = (message.x_level, message.y_level, message.z_level)
-    active_levels = (
+    selected_amplitudes = (
+        getattr(message, 'x_amplitude', 0.0),
+        getattr(message, 'y_amplitude', 0.0),
+        getattr(message, 'z_amplitude', 0.0),
+    )
+    active_amplitudes = (
+        getattr(message, 'active_x_amplitude', 0.0),
+        getattr(message, 'active_y_amplitude', 0.0),
+        getattr(message, 'active_z_amplitude', 0.0),
+    )
+    selected_compat_levels = (
+        message.x_level,
+        message.y_level,
+        message.z_level,
+    )
+    active_compat_levels = (
         message.active_x_level,
         message.active_y_level,
         message.active_z_level,
@@ -96,8 +110,10 @@ def motion_state_is_stationary(
         message.mode == 'standby'
         and message.active_mode == 'standby'
         and not message.replacement_pending
-        and all(level == 0 for level in selected_levels)
-        and all(level == 0 for level in active_levels)
+        and all(amplitude == 0 for amplitude in selected_amplitudes)
+        and all(amplitude == 0 for amplitude in active_amplitudes)
+        and all(level == 0 for level in selected_compat_levels)
+        and all(level == 0 for level in active_compat_levels)
         and math.hypot(requested.linear.x, requested.linear.y)
         <= linear_threshold
         and abs(requested.angular.z) <= angular_threshold

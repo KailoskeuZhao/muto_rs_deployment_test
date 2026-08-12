@@ -1,9 +1,12 @@
-"""Map planar SI velocity requests to executable integer gait amplitudes.
+"""Map planar SI velocity requests to executable gait amplitudes.
 
-The low-level Muto gait API intentionally continues to accept raw integer
-levels.  This module is a ROS-independent boundary in front of that API: a
-calibration profile describes the physical speed measured at selected levels,
-and :class:`VelocityCalibrationMapper` selects the closest executable level.
+The low-level Muto gait API accepts raw gait amplitudes.  This module is a
+ROS-independent boundary in front of that API: a calibration profile describes
+the physical speed measured at selected levels, and
+:class:`VelocityCalibrationMapper` selects the closest measured integer level.
+The default :class:`GeometricVelocityMapper` is different: it derives a
+continuous amplitude directly from gait geometry, avoiding software-side
+``cmd_vel`` quantization.
 
 Calibration speeds are magnitudes.  Positive and negative motion have separate
 curves so asymmetric hardware can be represented without hiding the sign in a
@@ -75,9 +78,17 @@ def _positive_level(value, field_name):
 
 
 def _raw_level(value, field_name):
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError('%s must be an integer' % field_name)
-    return value
+    if isinstance(value, bool):
+        raise ValueError('%s must be a finite number' % field_name)
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError('%s must be a finite number' % field_name) from error
+    if not math.isfinite(result):
+        raise ValueError('%s must be a finite number' % field_name)
+    if result == 0.0:
+        return 0.0
+    return result
 
 
 @dataclass(frozen=True)
@@ -133,7 +144,7 @@ class CalibrationCurve:
         level = _raw_level(level, 'level')
         if level < self.minimum_level or level > self.maximum_level:
             raise ValueError(
-                'level %d is outside calibrated interval [%d, %d]'
+                'level %.9g is outside calibrated interval [%d, %d]'
                 % (level, self.minimum_level, self.maximum_level))
 
         for point in self.points:
@@ -306,13 +317,14 @@ class PlanarVelocity:
 
 @dataclass(frozen=True)
 class MotionLevels:
-    x_level: int = 0
-    y_level: int = 0
-    z_level: int = 0
+    x_level: float = 0.0
+    y_level: float = 0.0
+    z_level: float = 0.0
 
     def __post_init__(self):
         for name in ('x_level', 'y_level', 'z_level'):
-            _raw_level(getattr(self, name), name)
+            object.__setattr__(
+                self, name, _raw_level(getattr(self, name), name))
 
 
 @dataclass(frozen=True)
@@ -386,7 +398,7 @@ class VelocitySelection:
 
 @dataclass(frozen=True)
 class _AxisSelection:
-    level: int
+    level: float
     predicted: float
     saturated: bool
     projected: bool
@@ -665,6 +677,114 @@ class GeometricVelocityMapper(VelocityCalibrationMapper):
         super().__init__(
             geometric_velocity_profile(phase_rate_hz),
             phase_rate_hz=phase_rate_hz,
+        )
+
+    def select(self, linear_x_m_s=0.0, linear_y_m_s=0.0,
+               angular_z_rad_s=0.0):
+        """Select continuous gait amplitudes from nominal geometry.
+
+        Unlike :class:`VelocityCalibrationMapper`, this path does not project
+        onto integer calibration knots.  It only clips to the same mechanical
+        amplitude envelope before the final servo-angle packet quantization.
+        """
+        requested = PlanarVelocity(
+            linear_x_m_s,
+            linear_y_m_s,
+            angular_z_rad_s,
+        )
+
+        if (requested.linear_y_m_s != 0.0
+                and (requested.linear_x_m_s != 0.0
+                     or requested.angular_z_rad_s != 0.0)):
+            reason = (
+                'simultaneous lateral motion with forward or yaw motion is '
+                'unsupported by the gait library'
+            )
+            return VelocitySelection(
+                requested=requested,
+                predicted=PlanarVelocity(0.0, 0.0, 0.0),
+                levels=MotionLevels(),
+                mode='standby',
+                saturation=SaturationFlags(
+                    unsupported_combination=True,
+                ),
+                profile_id=self._profile.profile_id,
+                phase_rate_hz=self._phase_rate_hz,
+                projection=ProjectionFlags(
+                    x=requested.linear_x_m_s != 0.0,
+                    y=True,
+                    yaw=requested.angular_z_rad_s != 0.0,
+                ),
+                detail=reason,
+                supported=False,
+                unsupported_reason=reason,
+            )
+
+        x = self._select_continuous_axis(
+            self._profile.x, requested.linear_x_m_s)
+        y = self._select_continuous_axis(
+            self._profile.y, requested.linear_y_m_s)
+        yaw = self._select_continuous_axis(
+            self._profile.yaw, requested.angular_z_rad_s)
+        levels = MotionLevels(x.level, y.level, yaw.level)
+        mode = self._mode_for_levels(levels)
+        saturation = SaturationFlags(
+            x=x.saturated,
+            y=y.saturated,
+            yaw=yaw.saturated,
+        )
+        projection = ProjectionFlags(
+            x=x.projected,
+            y=y.projected,
+            yaw=yaw.projected,
+            x_to_zero=x.projected_to_zero,
+            y_to_zero=y.projected_to_zero,
+            yaw_to_zero=yaw.projected_to_zero,
+        )
+        detail = self._selection_detail(saturation, projection)
+        if not detail:
+            detail = (
+                'continuous geometric gait-amplitude mapping; final '
+                'controller packets still use whole-degree servo targets'
+            )
+        return VelocitySelection(
+            requested=requested,
+            predicted=PlanarVelocity(x.predicted, y.predicted, yaw.predicted),
+            levels=levels,
+            mode=mode,
+            saturation=saturation,
+            profile_id=self._profile.profile_id,
+            phase_rate_hz=self._phase_rate_hz,
+            projection=projection,
+            detail=detail,
+        )
+
+    @staticmethod
+    def _select_continuous_axis(axis, requested):
+        if requested == 0.0:
+            return _AxisSelection(0.0, 0.0, False, False, False)
+
+        sign = 1.0 if requested > 0.0 else -1.0
+        magnitude = abs(requested)
+        curve = axis.positive if sign > 0.0 else axis.negative
+        maximum_speed = curve.speed_at_level(curve.maximum_level)
+        saturated = magnitude > maximum_speed
+        clipped_magnitude = min(magnitude, maximum_speed)
+
+        # Geometric profiles are linear by construction.  Use the first knot
+        # to compute amplitude from speed without snapping to integer levels.
+        speed_per_level = curve.speed_at_level(
+            curve.minimum_level) / float(curve.minimum_level)
+        if speed_per_level <= 0.0:
+            raise RuntimeError('invalid geometric speed-per-level')
+        level_magnitude = clipped_magnitude / speed_per_level
+        predicted_magnitude = level_magnitude * speed_per_level
+        return _AxisSelection(
+            level=sign * level_magnitude,
+            predicted=sign * predicted_magnitude,
+            saturated=saturated,
+            projected=saturated,
+            projected_to_zero=False,
         )
 
 

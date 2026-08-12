@@ -18,6 +18,7 @@ SOURCE_ROOT = PACKAGE_ROOT.parent
 SENSOR_ROOT = SOURCE_ROOT / 'lidar_pointcloud_filter'
 HARDWARE_ROOT = SOURCE_ROOT / 'yahboomcar_bringup'
 ODOMETRY_BAG_ROOT = SOURCE_ROOT / 'muto_odometry_bag'
+COMMAND_LAYER_ROOT = SOURCE_ROOT / 'muto_command_layer'
 
 RETIRED_RUNTIME_IDENTIFIERS = (
     '/fused/laserscan',
@@ -122,14 +123,36 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
 
     assert smoother['max_velocity'][1] == 0.0
     assert smoother['min_velocity'][1] == 0.0
-    assert smoother['max_velocity'][2] == 0.80
-    assert smoother['min_velocity'][2] == -0.80
-    assert smoother['max_accel'][2] == 1.2
-    assert smoother['max_decel'][2] == -1.2
-    assert controller['rotate_to_heading_angular_vel'] == 0.80
-    assert controller['max_angular_accel'] == 1.2
-    assert behavior['max_rotational_vel'] == 0.80
-    assert behavior['rotational_acc_lim'] == 1.2
+    assert smoother['max_velocity'][0] == 0.20
+    assert smoother['min_velocity'][0] == -0.10
+    assert smoother['max_velocity'][2] == 0.30
+    assert smoother['min_velocity'][2] == -0.30
+    assert smoother['max_accel'][0] == 0.15
+    assert smoother['max_accel'][2] == 0.6
+    assert smoother['max_decel'][0] == -0.2
+    assert smoother['max_decel'][2] == -0.6
+    assert controller['desired_linear_vel'] == 0.20
+    assert controller['rotate_to_heading_angular_vel'] == 0.30
+    assert controller['max_angular_accel'] == 0.6
+    assert behavior['max_rotational_vel'] == 0.30
+    assert behavior['rotational_acc_lim'] == 0.6
+
+
+def test_velocity_smoother_is_the_final_cmd_vel_limiter():
+    launch_text = (
+        PACKAGE_ROOT / 'launch' / 'nav2_planner_controller_launch.py'
+    ).read_text(encoding='utf-8')
+    command_config = _load_yaml(
+        COMMAND_LAYER_ROOT / 'config' / 'command_layer.yaml'
+    )['model_commander']['ros__parameters']
+    command_launch_defaults, _ = _launch_defaults(
+        COMMAND_LAYER_ROOT / 'launch' / 'command_layer_launch.py'
+    )
+
+    assert "('cmd_vel', 'cmd_vel_nav')" in launch_text
+    assert "('cmd_vel_smoothed', 'cmd_vel')" in launch_text
+    assert command_config['rotate_cmd_vel_topic'] == '/cmd_vel_nav'
+    assert command_launch_defaults['rotate_cmd_vel_topic'] == '/cmd_vel_nav'
 
 
 def test_camera_launch_is_camera_only_and_matches_declared_fov():

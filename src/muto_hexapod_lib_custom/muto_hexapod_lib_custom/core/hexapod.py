@@ -35,9 +35,9 @@ class Hexapod:
         command = (
             mode,
             command_key,
-            int(x_level),
-            int(y_level),
-            int(z_level),
+            float(x_level),
+            float(y_level),
+            float(z_level),
         )
 
         # An abrupt safety return to standby is never held behind a gait-cycle
@@ -155,11 +155,23 @@ class Hexapod:
             return 'standby', ('standby',)
         if z_level == 0:
             if x_level != 0:
-                return 'move_x', ('move_x', int(x_level))
-            return 'move_y', ('move_y', int(y_level))
+                return 'move_x', ('move_x', _command_key_level(x_level))
+            return 'move_y', ('move_y', _command_key_level(y_level))
         if x_level == 0 and y_level == 0:
-            return 'turn_z', ('turn_z', int(z_level))
+            return 'turn_z', ('turn_z', _command_key_level(z_level))
         return (
             'move_xz',
-            ('move_xz', int(x_level), int(y_level), int(z_level)),
+            (
+                'move_xz',
+                _command_key_level(x_level),
+                _command_key_level(y_level),
+                _command_key_level(z_level),
+            ),
         )
+
+
+def _command_key_level(value):
+    """Stable key for comparing continuous command amplitudes."""
+    if value == 0:
+        return 0.0
+    return round(float(value), 6)

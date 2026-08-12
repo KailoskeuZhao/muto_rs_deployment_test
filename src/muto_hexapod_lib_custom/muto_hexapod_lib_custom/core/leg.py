@@ -32,6 +32,7 @@ MOUNT_POSITIONS = (
     point3d(-leg_mount_left_right_x, 0.0, 0.0),
     point3d(-leg_mount_other_x, leg_mount_other_y, 0.0),
 )
+IK_REACHABILITY_TOLERANCE = 1.0e-9
 
 
 def servo_angles_to_foot_positions(servo_angles_deg):
@@ -58,35 +59,98 @@ def servo_angles_to_foot_positions(servo_angles_deg):
     )
 
 
+def servo_angles_to_leg_joint_chains(servo_angles_deg):
+    """Convert 18 logical motor angles to six full body-frame FK chains."""
+    angles = tuple(float(value) for value in servo_angles_deg)
+    if len(angles) != 18:
+        raise ValueError('servo angle input must contain 18 values')
+    if any(not math.isfinite(value) for value in angles):
+        raise ValueError('servo angles must be finite')
+    if any(abs(value) > 90.0 for value in angles):
+        raise ValueError('logical servo angles must be within [-90, 90]')
+    return tuple(
+        servo_angles_to_leg_joint_positions(
+            leg_index,
+            angles[leg_index * 3:(leg_index + 1) * 3],
+        )
+        for leg_index in range(6)
+    )
+
+
 def servo_angles_to_foot_position(leg_index, servo_angles_deg):
     """Convert one leg's logical yaw/pitch/knee angles to a body point."""
+    return servo_angles_to_leg_joint_positions(leg_index, servo_angles_deg)[-1]
+
+
+def servo_angles_to_leg_joint_positions(leg_index, servo_angles_deg):
+    """Convert one leg's logical angles to its full body-frame joint chain.
+
+    The returned points are vendor-body coordinates in millimetres:
+
+    ``(leg_root, joint1_yaw, joint2_pitch, joint3_knee, foot_tip)``.
+
+    This is nominal forward kinematics.  If the supplied servo states are true
+    calibrated logical joint states, the segment configuration relative to the
+    body frame is fully determined by these points and the fixed link lengths.
+    """
     if leg_index < 0 or leg_index >= 6:
         raise ValueError('leg_index must be in [0, 5]')
-    if len(servo_angles_deg) != 3:
-        raise ValueError('one leg requires three servo angles')
-
-    yaw_command, pitch_command, knee_command = servo_angles_deg
+    yaw_command, pitch_command, knee_command = _validated_leg_angles(
+        servo_angles_deg)
     joint_yaw = math.radians(yaw_command)
     joint_pitch = math.radians(-pitch_command)
     joint_knee = math.radians(knee_command)
 
+    yaw_cos = math.cos(joint_yaw)
+    yaw_sin = math.sin(joint_yaw)
     distal_angle = joint_pitch + joint_knee - math.pi / 2.0
-    planar_reach = (
-        leg_joint1_2joint2
+    joint1 = point3d(leg_root2joint1, 0.0, 0.0)
+    joint2_reach = leg_joint1_2joint2
+    joint3_reach = (
+        joint2_reach
         + leg_joint2_2joint3 * math.cos(joint_pitch)
+    )
+    foot_reach = (
+        joint3_reach
         + leg_joint3_2tip * math.cos(distal_angle)
     )
-    local_point = point3d(
-        leg_root2joint1 + planar_reach * math.cos(joint_yaw),
-        planar_reach * math.sin(joint_yaw),
-        leg_joint2_2joint3 * math.sin(joint_pitch)
-        + leg_joint3_2tip * math.sin(distal_angle),
+    joint2 = point3d(
+        leg_root2joint1 + joint2_reach * yaw_cos,
+        joint2_reach * yaw_sin,
+        0.0,
     )
-    world_point = (
-        WORLD_ROTATIONS[leg_index](local_point)
-        + MOUNT_POSITIONS[leg_index]
+    joint3 = point3d(
+        leg_root2joint1 + joint3_reach * yaw_cos,
+        joint3_reach * yaw_sin,
+        leg_joint2_2joint3 * math.sin(joint_pitch),
     )
-    return world_point.as_tuple()
+    foot = point3d(
+        leg_root2joint1 + foot_reach * yaw_cos,
+        foot_reach * yaw_sin,
+        (
+            leg_joint2_2joint3 * math.sin(joint_pitch)
+            + leg_joint3_2tip * math.sin(distal_angle)
+        ),
+    )
+    local_points = (point3d(), joint1, joint2, joint3, foot)
+    return tuple(
+        (
+            WORLD_ROTATIONS[leg_index](point)
+            + MOUNT_POSITIONS[leg_index]
+        ).as_tuple()
+        for point in local_points
+    )
+
+
+def _validated_leg_angles(servo_angles_deg):
+    if len(servo_angles_deg) != 3:
+        raise ValueError('one leg requires three servo angles')
+    angles = tuple(float(value) for value in servo_angles_deg)
+    if any(not math.isfinite(value) for value in angles):
+        raise ValueError('servo angles must be finite')
+    if any(abs(value) > 90.0 for value in angles):
+        raise ValueError('logical servo angles must be within [-90, 90]')
+    return angles
 
 
 class RealLeg:
@@ -119,13 +183,15 @@ class RealLeg:
         if radius <= 1e-9:
             raise ValueError('invalid leg target at joint origin')
 
-        first = self._clamp_acos(
+        first = self._checked_acos_input(
             (radius_squared + leg_joint2_2joint3 ** 2 - leg_joint3_2tip ** 2)
-            / (2 * leg_joint2_2joint3 * radius)
+            / (2 * leg_joint2_2joint3 * radius),
+            'femur',
         )
-        second = self._clamp_acos(
+        second = self._checked_acos_input(
             (radius_squared - leg_joint2_2joint3 ** 2 + leg_joint3_2tip ** 2)
-            / (2 * leg_joint3_2tip * radius)
+            / (2 * leg_joint3_2tip * radius),
+            'tibia',
         )
         angle1 = math.degrees(angle_to_target + math.acos(first))
         angle2 = 90.0 - math.degrees(math.acos(first) + math.acos(second))
@@ -160,5 +226,13 @@ class RealLeg:
         self._tip_position = target_world
 
     @staticmethod
-    def _clamp_acos(value):
+    def _checked_acos_input(value, joint_name):
+        if value < -1.0 - IK_REACHABILITY_TOLERANCE:
+            raise ValueError(
+                f'unreachable leg target for {joint_name}: acos input '
+                f'{value:.9g} < -1')
+        if value > 1.0 + IK_REACHABILITY_TOLERANCE:
+            raise ValueError(
+                f'unreachable leg target for {joint_name}: acos input '
+                f'{value:.9g} > 1')
         return max(-1.0, min(1.0, value))

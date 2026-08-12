@@ -58,17 +58,17 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.25
+      desired_linear_vel: 0.20
       # Fixed accuracy-oriented carrot distance. With velocity scaling disabled,
       # min/max lookahead and lookahead_time are not used by Humble RPP.
       lookahead_dist: 0.25
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      # The custom exact-SE(2) gait derives nominal yaw directly from stride
-      # geometry: level 20 is about 0.80 rad/s at 50 phases/s. This is a
-      # commanded-kinematics limit; odometry still determines completion.
-      rotate_to_heading_angular_vel: 0.80
+      # Conservative physical Muto yaw envelope. Higher geometric gait
+      # commands are possible, but field bags showed poor achieved yaw and
+      # weak combined forward+turn response. Odometry remains authoritative.
+      rotate_to_heading_angular_vel: 0.30
       transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.1
@@ -84,10 +84,7 @@ controller_server:
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.785
-      # At 20 Hz, 1.2 rad/s^2 produces a 0.06 rad/s first step. That exceeds
-      # half the custom gait's minimum servo-effective geometric yaw speed, so
-      # the discrete mapper starts turning rather than projecting to zero.
-      max_angular_accel: 1.2
+      max_angular_accel: 0.6
 
 local_costmap:
   local_costmap:
@@ -185,11 +182,11 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.80]
-    min_velocity: [-0.15, 0.0, -0.80]
-    # Keep the smoother consistent with RPP's executable-yaw acceleration.
-    max_accel: [0.25, 0.0, 1.2]
-    max_decel: [-0.3, 0.0, -1.2]
+    max_velocity: [0.20, 0.0, 0.30]
+    min_velocity: [-0.10, 0.0, -0.30]
+    # Keep the smoother consistent with RPP's conservative physical envelope.
+    max_accel: [0.15, 0.0, 0.6]
+    max_decel: [-0.2, 0.0, -0.6]
     odom_topic: /odometry/filtered
     odom_duration: 0.2
     deadband_velocity: [0.0, 0.0, 0.0]
@@ -212,9 +209,9 @@ behavior_server:
     robot_base_frame: base_frame
     transform_tolerance: 0.1
     simulate_ahead_time: 1.5
-    max_rotational_vel: 0.80
+    max_rotational_vel: 0.30
     min_rotational_vel: 0.1
-    rotational_acc_lim: 1.2
+    rotational_acc_lim: 0.6
 
 global_costmap:
   global_costmap:

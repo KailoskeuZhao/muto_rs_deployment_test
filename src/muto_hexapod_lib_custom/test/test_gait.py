@@ -2,11 +2,18 @@ import math
 
 from muto_hexapod_lib_custom.core.base import point3d
 from muto_hexapod_lib_custom.core.config import (
+    leg_joint1_2joint2,
+    leg_joint2_2joint3,
+    leg_joint3_2tip,
+    leg_root2joint1,
     k_standby,
     STANDBY_SERVO_ANGLES_DEG,
 )
 from muto_hexapod_lib_custom.core.leg import (
+    MOUNT_POSITIONS,
     RealLeg,
+    servo_angles_to_leg_joint_chains,
+    servo_angles_to_leg_joint_positions,
     servo_angles_to_foot_positions,
 )
 from muto_hexapod_lib_custom.movement.gait import (
@@ -309,6 +316,43 @@ def test_factory_standby_logical_angles_reconstruct_standby_feet():
         for actual_axis, expected_axis in zip(actual, expected):
             assert math.isclose(
                 actual_axis, expected_axis, abs_tol=0.03)
+
+
+def distance_mm(left, right):
+    return math.sqrt(sum(
+        (left[axis] - right[axis]) ** 2
+        for axis in range(3)
+    ))
+
+
+def test_forward_kinematics_returns_full_nominal_leg_segment_chain():
+    chain = servo_angles_to_leg_joint_positions(
+        0, STANDBY_SERVO_ANGLES_DEG)
+
+    assert len(chain) == 5
+    assert chain[0] == pytest.approx(MOUNT_POSITIONS[0].as_tuple())
+    assert distance_mm(chain[0], chain[1]) == pytest.approx(
+        leg_root2joint1, abs=0.03)
+    assert distance_mm(chain[1], chain[2]) == pytest.approx(
+        leg_joint1_2joint2, abs=0.03)
+    assert distance_mm(chain[2], chain[3]) == pytest.approx(
+        leg_joint2_2joint3, abs=0.03)
+    assert distance_mm(chain[3], chain[4]) == pytest.approx(
+        leg_joint3_2tip, abs=0.03)
+    assert chain[-1] == pytest.approx(k_standby[0], abs=0.03)
+
+    chains = servo_angles_to_leg_joint_chains(
+        STANDBY_SERVO_ANGLES_DEG * 6)
+    assert len(chains) == 6
+    for chain, expected_foot in zip(chains, k_standby):
+        assert chain[-1] == pytest.approx(expected_foot, abs=0.03)
+
+
+def test_inverse_kinematics_rejects_unreachable_targets():
+    leg = RealLeg(0, servo=None)
+
+    with pytest.raises(ValueError, match='unreachable leg target'):
+        leg.inverse_kinematics(point3d(10000.0, 0.0, 0.0))
 
 
 def test_forward_kinematics_inverts_generated_gait_targets():

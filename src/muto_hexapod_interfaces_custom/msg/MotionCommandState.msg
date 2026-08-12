@@ -1,20 +1,20 @@
-# Mapping of one requested physical body twist onto the discrete Muto gait.
+# Mapping of one requested physical body twist onto the Muto gait.
 #
 # `predicted_twist` is feed-forward mapping output, not measured odometry. In
-# geometric mode it is commanded gait kinematics; in calibrated mode it is the
-# selected measured-profile value.
-# The integer levels are the command actually selected for the gait generator.
+# geometric mode it is commanded gait kinematics from continuous amplitudes; in
+# calibrated/legacy mode it is the selected measured-profile value.
 
 std_msgs/Header header
 geometry_msgs/Twist requested_twist
 geometry_msgs/Twist predicted_twist
-# Latest levels selected by the SI mapper. They may wait for a gait boundary;
-# see CommandedGaitState.x_level/y_level/z_level for the active phase.
+# Rounded diagnostics for the latest amplitudes selected by the SI mapper.
+# These may wait for a gait boundary before becoming active.
 int16 x_level
 int16 y_level
 int16 z_level
 string mode
-# Levels in the latest motor phase, kept separate from the selected request.
+# Rounded diagnostics for the latest motor phase, kept separate from the
+# selected request.
 int16 active_x_level
 int16 active_y_level
 int16 active_z_level

@@ -156,6 +156,15 @@ def load_velocity_calibration(path, phase_rate_hz):
     return VelocityCalibrationMapper(profile, phase_rate_hz=phase_rate_hz)
 
 
+def diagnostic_level(value):
+    """Round a continuous gait amplitude for legacy integer status fields."""
+    value = float(value)
+    if value == 0.0:
+        return 0
+    rounded = int(math.copysign(math.floor(abs(value) + 0.5), value))
+    return max(-32768, min(32767, rounded))
+
+
 def legacy_velocity_selection(vx, vy, wz, phase_rate_hz):
     """Reproduce the former hidden ``cmd_vel * 100`` mapping for rollback."""
     requested = PlanarVelocity(vx, vy, wz)
@@ -476,9 +485,36 @@ class yahboomcar_driver(Node):
         elif not command_stale:
             self.cmd_vel_timed_out = False
 
-        self.muto.set_motion_command(*levels)
         dispatch_start = time.monotonic()
-        self.muto.tick_motion()
+        try:
+            self.muto.set_motion_command(*levels)
+            self.muto.tick_motion()
+        except (ValueError, RuntimeError, OSError) as exc:
+            detail = (
+                'locomotion command rejected by gait/IK/servo boundary: '
+                f'{exc}'
+            )
+            self.get_logger().warn(detail, throttle_duration_sec=5.0)
+            self.desired_motion_levels = (0, 0, 0)
+            self.vel_x = 0
+            self.vel_y = 0
+            self.angular_z = 0
+            self.last_cmd_vel_monotonic = None
+            self.cmd_vel_timed_out = True
+            selection = self._standby_selection(detail, supported=False)
+            self.last_velocity_selection = selection
+            self.publish_motion_command_state(selection)
+            try:
+                self.muto.set_motion_command(0.0, 0.0, 0.0)
+            except (ValueError, RuntimeError, OSError) as stop_exc:
+                self.get_logger().warn(
+                    'failed to latch standby after locomotion fault: '
+                    f'{stop_exc}',
+                    throttle_duration_sec=5.0,
+                )
+            self.service_imu_telemetry()
+            self.maybe_publish_imu_telemetry_status()
+            return
         dispatch_duration = time.monotonic() - dispatch_start
         if dispatch_duration > tick_period:
             self.get_logger().warn(
@@ -665,7 +701,7 @@ class yahboomcar_driver(Node):
             )
 
     def cmd_vel_callback(self, msg):
-        """Map one physical Twist and latch discrete calibrated gait levels."""
+        """Map one physical Twist and latch calibrated gait amplitudes."""
         if not isinstance(msg, Twist):
             return
         if self.motors_released:
@@ -767,13 +803,13 @@ class yahboomcar_driver(Node):
         msg.predicted_twist.linear.x = selection.predicted.linear_x_m_s
         msg.predicted_twist.linear.y = selection.predicted.linear_y_m_s
         msg.predicted_twist.angular.z = selection.predicted.angular_z_rad_s
-        msg.x_level = selection.levels.x_level
-        msg.y_level = selection.levels.y_level
-        msg.z_level = selection.levels.z_level
+        msg.x_level = diagnostic_level(selection.levels.x_level)
+        msg.y_level = diagnostic_level(selection.levels.y_level)
+        msg.z_level = diagnostic_level(selection.levels.z_level)
         msg.mode = selection.mode
-        msg.active_x_level = active_state.x_level
-        msg.active_y_level = active_state.y_level
-        msg.active_z_level = active_state.z_level
+        msg.active_x_level = diagnostic_level(active_state.x_level)
+        msg.active_y_level = diagnostic_level(active_state.y_level)
+        msg.active_z_level = diagnostic_level(active_state.z_level)
         msg.active_mode = active_state.mode
         msg.replacement_pending = active_state.replacement_pending
         msg.saturated = selection.saturated

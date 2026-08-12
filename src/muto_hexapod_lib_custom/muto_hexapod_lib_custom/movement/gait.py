@@ -32,9 +32,9 @@ class CommandedGaitState:
 
     sequence: int
     mode: str
-    x_level: int
-    y_level: int
-    z_level: int
+    x_level: float
+    y_level: float
+    z_level: float
     phase_index: int
     cycle_length: int
     cycle_complete: bool
@@ -236,15 +236,15 @@ class GaitPlan:
             active_levels = (0, 0, 0)
             targets = [list(k_standby)]
         elif mode == 'move_x':
-            active_levels = (int(x_level), 0, 0)
+            active_levels = (float(x_level), 0, 0)
             targets = _targets_from_offsets(
                 _forward_paths(active_levels[0]))
         elif mode == 'move_y':
-            active_levels = (0, int(y_level), 0)
+            active_levels = (0, float(y_level), 0)
             targets = _targets_from_offsets(
                 _lateral_paths(active_levels[1]))
         elif mode == 'turn_z':
-            active_levels = (0, 0, int(z_level))
+            active_levels = (0, 0, float(z_level))
             # Use the same rigid-body construction as combined motion.  This
             # keeps the target path continuous as forward speed crosses zero
             # and avoids the inherited per-leg tangent approximation.
@@ -253,7 +253,7 @@ class GaitPlan:
         elif mode == 'move_xz':
             # The supported combined gait is forward plus yaw.  Lateral input
             # is not active because it is not represented by this trajectory.
-            active_levels = (int(x_level), 0, int(z_level))
+            active_levels = (float(x_level), 0, float(z_level))
             targets = _targets_from_offsets(
                 _twist_paths(active_levels[0], active_levels[2])
             )

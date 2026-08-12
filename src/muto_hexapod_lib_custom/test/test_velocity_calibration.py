@@ -124,22 +124,25 @@ def test_geometric_mapper_removes_inherited_level_ten_yaw_floor():
     local_mapper = GeometricVelocityMapper(50.0)
 
     selected = local_mapper.select(angular_z_rad_s=0.18)
-    assert selected.levels == MotionLevels(z_level=4)
+    assert math.isclose(selected.levels.z_level, 4.498991583646963)
     assert selected.mode == 'turn_z'
     assert math.isclose(
         selected.predicted.angular_z_rad_s,
-        10.0 * 4.0 / GAIT_TURN_EFFECTIVE_RADIUS_MM,
+        0.18,
         rel_tol=1.0e-12,
     )
+    assert not selected.quantized
     assert not selected.projection.yaw_to_zero
 
 
-def test_geometric_mapper_keeps_quantization_and_mechanical_bounds_explicit():
+def test_geometric_mapper_removes_software_deadband_and_reports_bounds():
     local_mapper = GeometricVelocityMapper(50.0)
 
-    below_resolution = local_mapper.select(angular_z_rad_s=0.03)
-    assert below_resolution.levels.z_level == 0
-    assert below_resolution.projection.yaw_to_zero
+    small = local_mapper.select(angular_z_rad_s=0.03)
+    assert math.isclose(small.levels.z_level, 0.7498319306078272)
+    assert math.isclose(small.predicted.angular_z_rad_s, 0.03)
+    assert not small.quantized
+    assert not small.projection.yaw_to_zero
 
     saturated = local_mapper.select(angular_z_rad_s=1.2)
     assert saturated.levels.z_level == 20

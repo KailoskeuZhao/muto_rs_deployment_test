@@ -116,10 +116,13 @@ telemetry only. A Nav2 bag records the selected/active split in
 `/muto/motion_command_state`, retains `/muto/commanded_gait_state`, and copies
 the exact calibration YAML beside the MCAP file.
 
-Because amplitudes are discrete, Nav2 limits remain request-side limits rather
-than guaranteed achieved speeds. In geometric mode, `0.18 rad/s` selects level
-4 (nominally `0.160 rad/s`), while `0.80 rad/s` selects level 20. Odometry—not
-the feed-forward prediction—determines whether the body actually rotated.
+Because commanded gait amplitudes are feed-forward, Nav2 limits remain
+request-side limits rather than guaranteed achieved speeds. In the default
+geometric mode, `0.18 rad/s` maps to a continuous yaw amplitude of about
+`4.50` and predicts `0.18 rad/s`; `0.80 rad/s` clips at amplitude `20`.
+Odometry—not the feed-forward prediction—determines whether the body actually
+rotated. The explicit `calibrated` rollback mode still selects from measured
+integer levels.
 
 Use the former conversion only for rollback or raw-level field trials:
 

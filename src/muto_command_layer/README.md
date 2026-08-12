@@ -12,7 +12,8 @@ The command reform is now active. The commander schedules independent bounded
 primitives instead of one fixed exploration program:
 
 ```text
-verify_registry | explore_frontier | rotate | observe
+verify_registry | refine_registry_selection | explore_frontier
+navigate_to_observation_poi | rotate | observe
 checkpoint_registry | approach_object | wait | finish_not_found
         -> record result -> update mission state -> choose again
 ```
@@ -158,9 +159,10 @@ and object collection. Its default cycle is:
 7. Resume exploration and repeat.
 8. When frontier exploration reports exhaustion, snapshot `/map`, request the
    Nav2 global costmap, and switch to adaptive predicted-visibility coverage.
-9. Navigate to reachable viewpoints selected for new free-space and obstacle-
-   boundary visibility, perform the same six-step scan, checkpoint, and
-   repeat until the configured predicted-coverage ratio is reached.
+9. Query the visibility calculator for current coverage and ranked observation
+   points of interest, navigate to the selected point, perform the same
+   six-step scan, checkpoint, and repeat until the configured
+   predicted-coverage ratio is reached.
 
 The registry assumes observed objects are static. The program does not create a
 second object recorder; it coordinates motion around the continuously running
@@ -258,6 +260,16 @@ may have different origins or dimensions. Cells outside the costmap and costs
 above `visibility_maximum_cost` are blocked. Nav2 remains authoritative for
 final path planning and collision checking. A rejected pose is discarded
 without receiving predicted-visibility credit.
+
+The visibility component is a calculator, not a fixed mission script. For the
+current robot cell, it reports coverage statistics and ranks observation
+points of interest by predicted new free-space and occupied-boundary
+visibility per travel-plus-scan cost. The same information is exposed through
+`/command_layer/visibility_coverage`
+(`muto_command_layer/srv/GetVisibilityCoverage`). The legacy
+`/explore_and_record` action uses the top-ranked point for compatibility, but
+a higher-level commander can query the report to decide whether to observe,
+move elsewhere, or defer.
 
 After Nav2 reaches a viewpoint and all configured spin steps complete, the
 planner credits the free and occupied-boundary cells that its 2-D line-of-sight
@@ -463,6 +475,12 @@ small hardware, armrests, reflections, tinted lighting, and nearby objects do
 not qualify unless the request explicitly names that part. Occluded or ambiguous
 candidates are rejected.
 
+`FindObject` also accepts optional `candidate_ids`. When supplied, the server
+skips whole-registry metadata shortlisting and visually refines only those
+exact confirmed registry IDs using their stored JPEGs. The commander uses this
+as `refine_registry_selection` when an approach mission has multiple confirmed
+matches and needs one exact object ID before `/go_to_object`.
+
 Every final result is returned in the `FindObject` action result and published
 individually as `muto_command_layer/msg/ObjectMatch` on
 `/object_search/matches`. Each message contains a generated `query_id`, rank,
@@ -554,7 +572,8 @@ capture a newly received bounded RGB frame
           |
           v
 VLM inspects frame + state and selects one bounded next primitive
-  verify_registry | explore_frontier | rotate | observe
+  verify_registry | refine_registry_selection | explore_frontier
+  navigate_to_observation_poi | rotate | observe
   checkpoint_registry | approach_object | wait | finish_not_found
           |
           v
@@ -568,13 +587,20 @@ monitor the child result and confirmed-object set
                                       | stop, verify stopped, recheck, replan
 ```
 
-The planner selects only from that bounded primitive enum. `approach_object`
-is unavailable until `/find_object` has produced exactly one confirmed ID in
-the current registry revision; camera evidence can never unlock it. The
+The planner selects only from that bounded primitive enum.
+`refine_registry_selection` reuses `/find_object` with caller-provided
+candidate IDs, so stored registry JPEGs can narrow multiple confirmed matches
+without searching outside that set. `approach_object` is unavailable until
+the current registry revision contains exactly one confirmed target ID; camera
+evidence alone can never unlock it. The
 commander owns the `/go_to_object` child and records its target ID plus
 before/after pose in the same primitive history. A registry change stops the
-approach before replanning. Each operation otherwise has one purpose: frontier
-travel, in-place rotation, stationary detector dwell, or registry persistence.
+approach before replanning. `navigate_to_observation_poi` reuses the
+read-only visibility helper: the model asks for a semantic move, but local code
+re-queries `/command_layer/visibility_coverage` immediately before dispatch
+and sends Nav2 only to the current top-ranked POI. Each operation otherwise
+has one purpose: frontier travel, POI navigation, in-place rotation,
+stationary detector dwell, or registry persistence.
 The recent primitive history and outcome are returned in
 the next mission-state request so the model may change order, defer, retry, or
 choose another primitive. Every scheduling request contains
@@ -719,6 +745,10 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   sample candidates and predict 2-D line-of-sight coverage; defaults `0.5`
   and `2.5` metres. `visibility_robot_clearance` is the standalone fallback
   when no navigation-cost layer is supplied to the planner library.
+- `visibility_coverage_service`: read-only coverage-state and observation-POI
+  service; default `/command_layer/visibility_coverage`.
+- `visibility_coverage_max_points`: maximum ranked observation POIs returned
+  by one service query; default `8`.
 - `visibility_completion_ratio`: required predicted observable free-space and
   boundary coverage; default `0.98`. It does not measure camera or detector
   success.
@@ -765,9 +795,9 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   `rotate_executable_yaw_velocity`, `rotate_timeout_reference_yaw_velocity`,
   `checkpoint_timeout`, and `observation_min_detection_frames`: local bounds
   for the separated rotate, observe, and checkpoint primitives. Direct rotate
-  commands the custom gait's nominal level-20 geometric yaw (`0.80 rad/s`),
-  but sizes its timeout with a conservative ground-response rate and accepts
-  completion only from odometry.
+  uses the same conservative physical yaw envelope as Nav2 (`0.30 rad/s` by
+  default), sizes its timeout with a conservative ground-response rate, and
+  accepts completion only from odometry.
 - `minimum_explore_progress_distance_m`: displacement required before a
   bounded frontier interval counts as useful travel.
 - `minimum_no_match_travel_distance_m`, `minimum_no_match_observations`,

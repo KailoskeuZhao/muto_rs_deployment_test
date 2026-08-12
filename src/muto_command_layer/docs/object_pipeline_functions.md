@@ -248,12 +248,14 @@ join after the object was registered.
 ### 7. Find stored objects using natural language and images
 
 The `/find_object` action accepts a natural-language prompt and returns zero or
-more `ObjectMatch` records.
+more `ObjectMatch` records. Optional `candidate_ids` restrict the search to
+specific confirmed registry IDs; this mode is used by the commander to refine
+an ambiguous confirmed target set with the registry's stored JPEGs.
 
 ```bash
 ros2 action send_goal /find_object \
   muto_command_layer/action/FindObject \
-  "{prompt: 'find the red cup'}" --feedback
+  "{prompt: 'find the red cup', candidate_ids: []}" --feedback
 ```
 
 Selection is performed in two bounded stages:
@@ -315,14 +317,19 @@ typed commands. For each goal it first calls `/find_object` without moving. If
 there is no match, it waits for a new color-camera frame, converts it to a
 bounded JPEG, and asks the VLM to inspect that frame plus compact mission state.
 The VLM then chooses exactly one locally validated next primitive:
-`verify_registry`, bounded `explore_frontier`, in-place `rotate`, stationary
-`observe`, `checkpoint_registry`, bounded `wait`, or `finish_not_found`.
-For a find-and-approach mission it may also choose `approach_object`, but only
-after the current registry query has returned exactly one confirmed ID.
+`verify_registry`, registry-JPEG `refine_registry_selection`, bounded
+`explore_frontier`, visibility-helper `navigate_to_observation_poi`, in-place
+`rotate`, stationary `observe`, `checkpoint_registry`, bounded `wait`, or
+`finish_not_found`. For a find-and-approach mission it may also choose
+`approach_object`, but only after the current registry query/refinement has
+returned exactly one confirmed ID.
 
 `explore_frontier` runs frontier travel for a bounded interval and stops without
 rotating. Its elapsed time counts as search evidence only when odometry confirms
 spatial displacement; a stationary timeout is reported as no progress.
+`navigate_to_observation_poi` re-queries the read-only visibility coverage
+service and navigates to its current top-ranked observation POI; it does not
+rotate, observe, or checkpoint by itself.
 `rotate` publishes a bounded executable yaw command and verifies the achieved
 angle from `/odometry/filtered`. `observe` creates a
 temporary `/sam2/detection_heartbeat` subscription and waits for fresh crop-free
@@ -417,9 +424,19 @@ The parent path is published on `/model_commander/last_bag_path`.
 `/explore_and_record` alternates frontier navigation with six-step,
 360-degree observation scans and registry checkpoints. When frontier
 exploration reports completion, the command snapshots the SLAM occupancy map
-and Nav2 global costmap, generates robot-reachable viewpoints, and continues
-scanning until its predicted observable free-space and occupied-boundary
-ratios reach `visibility_completion_ratio`.
+and Nav2 global costmap, then queries the visibility calculator for current
+coverage and ranked observation points of interest. The legacy action chooses
+the top-ranked point, scans there, checkpoints, and repeats until its
+predicted observable free-space and occupied-boundary ratios reach
+`visibility_completion_ratio`.
+
+The visibility calculator is intentionally reusable: it reports coverage state
+and candidate observation value, rather than owning the whole command
+sequence. The read-only `/command_layer/visibility_coverage`
+(`muto_command_layer/srv/GetVisibilityCoverage`) service returns those ratios
+and ranked points of interest without starting navigation. A higher-level
+commander can use that information to decide whether to observe, navigate to a
+point of interest, wait, or choose a different primitive.
 
 This completion value is a 2-D geometric estimate. After Nav2 reaches a
 viewpoint and completes the requested spin steps, the planner credits cells

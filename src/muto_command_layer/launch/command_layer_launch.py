@@ -321,17 +321,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'rotate_cmd_vel_topic',
-            default_value='/cmd_vel',
+            default_value='/cmd_vel_nav',
             description=(
                 'Velocity topic used by the model commander direct rotate '
-                'primitive.'
+                'primitive before nav2_velocity_smoother limits it.'
             ),
         ),
         DeclareLaunchArgument(
             'rotate_executable_yaw_velocity',
-            default_value='0.80',
+            default_value='0.30',
             description=(
-                'Custom-gait geometric yaw command for direct rotation.'
+                'Conservative physical yaw command for direct rotation.'
             ),
         ),
         DeclareLaunchArgument(
@@ -624,6 +624,11 @@ def generate_launch_description():
             description='Selected visibility viewpoint poses.',
         ),
         DeclareLaunchArgument(
+            'visibility_coverage_service',
+            default_value='/command_layer/visibility_coverage',
+            description='Read-only coverage-state and observation-POI query.',
+        ),
+        DeclareLaunchArgument(
             'visibility_completion_ratio',
             default_value='0.98',
             description=(
@@ -634,6 +639,11 @@ def generate_launch_description():
             'visibility_max_viewpoints',
             default_value='0',
             description='Coverage viewpoint limit; zero is unlimited.',
+        ),
+        DeclareLaunchArgument(
+            'visibility_coverage_max_points',
+            default_value='8',
+            description='Maximum ranked observation POIs returned by query.',
         ),
         DeclareLaunchArgument(
             'launch_frontier_explorer',
@@ -1058,11 +1068,17 @@ def generate_launch_description():
                     'visibility_target_pose_topic': LaunchConfiguration(
                         'visibility_target_pose_topic'
                     ),
+                    'visibility_coverage_service': LaunchConfiguration(
+                        'visibility_coverage_service'
+                    ),
                     'visibility_completion_ratio': LaunchConfiguration(
                         'visibility_completion_ratio'
                     ),
                     'visibility_max_viewpoints': LaunchConfiguration(
                         'visibility_max_viewpoints'
+                    ),
+                    'visibility_coverage_max_points': LaunchConfiguration(
+                        'visibility_coverage_max_points'
                     ),
                 },
             ],
@@ -1118,6 +1134,12 @@ def generate_launch_description():
                     'go_to_object_action': LaunchConfiguration('action_name'),
                     'explore_frontier_action': LaunchConfiguration(
                         'explore_frontier_action'
+                    ),
+                    'navigate_to_pose_action': LaunchConfiguration(
+                        'navigate_to_pose_action'
+                    ),
+                    'visibility_coverage_service': LaunchConfiguration(
+                        'visibility_coverage_service'
                     ),
                     'spin_action': LaunchConfiguration('spin_action'),
                     'rotate_cmd_vel_topic': LaunchConfiguration(

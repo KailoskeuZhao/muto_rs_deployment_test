@@ -69,7 +69,7 @@ nav2_planner_controller_launch.py
   -> local_costmap and global_costmap
   -> planner/path-smoother/velocity-smoother/behavior/bt_navigator servers
   -> controller /cmd_vel_nav -> velocity_smoother -> /cmd_vel
-  -> recovery behaviors -------------------------------> /cmd_vel
+  -> recovery behaviors --> /cmd_vel_nav -> velocity_smoother -> /cmd_vel
 
 command_layer_launch.py                       (independent process group)
   -> object_pipeline_launch.py
@@ -134,10 +134,11 @@ one-shot launches. `locomotion_command_mapping:=geometric` derives the
 requested gait amplitude directly from the custom trajectory geometry and
 cadence. `calibrated` optionally loads `locomotion_calibration_file`, while
 `legacy_100` is explicit rollback only. Every mode publishes the requested and
-projected twist plus selected raw levels on `/muto/motion_command_state`.
-Nonzero level changes wait for the next complete gait
-boundary; selected and active levels plus pending state are carried separately
-by `/muto/motion_command_state`. Stop and timeout directly command nominal
+projected twist plus selected float amplitudes on `/muto/motion_command_state`;
+rounded level fields remain as compatibility diagnostics.
+Nonzero amplitude changes wait for the next complete gait
+boundary; selected and active amplitudes plus pending state are carried
+separately by `/muto/motion_command_state`. Stop and timeout directly command nominal
 stance and are abrupt rather than a smooth deceleration. Motor feedback never
 sleeps to settle inside the driver, because that process also owns the
 gait-slotted telemetry scheduler. Each gait phase normally batches six vendor
@@ -343,11 +344,10 @@ Expected nodes include:
 This launch is not a full `nav2_bringup` replacement with AMCL, route server,
 waypoint follower, docking, or other optional Nav2 servers.
 
-The controller publishes `/cmd_vel_nav`; the velocity smoother publishes the
-normal follow-path `/cmd_vel` sent to the Muto driver. Recovery behaviors are
-also lifecycle-managed but currently publish directly to `/cmd_vel`, bypassing
-the smoother while retaining their own conservative velocity and acceleration
-limits.
+The controller, behavior server, and command-layer direct-rotate primitive
+publish to `/cmd_vel_nav`; the velocity smoother publishes the final
+`/cmd_vel` sent to the Muto driver. This keeps one Humble-compatible hard
+velocity/acceleration limiter before hardware.
 
 ### Object Perception And Commands
 
@@ -454,12 +454,15 @@ exact transient-local path from
 use `exploration_bag_topics_regex` for a narrower recording contract.
 
 When frontier exploration reports completion, the action snapshots `/map` and
-Nav2's global costmap and visits viewpoints selected by a 2-D line-of-sight
-model. Its default `0.98` completion ratio is predicted observable free-space
-and occupied-boundary coverage. Successful navigation and spin steps receive
-the model's predicted visibility credit; RGB, depth, detector, and registry
-results are not coverage inputs. Treat this as a geometric mission-progress
-estimate, not measured camera coverage or proof that every object was seen.
+Nav2's global costmap and queries a 2-D line-of-sight calculator for current
+coverage and ranked observation points of interest. The legacy action visits
+the top-ranked points; the same read-only report is available at
+`/command_layer/visibility_coverage`. Its default `0.98` completion ratio is
+predicted observable free-space and occupied-boundary coverage. Successful
+navigation and spin steps receive the model's predicted visibility credit;
+RGB, depth, detector, and registry results are not coverage inputs. Treat this
+as a geometric mission-progress estimate, not measured camera coverage or
+proof that every object was seen.
 
 ### Standalone Nav2 Diagnostic Bag
 

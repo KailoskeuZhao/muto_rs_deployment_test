@@ -1,0 +1,6 @@
+# Maximum ranked observation points to return. Zero uses the server default.
+uint32 max_points
+---
+bool success
+string message
+muto_command_layer/VisibilityCoverageState state

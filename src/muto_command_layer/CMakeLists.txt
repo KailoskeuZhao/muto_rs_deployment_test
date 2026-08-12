@@ -24,6 +24,9 @@ find_package(tf2_ros REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectMatch.msg"
+  "msg/VisibilityPointOfInterest.msg"
+  "msg/VisibilityCoverageState.msg"
+  "srv/GetVisibilityCoverage.srv"
   "action/ExploreAndRecord.action"
   "action/FindSomething.action"
   "action/GoToObject.action"

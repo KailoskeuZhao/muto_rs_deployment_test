@@ -38,7 +38,7 @@ struct VisibilityPlannerConfig
   double candidate_spacing{0.5};
   double visibility_range{2.5};
   double boundary_weight{2.0};
-  double nominal_linear_speed{0.25};
+  double nominal_linear_speed{0.20};
   double scan_time{24.0};
   double start_snap_distance{0.5};
   std::size_t minimum_new_target_cells{1U};
@@ -54,6 +54,7 @@ struct ViewpointSelection
   std::size_t new_free_cells{0U};
   std::size_t new_boundary_cells{0U};
   double path_length{0.0};
+  double weighted_gain{0.0};
   double score{0.0};
 
   bool valid() const
@@ -77,6 +78,13 @@ struct VisibilityCoverageStats
   double boundary_coverage_ratio() const;
 };
 
+struct VisibilityCoverageReport
+{
+  VisibilityCoverageStats stats;
+  GridCell current_cell;
+  std::vector<ViewpointSelection> points_of_interest;
+};
+
 class VisibilityViewpointPlanner
 {
 public:
@@ -87,6 +95,12 @@ public:
 
   const std::vector<GridCell> & candidates() const;
   const GridCell & start_cell() const;
+  std::vector<ViewpointSelection> points_of_interest(
+    const GridCell & current,
+    std::size_t maximum_points = 0U) const;
+  VisibilityCoverageReport coverage_report(
+    const GridCell & current,
+    std::size_t maximum_points = 0U) const;
   ViewpointSelection select_next(const GridCell & current) const;
   void observe(std::size_t candidate_index);
   void discard(std::size_t candidate_index);

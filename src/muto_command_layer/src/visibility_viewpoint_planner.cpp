@@ -682,12 +682,12 @@ std::vector<double> VisibilityViewpointPlanner::path_distances(
   return distances;
 }
 
-ViewpointSelection VisibilityViewpointPlanner::select_next(
-  const GridCell & current) const
+std::vector<ViewpointSelection> VisibilityViewpointPlanner::points_of_interest(
+  const GridCell & current,
+  const std::size_t maximum_points) const
 {
-  ViewpointSelection best;
+  std::vector<ViewpointSelection> points;
   const auto distances = path_distances(current);
-  double best_weighted_gain = 0.0;
 
   for (std::size_t i = 0; i < candidate_visibility_.size(); ++i) {
     if (discarded_candidates_[i] != 0U) {
@@ -709,28 +709,54 @@ ViewpointSelection VisibilityViewpointPlanner::select_next(
       config_.boundary_weight * static_cast<double>(boundary_gain);
     const double action_time = config_.scan_time +
       path_length / config_.nominal_linear_speed;
-    const double score = weighted_gain / action_time;
-    const bool better_score = score > best.score + 1.0e-12;
-    const bool equal_score_more_gain =
-      std::abs(score - best.score) <= 1.0e-12 &&
-      weighted_gain > best_weighted_gain + 1.0e-12;
-    const bool equal_gain_shorter_path =
-      std::abs(score - best.score) <= 1.0e-12 &&
-      std::abs(weighted_gain - best_weighted_gain) <= 1.0e-12 &&
-      path_length < best.path_length;
-    if (!best.valid() || better_score || equal_score_more_gain ||
-      equal_gain_shorter_path)
-    {
-      best.candidate_index = i;
-      best.cell = candidate.cell;
-      best.new_free_cells = free_gain;
-      best.new_boundary_cells = boundary_gain;
-      best.path_length = path_length;
-      best.score = score;
-      best_weighted_gain = weighted_gain;
-    }
+    ViewpointSelection point;
+    point.candidate_index = i;
+    point.cell = candidate.cell;
+    point.new_free_cells = free_gain;
+    point.new_boundary_cells = boundary_gain;
+    point.path_length = path_length;
+    point.weighted_gain = weighted_gain;
+    point.score = weighted_gain / action_time;
+    points.push_back(point);
   }
-  return best;
+
+  std::sort(
+    points.begin(), points.end(),
+    [](const ViewpointSelection & left, const ViewpointSelection & right) {
+      if (std::abs(left.score - right.score) > 1.0e-12) {
+        return left.score > right.score;
+      }
+      if (std::abs(left.weighted_gain - right.weighted_gain) > 1.0e-12) {
+        return left.weighted_gain > right.weighted_gain;
+      }
+      if (std::abs(left.path_length - right.path_length) > 1.0e-12) {
+        return left.path_length < right.path_length;
+      }
+      return left.candidate_index < right.candidate_index;
+    });
+
+  if (maximum_points > 0U && points.size() > maximum_points) {
+    points.resize(maximum_points);
+  }
+  return points;
+}
+
+VisibilityCoverageReport VisibilityViewpointPlanner::coverage_report(
+  const GridCell & current,
+  const std::size_t maximum_points) const
+{
+  VisibilityCoverageReport report;
+  report.stats = coverage_stats();
+  report.current_cell = current;
+  report.points_of_interest = points_of_interest(current, maximum_points);
+  return report;
+}
+
+ViewpointSelection VisibilityViewpointPlanner::select_next(
+  const GridCell & current) const
+{
+  const auto ranked_points = points_of_interest(current, 1U);
+  return ranked_points.empty() ? ViewpointSelection{} : ranked_points.front();
 }
 
 void VisibilityViewpointPlanner::observe(const std::size_t candidate_index)

@@ -1,0 +1,15 @@
+std_msgs/Header header
+bool complete
+uint32 candidate_count
+uint32 target_free_cells
+uint32 coverable_free_cells
+uint32 covered_free_cells
+uint32 target_boundary_cells
+uint32 coverable_boundary_cells
+uint32 covered_boundary_cells
+float64 map_coverage_ratio
+float64 observable_coverage_ratio
+float64 boundary_coverage_ratio
+float64 combined_coverage_ratio
+geometry_msgs/PoseStamped robot_pose
+muto_command_layer/VisibilityPointOfInterest[] points_of_interest

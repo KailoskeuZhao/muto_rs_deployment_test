@@ -18,6 +18,7 @@ namespace
 {
 
 using muto_command_layer::GridCell;
+using muto_command_layer::ViewpointSelection;
 using muto_command_layer::VisibilityCoverageStats;
 using muto_command_layer::VisibilityGrid;
 using muto_command_layer::VisibilityPlannerConfig;
@@ -353,6 +354,73 @@ TEST(VisibilityViewpointPlanner, DiscardsRejectedCandidateWithoutCoveringIt)
   ASSERT_TRUE(replacement.valid());
   EXPECT_NE(replacement.candidate_index, rejected.candidate_index);
   EXPECT_EQ(planner.coverage_stats().covered_free_cells, 0U);
+}
+
+TEST(VisibilityViewpointPlanner, ReportsRankedObservationPointsWithoutMutatingCoverage)
+{
+  const auto parsed = parse_grid({
+      "###############",
+      "#S............#",
+      "#.............#",
+      "#.............#",
+      "#.............#",
+      "###############",
+    });
+  auto config = test_config();
+  config.visibility_range = 1.25;
+  config.minimum_new_target_cells = 1U;
+  VisibilityViewpointPlanner planner(parsed.grid, parsed.start, config);
+
+  const auto before = planner.coverage_stats();
+  const auto report = planner.coverage_report(parsed.start, 3U);
+
+  EXPECT_EQ(report.current_cell, parsed.start);
+  EXPECT_EQ(report.stats.covered_free_cells, before.covered_free_cells);
+  ASSERT_GE(report.points_of_interest.size(), 2U);
+  EXPECT_LE(report.points_of_interest.size(), 3U);
+  EXPECT_EQ(
+    report.points_of_interest.front().candidate_index,
+    planner.select_next(parsed.start).candidate_index);
+  EXPECT_EQ(planner.coverage_stats().covered_free_cells, before.covered_free_cells);
+
+  for (const auto & point : report.points_of_interest) {
+    EXPECT_TRUE(point.valid());
+    EXPECT_GT(point.new_free_cells + point.new_boundary_cells, 0U);
+    EXPECT_GT(point.weighted_gain, 0.0);
+    EXPECT_GT(point.score, 0.0);
+  }
+  for (std::size_t i = 1U; i < report.points_of_interest.size(); ++i) {
+    const ViewpointSelection & previous = report.points_of_interest[i - 1U];
+    const ViewpointSelection & current = report.points_of_interest[i];
+    EXPECT_GE(previous.score + 1.0e-12, current.score);
+  }
+}
+
+TEST(VisibilityViewpointPlanner, ObservationPointReportReflectsNewCoverage)
+{
+  const auto parsed = parse_grid({
+      "###############",
+      "#S............#",
+      "#.............#",
+      "#.............#",
+      "#.............#",
+      "###############",
+    });
+  auto config = test_config();
+  config.visibility_range = 1.25;
+  config.minimum_new_target_cells = 1U;
+  VisibilityViewpointPlanner planner(parsed.grid, parsed.start, config);
+
+  const auto initial = planner.coverage_report(parsed.start, 5U);
+  ASSERT_FALSE(initial.points_of_interest.empty());
+  const auto first = initial.points_of_interest.front();
+  planner.observe(first.candidate_index);
+
+  const auto after = planner.coverage_report(first.cell, 5U);
+  EXPECT_GT(after.stats.covered_free_cells, initial.stats.covered_free_cells);
+  ASSERT_FALSE(after.points_of_interest.empty());
+  EXPECT_NE(after.points_of_interest.front().candidate_index, first.candidate_index);
+  EXPECT_LT(after.points_of_interest.front().new_free_cells, initial.stats.target_free_cells);
 }
 
 TEST(VisibilityViewpointPlanner, OpenRoomNeedsOneCentralScan)

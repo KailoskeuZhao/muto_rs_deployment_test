@@ -30,6 +30,8 @@
 #include "muto_command_layer/action/explore_and_record.hpp"
 #include "muto_command_layer/action/go_to_object.hpp"
 #include "muto_command_layer/approach_geometry.hpp"
+#include "muto_command_layer/msg/visibility_point_of_interest.hpp"
+#include "muto_command_layer/srv/get_visibility_coverage.hpp"
 #include "muto_command_layer/visibility_viewpoint_planner.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_msgs/action/spin.hpp"
@@ -102,6 +104,8 @@ public:
   using RegistrySaveService = std_srvs::srv::Trigger;
   using ExploreService = std_srvs::srv::SetBool;
   using SaveMapService = slam_toolbox::srv::SaveMap;
+  using VisibilityCoverageService =
+    muto_command_layer::srv::GetVisibilityCoverage;
   using FrontierControlService =
     frontier_exploration_ros2::srv::ControlExploration;
 
@@ -160,6 +164,15 @@ public:
         handle_save_map_request(request, response);
       },
       rmw_qos_profile_services_default, save_map_service_group_);
+    visibility_coverage_service_server_ =
+      create_service<VisibilityCoverageService>(
+      visibility_coverage_service_,
+      [this](
+        const std::shared_ptr<VisibilityCoverageService::Request> request,
+        std::shared_ptr<VisibilityCoverageService::Response> response)
+      {
+        handle_visibility_coverage_request(request, response);
+      });
     exploration_completion_sub_ = create_subscription<std_msgs::msg::Empty>(
       exploration_completion_topic_,
       rclcpp::QoS(1).reliable().durability_volatile(),
@@ -508,6 +521,8 @@ private:
     declare_parameter<std::string>("visibility_map_topic", "/map");
     declare_parameter<std::string>(
       "visibility_target_pose_topic", "/explore/visibility_target_pose");
+    declare_parameter<std::string>(
+      "visibility_coverage_service", "/command_layer/visibility_coverage");
     declare_parameter<std::string>("global_frame", "map");
     declare_parameter<std::string>("robot_base_frame", "base_frame");
     declare_parameter<double>("approach_distance", 0.75);
@@ -546,13 +561,14 @@ private:
     declare_parameter<double>("visibility_candidate_spacing", 0.5);
     declare_parameter<double>("visibility_range", 2.5);
     declare_parameter<double>("visibility_boundary_weight", 2.0);
-    declare_parameter<double>("visibility_nominal_linear_speed", 0.25);
+    declare_parameter<double>("visibility_nominal_linear_speed", 0.20);
     declare_parameter<double>("visibility_scan_time", 45.0);
     declare_parameter<double>("visibility_start_snap_distance", 0.5);
     declare_parameter<int64_t>("visibility_minimum_new_cells", 1);
     declare_parameter<double>("visibility_completion_ratio", 0.98);
     declare_parameter<int64_t>("visibility_max_viewpoints", 0);
     declare_parameter<int64_t>("visibility_max_navigation_failures", 3);
+    declare_parameter<int64_t>("visibility_coverage_max_points", 8);
     declare_parameter<std::string>("behavior_tree", "");
   }
 
@@ -600,6 +616,8 @@ private:
     visibility_map_topic_ = get_parameter("visibility_map_topic").as_string();
     visibility_target_pose_topic_ =
       get_parameter("visibility_target_pose_topic").as_string();
+    visibility_coverage_service_ =
+      get_parameter("visibility_coverage_service").as_string();
     global_frame_ = get_parameter("global_frame").as_string();
     robot_base_frame_ = get_parameter("robot_base_frame").as_string();
     approach_distance_ = get_parameter("approach_distance").as_double();
@@ -674,6 +692,8 @@ private:
       get_parameter("visibility_max_viewpoints").as_int();
     visibility_max_navigation_failures_ =
       get_parameter("visibility_max_navigation_failures").as_int();
+    visibility_coverage_max_points_ =
+      get_parameter("visibility_coverage_max_points").as_int();
     behavior_tree_ = get_parameter("behavior_tree").as_string();
   }
 
@@ -709,6 +729,8 @@ private:
     require_name(visibility_map_topic_, "visibility_map_topic");
     require_name(
       visibility_target_pose_topic_, "visibility_target_pose_topic");
+    require_name(
+      visibility_coverage_service_, "visibility_coverage_service");
     require_name(global_frame_, "global_frame");
     require_name(robot_base_frame_, "robot_base_frame");
     if (save_map_service_name_ == slam_toolbox_save_map_service_) {
@@ -851,6 +873,12 @@ private:
     if (visibility_max_navigation_failures_ <= 0) {
       throw std::invalid_argument(
               "visibility_max_navigation_failures must be positive");
+    }
+    if (visibility_coverage_max_points_ <= 0 ||
+      visibility_coverage_max_points_ > 100)
+    {
+      throw std::invalid_argument(
+              "visibility_coverage_max_points must be in [1, 100]");
     }
     if (visibility_planner_config_.free_threshold < 0 ||
       visibility_planner_config_.free_threshold > 100 ||
@@ -2369,6 +2397,160 @@ private:
     return target;
   }
 
+  void handle_visibility_coverage_request(
+    const std::shared_ptr<VisibilityCoverageService::Request> request,
+    const std::shared_ptr<VisibilityCoverageService::Response> response)
+  {
+    response->success = false;
+    response->message.clear();
+
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr map;
+    {
+      std::lock_guard<std::mutex> lock(visibility_map_mutex_);
+      map = latest_visibility_map_;
+    }
+    if (!map) {
+      response->message = "visibility map is unavailable: " +
+        visibility_map_topic_;
+      return;
+    }
+    if (map->header.frame_id != global_frame_) {
+      response->message = "visibility map frame '" + map->header.frame_id +
+        "' does not match global frame '" + global_frame_ + "'";
+      return;
+    }
+
+    if (!global_costmap_client_->service_is_ready()) {
+      response->message = "Nav2 global costmap service is unavailable: " +
+        global_costmap_service_;
+      return;
+    }
+
+    auto future = global_costmap_client_->async_send_request(
+      std::make_shared<CostmapService::Request>());
+    const auto future_status = future.wait_for(
+      std::chrono::duration<double>(global_costmap_timeout_));
+    if (future_status != std::future_status::ready) {
+      global_costmap_client_->remove_pending_request(future);
+      response->message = "timed out requesting the Nav2 global costmap";
+      return;
+    }
+
+    nav2_msgs::msg::Costmap costmap;
+    try {
+      costmap = std::move(future.get()->map);
+    } catch (const std::exception & exception) {
+      response->message = "global costmap request failed: " +
+        std::string(exception.what());
+      return;
+    }
+
+    geometry_msgs::msg::TransformStamped robot_transform;
+    try {
+      robot_transform = tf_buffer_->lookupTransform(
+        global_frame_, robot_base_frame_, tf2::TimePointZero,
+        tf2::durationFromSec(tf_timeout_));
+    } catch (const tf2::TransformException & exception) {
+      response->message = "TF could not place the robot for visibility coverage: " +
+        std::string(exception.what());
+      return;
+    }
+
+    std::optional<GridCell> requested_start;
+    try {
+      requested_start = world_to_grid_cell(
+        *map, robot_transform.transform.translation.x,
+        robot_transform.transform.translation.y);
+    } catch (const std::invalid_argument & exception) {
+      response->message = exception.what();
+      return;
+    }
+    if (!requested_start) {
+      response->message = "robot pose is outside the visibility occupancy map";
+      return;
+    }
+
+    std::unique_ptr<VisibilityViewpointPlanner> planner;
+    try {
+      planner = std::make_unique<VisibilityViewpointPlanner>(
+        visibility_grid_from_messages(*map, costmap), *requested_start,
+        visibility_planner_config_);
+    } catch (const std::invalid_argument & exception) {
+      response->message = "could not construct visibility coverage state: " +
+        std::string(exception.what());
+      return;
+    }
+
+    const GridCell current = planner->start_cell();
+    const double robot_x = robot_transform.transform.translation.x;
+    const double robot_y = robot_transform.transform.translation.y;
+    const double robot_yaw = tf2::getYaw(robot_transform.transform.rotation);
+    const std::size_t maximum_points = request->max_points == 0U ?
+      static_cast<std::size_t>(visibility_coverage_max_points_) :
+      static_cast<std::size_t>(std::min<uint32_t>(
+        request->max_points,
+        static_cast<uint32_t>(visibility_coverage_max_points_)));
+    const auto report = planner->coverage_report(current, maximum_points);
+    const double combined_coverage =
+      combined_visibility_coverage(report.stats);
+
+    auto & state = response->state;
+    state.header.stamp = now();
+    state.header.frame_id = global_frame_;
+    state.complete = combined_coverage >= visibility_completion_ratio_;
+    state.candidate_count = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.candidate_count,
+        std::numeric_limits<uint32_t>::max()));
+    state.target_free_cells = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.target_free_cells,
+        std::numeric_limits<uint32_t>::max()));
+    state.coverable_free_cells = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.coverable_free_cells,
+        std::numeric_limits<uint32_t>::max()));
+    state.covered_free_cells = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.covered_free_cells,
+        std::numeric_limits<uint32_t>::max()));
+    state.target_boundary_cells = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.target_boundary_cells,
+        std::numeric_limits<uint32_t>::max()));
+    state.coverable_boundary_cells = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.coverable_boundary_cells,
+        std::numeric_limits<uint32_t>::max()));
+    state.covered_boundary_cells = static_cast<uint32_t>(std::min<std::size_t>(
+        report.stats.covered_boundary_cells,
+        std::numeric_limits<uint32_t>::max()));
+    state.map_coverage_ratio = report.stats.map_coverage_ratio();
+    state.observable_coverage_ratio = report.stats.observable_coverage_ratio();
+    state.boundary_coverage_ratio = report.stats.boundary_coverage_ratio();
+    state.combined_coverage_ratio = combined_coverage;
+    state.robot_pose.header = state.header;
+    state.robot_pose.pose.position.x = robot_x;
+    state.robot_pose.pose.position.y = robot_y;
+    state.robot_pose.pose.position.z =
+      robot_transform.transform.translation.z;
+    state.robot_pose.pose.orientation = robot_transform.transform.rotation;
+    state.points_of_interest.reserve(report.points_of_interest.size());
+    for (const auto & point : report.points_of_interest) {
+      muto_command_layer::msg::VisibilityPointOfInterest poi;
+      poi.candidate_index = static_cast<uint32_t>(std::min<std::size_t>(
+          point.candidate_index, std::numeric_limits<uint32_t>::max()));
+      poi.pose = coverage_target_pose(*map, point.cell, robot_x, robot_y, robot_yaw);
+      poi.cell_x = point.cell.x;
+      poi.cell_y = point.cell.y;
+      poi.new_free_cells = static_cast<uint32_t>(std::min<std::size_t>(
+          point.new_free_cells, std::numeric_limits<uint32_t>::max()));
+      poi.new_boundary_cells = static_cast<uint32_t>(std::min<std::size_t>(
+          point.new_boundary_cells, std::numeric_limits<uint32_t>::max()));
+      poi.path_length_m = point.path_length;
+      poi.weighted_gain = point.weighted_gain;
+      poi.score = point.score;
+      state.points_of_interest.push_back(std::move(poi));
+    }
+
+    response->success = true;
+    response->message = "visibility coverage state calculated";
+  }
+
   WaitStatus perform_program_navigation(
     const std::shared_ptr<ProgramGoalHandle> & goal_handle,
     const geometry_msgs::msg::PoseStamped & target_pose,
@@ -2557,8 +2739,8 @@ private:
         error = "explore-and-record canceled during visibility coverage";
         return CoverageStatus::canceled;
       }
-      const auto stats_before = planner->coverage_stats();
-      if (combined_visibility_coverage(stats_before) >=
+      const auto coverage_report = planner->coverage_report(current, 1U);
+      if (combined_visibility_coverage(coverage_report.stats) >=
         visibility_completion_ratio_)
       {
         return CoverageStatus::complete;
@@ -2571,11 +2753,12 @@ private:
         return CoverageStatus::failed;
       }
 
-      const auto selection = planner->select_next(current);
+      const auto selection = coverage_report.points_of_interest.empty() ?
+        ViewpointSelection{} : coverage_report.points_of_interest.front();
       if (!selection.valid()) {
         error = "visibility planner exhausted candidates at " +
           std::to_string(
-          combined_visibility_coverage(stats_before) * 100.0) +
+          combined_visibility_coverage(coverage_report.stats) * 100.0) +
           "% observable coverage";
         return CoverageStatus::failed;
       }
@@ -3445,6 +3628,7 @@ private:
   std::string exploration_bag_status_topic_;
   std::string visibility_map_topic_;
   std::string visibility_target_pose_topic_;
+  std::string visibility_coverage_service_;
   std::string global_frame_;
   std::string robot_base_frame_;
   std::string behavior_tree_;
@@ -3478,6 +3662,7 @@ private:
   double visibility_completion_ratio_{0.98};
   int64_t visibility_max_viewpoints_{0};
   int64_t visibility_max_navigation_failures_{3};
+  int64_t visibility_coverage_max_points_{8};
 
   rclcpp::Client<RegistryService>::SharedPtr registry_client_;
   rclcpp::Client<RegistrySaveService>::SharedPtr registry_save_client_;
@@ -3491,6 +3676,8 @@ private:
   rclcpp_action::Server<ProgramAction>::SharedPtr explore_frontier_server_;
   rclcpp::Service<ExploreService>::SharedPtr explore_service_;
   rclcpp::Service<SaveMapService>::SharedPtr save_map_service_;
+  rclcpp::Service<VisibilityCoverageService>::SharedPtr
+    visibility_coverage_service_server_;
   rclcpp::CallbackGroup::SharedPtr frontier_client_group_;
   rclcpp::CallbackGroup::SharedPtr explore_service_group_;
   rclcpp::CallbackGroup::SharedPtr save_map_client_group_;

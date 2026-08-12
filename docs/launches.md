@@ -432,6 +432,9 @@ frontier_exploration_ctl stop -q
 
 The standalone Muto wrapper autostarts exploration. Its `stop -q` option also
 terminates the explorer process without stopping the parent Nav2 pipeline.
+The wrapper disables visibility-gain goal preemption so SLAM refreshes cannot
+repeatedly cancel and resend the same active Nav2 goal. Blocked-goal skipping
+and the independent `0.25 m` close-enough completion guard remain enabled.
 
 For command-layer-controlled exploration and object recording, use the
 `/explore_and_record` action. It periodically pauses frontier navigation, uses

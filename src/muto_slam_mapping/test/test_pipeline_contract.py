@@ -150,6 +150,20 @@ def test_navigation_recovery_does_not_move_a_trapped_hexapod():
         assert '<BackUp ' not in text
 
 
+def test_frontier_goal_stays_stable_while_nav2_is_driving():
+    config = _load_yaml(
+        PACKAGE_ROOT / 'config' / 'frontier_exploration_params.yaml'
+    )
+    parameters = config['frontier_explorer']['ros__parameters']
+
+    # Do not cancel and redispatch an accepted goal merely because a SLAM map
+    # refresh changes its estimated visibility gain. Genuine blocked goals and
+    # near-arrival completion remain independent safeguards.
+    assert parameters['goal_preemption_enabled'] is False
+    assert parameters['goal_skip_on_blocked_goal'] is True
+    assert parameters['goal_preemption_complete_if_within_m'] == 0.25
+
+
 def test_velocity_smoother_is_the_final_cmd_vel_limiter():
     launch_text = (
         PACKAGE_ROOT / 'launch' / 'nav2_planner_controller_launch.py'

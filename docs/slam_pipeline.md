@@ -226,6 +226,12 @@ Optional frontier exploration after Nav2 is ready:
 ros2 launch muto_slam_mapping frontier_exploration_launch.py
 ```
 
+The Muto frontier profile keeps an accepted Nav2 goal stable while the robot is
+driving. Visibility-gain goal preemption is disabled because live SLAM refreshes
+were canceling and redispatching effectively identical goals. A frontier can
+still be skipped when it becomes blocked, and arrival within `0.25 m` still
+counts as complete when Nav2 has not yet reported success.
+
 `online_async_mapping_launch.py` owns only SLAM Toolbox. The top-level pipeline
 owns camera preprocessing independently when `launch_camera_obstacle_scan:=true`.
 For layer-by-layer startup, launch the camera component once when depth obstacles

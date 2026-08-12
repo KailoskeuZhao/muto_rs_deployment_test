@@ -251,7 +251,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'approach_robot_radius',
-            default_value='0.16',
+            default_value='0.26',
             description='Robot-radius lower bound for object standoff.',
         ),
         DeclareLaunchArgument(
@@ -320,14 +320,6 @@ def generate_launch_description():
             description='Nav2 Spin behavior action.',
         ),
         DeclareLaunchArgument(
-            'rotate_cmd_vel_topic',
-            default_value='/cmd_vel_nav',
-            description=(
-                'Velocity topic used by the model commander direct rotate '
-                'primitive before nav2_velocity_smoother limits it.'
-            ),
-        ),
-        DeclareLaunchArgument(
             'rotate_executable_yaw_velocity',
             default_value='0.30',
             description=(
@@ -346,16 +338,6 @@ def generate_launch_description():
             'rotate_goal_tolerance',
             default_value='0.08',
             description='Odometry yaw tolerance for direct rotate completion.',
-        ),
-        DeclareLaunchArgument(
-            'rotate_control_period',
-            default_value='0.05',
-            description='Direct rotate cmd_vel publish period in seconds.',
-        ),
-        DeclareLaunchArgument(
-            'rotate_stop_publish_count',
-            default_value='3',
-            description='Number of zero Twist messages sent after direct rotate.',
         ),
         DeclareLaunchArgument(
             'registry_save_service',
@@ -1142,9 +1124,6 @@ def generate_launch_description():
                         'visibility_coverage_service'
                     ),
                     'spin_action': LaunchConfiguration('spin_action'),
-                    'rotate_cmd_vel_topic': LaunchConfiguration(
-                        'rotate_cmd_vel_topic'
-                    ),
                     'rotate_executable_yaw_velocity': ParameterValue(
                         LaunchConfiguration('rotate_executable_yaw_velocity'),
                         value_type=float,
@@ -1158,14 +1137,6 @@ def generate_launch_description():
                     'rotate_goal_tolerance': ParameterValue(
                         LaunchConfiguration('rotate_goal_tolerance'),
                         value_type=float,
-                    ),
-                    'rotate_control_period': ParameterValue(
-                        LaunchConfiguration('rotate_control_period'),
-                        value_type=float,
-                    ),
-                    'rotate_stop_publish_count': ParameterValue(
-                        LaunchConfiguration('rotate_stop_publish_count'),
-                        value_type=int,
                     ),
                     'registry_save_service': LaunchConfiguration(
                         'registry_save_service'

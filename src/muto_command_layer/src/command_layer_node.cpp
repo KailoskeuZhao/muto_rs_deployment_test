@@ -533,7 +533,7 @@ private:
     declare_parameter<std::string>("global_frame", "map");
     declare_parameter<std::string>("robot_base_frame", "base_frame");
     declare_parameter<double>("approach_distance", 0.75);
-    declare_parameter<double>("approach_robot_radius", 0.16);
+    declare_parameter<double>("approach_robot_radius", 0.26);
     declare_parameter<double>("approach_start_snap_distance", 0.5);
     declare_parameter<int64_t>("approach_maximum_cost", 252);
     declare_parameter<double>("registry_timeout", 3.0);
@@ -3678,7 +3678,7 @@ private:
   std::string robot_base_frame_;
   std::string behavior_tree_;
   double approach_distance_{0.75};
-  double approach_robot_radius_{0.16};
+  double approach_robot_radius_{0.26};
   double approach_start_snap_distance_{0.5};
   int64_t approach_maximum_cost_{252};
   double registry_timeout_{3.0};

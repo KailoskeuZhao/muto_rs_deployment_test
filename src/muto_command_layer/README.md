@@ -625,6 +625,9 @@ re-queries `/command_layer/visibility_coverage` immediately before dispatch
 and sends Nav2 only to the current top-ranked POI. Each operation otherwise
 has one purpose: frontier travel, POI navigation, in-place rotation,
 stationary detector dwell, or registry persistence.
+Navigation to a visibility POI is canceled after 12 seconds without 0.05 m of
+odometry progress. Two consecutive stalls abort the mission rather than
+dispatching more POIs to a physically trapped robot.
 The recent primitive history and outcome are returned in
 the next mission-state request so the model may change order, defer, retry, or
 choose another primitive. Every scheduling request contains
@@ -742,7 +745,7 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
 - `global_costmap_service`: Nav2 master-costmap query service; default
   `/global_costmap/get_costmap`.
 - `approach_robot_radius`: lower bound for the object-centered approach ring;
-  default `0.16`, matching the checked-in Nav2 robot radius. It does not
+  default `0.26`, matching the checked-in Nav2 walking-envelope radius. It does not
   duplicate Nav2 footprint inflation.
 - `approach_maximum_cost`: largest raw Nav2 cost considered traversable;
   default `252`.
@@ -825,10 +828,12 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
 - `max_rotation_radians`, `max_observation_seconds`, `spin_time_allowance`,
   `rotate_executable_yaw_velocity`, `rotate_timeout_reference_yaw_velocity`,
   `checkpoint_timeout`, and `observation_min_detection_frames`: local bounds
-  for the separated rotate, observe, and checkpoint primitives. Direct rotate
-  uses the same conservative physical yaw envelope as Nav2 (`0.30 rad/s` by
-  default), sizes its timeout with a conservative ground-response rate, and
-  accepts completion only from odometry.
+  for the separated rotate, observe, and checkpoint primitives. Rotate uses
+  Nav2 Spin so the local costmap checks the 0.27 m effective footprint, then
+  accepts completion only after odometry verifies the requested yaw.
+- `navigation_progress_distance_m`, `navigation_no_progress_timeout`, and
+  `max_consecutive_navigation_no_progress`: stop stalled POI navigation after
+  `0.05 m`/`12 s` and abort after two consecutive stalls.
 - `minimum_explore_progress_distance_m`: displacement required before a
   bounded frontier interval counts as useful travel.
 - `minimum_no_match_travel_distance_m`, `minimum_no_match_observations`,

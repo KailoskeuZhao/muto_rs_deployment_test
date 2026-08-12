@@ -24,9 +24,9 @@ command_layer:
 
     # Select a reachable Nav2 global-costmap cell on or beyond this radius.
     approach_distance: 0.75
-    # The radius is a lower bound for object standoff only. Nav2's configured
-    # footprint and inflation layer provide collision clearance in the costmap.
-    approach_robot_radius: 0.16
+    # Match Nav2's measured walking-envelope radius. The approach planner must not
+    # generate a standoff ring that is valid only for the central body.
+    approach_robot_radius: 0.26
     approach_start_snap_distance: 0.5
     # Nav2 costs 253 (inscribed), 254 (lethal), and 255 (unknown) stay blocked.
     approach_maximum_cost: 252
@@ -155,7 +155,6 @@ model_commander:
     navigate_to_pose_action: /navigate_to_pose
     visibility_coverage_service: /command_layer/visibility_coverage
     spin_action: /spin
-    rotate_cmd_vel_topic: /cmd_vel_nav
     registry_save_service: /sam2/save_stored_objects
     detection_heartbeat_topic: /sam2/detection_heartbeat
     registry_topic: /sam2/stored_objects
@@ -198,17 +197,13 @@ model_commander:
     max_rotation_radians: 6.283185307179586
     max_observation_seconds: 30.0
     spin_time_allowance: 15.0
-    # Model-commanded rotate publishes to the pre-smoother Nav2 velocity topic
-    # so nav2_velocity_smoother remains the final hard limiter before
-    # hardware. Completion remains based on odometry, not feed-forward
-    # prediction.
+    # Model-commanded rotate uses Nav2 Spin, retaining local-costmap collision
+    # checks. Completion is additionally verified from odometry.
     rotate_executable_yaw_velocity: 0.30
     # Ground motion can be slower than commanded-foot geometry. Use a
     # conservative observed-rate floor only for timeout sizing.
     rotate_timeout_reference_yaw_velocity: 0.15
     rotate_goal_tolerance: 0.08
-    rotate_control_period: 0.05
-    rotate_stop_publish_count: 3
     checkpoint_timeout: 10.0
     observation_min_detection_frames: 3
     # Frontier time is not coverage. A step below 0.10 m is reported as no
@@ -216,6 +211,12 @@ model_commander:
     # verified travel plus the other evidence below. These may occur in any
     # order.
     minimum_explore_progress_distance_m: 0.10
+    # Cancel an observation-POI Nav2 goal if odometry makes less than 0.05 m
+    # progress for 12 s. Two consecutive stalls end the mission rather than
+    # repeatedly selecting new POIs while the robot is physically trapped.
+    navigation_progress_distance_m: 0.05
+    navigation_no_progress_timeout: 12.0
+    max_consecutive_navigation_no_progress: 2
     minimum_no_match_travel_distance_m: 0.50
     minimum_no_match_observations: 4
     minimum_no_match_rotation_radians: 6.283185307179586

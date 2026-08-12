@@ -97,6 +97,9 @@ def test_both_nav2_costmaps_use_independent_sensor_sources():
         parameters = config[costmap_name][costmap_name]['ros__parameters']
         layer = parameters['obstacle_layer']
         assert set(layer['observation_sources'].split()) == {'lidar', 'camera'}
+        assert parameters['robot_radius'] == 0.26
+        assert parameters['footprint_padding'] == 0.01
+        assert layer['footprint_clearing_enabled'] is False
 
         lidar = layer['lidar']
         assert lidar['topic'] == '/lidar/filtered_laserscan'
@@ -138,21 +141,21 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
     assert behavior['rotational_acc_lim'] == 0.6
 
 
+def test_navigation_recovery_does_not_move_a_trapped_hexapod():
+    for name in ('muto_nav_to_pose.xml', 'muto_nav_through_poses.xml'):
+        text = (PACKAGE_ROOT / 'behavior_trees' / name).read_text(
+            encoding='utf-8')
+        assert '<Wait wait_duration="2.0"/>' in text
+        assert '<Spin ' not in text
+        assert '<BackUp ' not in text
+
+
 def test_velocity_smoother_is_the_final_cmd_vel_limiter():
     launch_text = (
         PACKAGE_ROOT / 'launch' / 'nav2_planner_controller_launch.py'
     ).read_text(encoding='utf-8')
-    command_config = _load_yaml(
-        COMMAND_LAYER_ROOT / 'config' / 'command_layer.yaml'
-    )['model_commander']['ros__parameters']
-    command_launch_defaults, _ = _launch_defaults(
-        COMMAND_LAYER_ROOT / 'launch' / 'command_layer_launch.py'
-    )
-
     assert "('cmd_vel', 'cmd_vel_nav')" in launch_text
     assert "('cmd_vel_smoothed', 'cmd_vel')" in launch_text
-    assert command_config['rotate_cmd_vel_topic'] == '/cmd_vel_nav'
-    assert command_launch_defaults['rotate_cmd_vel_topic'] == '/cmd_vel_nav'
 
 
 def test_camera_launch_is_camera_only_and_matches_declared_fov():

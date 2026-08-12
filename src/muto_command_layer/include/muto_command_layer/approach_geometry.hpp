@@ -28,7 +28,7 @@ struct ApproachGrid
 struct ApproachPlannerConfig
 {
   int maximum_traversable_cost{252};
-  double robot_radius{0.16};
+  double robot_radius{0.26};
   double minimum_standoff{0.75};
   double start_snap_distance{0.5};
 };

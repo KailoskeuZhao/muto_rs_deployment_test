@@ -8,7 +8,7 @@ import time
 import traceback
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped
 from model_commander_config import (
     declare_parameters,
     read_parameters,
@@ -55,7 +55,7 @@ from muto_command_layer.msg import VisibilityObservation
 from muto_command_layer.srv import GetVisibilityCoverage
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateToPose, Spin
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
@@ -107,6 +107,12 @@ class ModelCommanderNode(Node):
             self,
             NavigateToPose,
             self.navigate_to_pose_action,
+            callback_group=self._callback_group,
+        )
+        self._spin_client = ActionClient(
+            self,
+            Spin,
+            self.spin_action,
             callback_group=self._callback_group,
         )
         self._checkpoint_client = self.create_client(
@@ -243,8 +249,6 @@ class ModelCommanderNode(Node):
         )
         self._decision_event_publisher = self.create_publisher(
             String, self.decision_event_topic, trace_qos)
-        self._rotate_cmd_vel_publisher = self.create_publisher(
-            Twist, self.rotate_cmd_vel_topic, 1)
         image_trace_qos = QoSProfile(
             depth=4,
             durability=DurabilityPolicy.VOLATILE,
@@ -1771,6 +1775,37 @@ class ModelCommanderNode(Node):
         nav_goal.pose.pose.orientation.z = math.sin(yaw * 0.5)
         nav_goal.pose.pose.orientation.w = math.cos(yaw * 0.5)
         child_token = object()
+        starting_pose = self._robot_pose_snapshot()
+        progress_anchor = starting_pose
+        last_progress_time = time.monotonic()
+        maximum_displacement_m = 0.0
+
+        def update_navigation_progress():
+            nonlocal progress_anchor
+            nonlocal last_progress_time
+            nonlocal maximum_displacement_m
+            current = self._robot_pose_snapshot()
+            if current is None or starting_pose is None or \
+                    current.frame_id != starting_pose.frame_id:
+                return
+            maximum_displacement_m = max(
+                maximum_displacement_m,
+                math.hypot(
+                    current.x - starting_pose.x,
+                    current.y - starting_pose.y,
+                ),
+            )
+            if progress_anchor is None or \
+                    progress_anchor.frame_id != current.frame_id:
+                progress_anchor = current
+                last_progress_time = time.monotonic()
+                return
+            if math.hypot(
+                    current.x - progress_anchor.x,
+                    current.y - progress_anchor.y) >= \
+                    self.navigation_progress_distance_m:
+                progress_anchor = current
+                last_progress_time = time.monotonic()
 
         def feedback_callback(message):
             feedback = message.feedback
@@ -1845,6 +1880,7 @@ class ModelCommanderNode(Node):
         try:
             while not result_future.done():
                 self._check_parent_state(goal_handle, deadline)
+                update_navigation_progress()
                 revision, _, _ = self._registry_state()
                 if revision != expected_revision:
                     self._cancel_goal_and_wait(child_handle, result_future)
@@ -1857,8 +1893,26 @@ class ModelCommanderNode(Node):
                         'visibility_coverage': coverage,
                         'selected_poi': selected,
                     }
+                if time.monotonic() - last_progress_time >= \
+                        self.navigation_no_progress_timeout:
+                    self._cancel_goal_and_wait(child_handle, result_future)
+                    terminal_confirmed = True
+                    return {
+                        'outcome': 'no_spatial_progress',
+                        'message': (
+                            'observation-POI navigation was stopped after '
+                            f'{self.navigation_no_progress_timeout:.1f} s '
+                            'without measurable odometry progress'),
+                        'visibility_coverage': coverage,
+                        'selected_poi': selected,
+                        'requested_path_length_m': selected.get(
+                            'path_length_m'),
+                        'observed_navigation_distance_m': round(
+                            maximum_displacement_m, 4),
+                    }
                 time.sleep(self.monitor_period)
             self._check_parent_state(goal_handle, deadline)
+            update_navigation_progress()
             terminal_confirmed = True
             try:
                 wrapped = result_future.result()
@@ -1884,6 +1938,18 @@ class ModelCommanderNode(Node):
                         self._active_child_token = None
 
         if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            if maximum_displacement_m < self.navigation_progress_distance_m:
+                return {
+                    'outcome': 'no_spatial_progress',
+                    'message': (
+                        'observation-POI navigation ended without measurable '
+                        'odometry progress'),
+                    'visibility_coverage': coverage,
+                    'selected_poi': selected,
+                    'requested_path_length_m': selected.get('path_length_m'),
+                    'observed_navigation_distance_m': round(
+                        maximum_displacement_m, 4),
+                }
             raise CommanderFailure(
                 'observation-POI navigation did not succeed')
         return {
@@ -1892,6 +1958,8 @@ class ModelCommanderNode(Node):
             'visibility_coverage': coverage,
             'selected_poi': selected,
             'requested_path_length_m': selected.get('path_length_m'),
+            'observed_navigation_distance_m': round(
+                maximum_displacement_m, 4),
         }
 
     def _assert_registry_revision(self, expected_revision):
@@ -1899,12 +1967,6 @@ class ModelCommanderNode(Node):
         if revision != expected_revision:
             raise StalePlan(
                 'confirmed-object set changed before command dispatch')
-
-    def _publish_rotate_stop(self):
-        stop = Twist()
-        for _ in range(self.rotate_stop_publish_count):
-            self._rotate_cmd_vel_publisher.publish(stop)
-            time.sleep(self.rotate_control_period)
 
     def _run_direct_rotate(
             self, rotation_radians, expected_revision, goal_handle, deadline,
@@ -1933,23 +1995,8 @@ class ModelCommanderNode(Node):
                 'odometry is unavailable; direct rotate cannot verify yaw')
 
         child_token = object()
-        with self._state_lock:
-            self._active_child_token = child_token
-
-        yaw_rate = math.copysign(
-            float(self.rotate_executable_yaw_velocity),
-            float(rotation_radians),
-        )
-        command = Twist()
-        command.angular.z = yaw_rate
-        required_observed = max(
-            0.0, target_radians - float(self.rotate_goal_tolerance))
-        # Commanded gait geometry may exceed ground motion because of slip and
-        # servo dynamics. Keep timeout estimation independent of the nominal
-        # feed-forward command so odometry, rather than a geometric prediction,
-        # remains authoritative for completion.
         timeout_yaw_rate = min(
-            abs(yaw_rate),
+            float(self.rotate_executable_yaw_velocity),
             float(self.rotate_timeout_reference_yaw_velocity),
         )
         run_timeout = max(
@@ -1959,21 +2006,85 @@ class ModelCommanderNode(Node):
         rotate_deadline = min(deadline, time.monotonic() + run_timeout)
         max_observed = 0.0
 
+        spin_goal = Spin.Goal()
+        spin_goal.target_yaw = float(rotation_radians)
+        allowance_seconds = max(
+            1, int(math.ceil(rotate_deadline - time.monotonic())))
+        spin_goal.time_allowance.sec = allowance_seconds
+
+        def feedback_callback(message):
+            nonlocal max_observed
+            max_observed = max(
+                max_observed,
+                abs(float(message.feedback.angular_distance_traveled)),
+            )
+
         self._publish_feedback(
             goal_handle,
             LookForObject.Feedback.PHASE_EXECUTING,
-            'direct executable yaw rotation is active',
+            'collision-checked Nav2 rotation is active',
             'rotate',
             planning_steps,
             commands_dispatched,
             child_token=child_token,
         )
 
+        with self._state_lock:
+            self._active_child_token = child_token
         try:
-            while time.monotonic() < rotate_deadline:
+            child_handle = self._send_goal(
+                self._spin_client,
+                spin_goal,
+                goal_handle,
+                rotate_deadline,
+                'Nav2 Spin action server',
+                feedback_callback=feedback_callback,
+                pre_dispatch_callback=lambda: self._assert_registry_revision(
+                    expected_revision),
+            )
+        except StalePlan:
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before collision-checked rotation',
+                'completed_cycles': 0,
+                'requested_rotation_radians': round(
+                    float(rotation_radians), 6),
+                'observed_rotation_radians': 0.0,
+            }
+        except OwnedGoalStateUnknown:
+            self._mark_ownership_uncertain(
+                'Nav2 rotation dispatch state is unknown; model commander is '
+                'latched closed until restart')
+            raise
+        except Exception:
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+            raise
+
+        with self._state_lock:
+            self._active_child_goal = child_handle
+        try:
+            result_future = child_handle.get_result_async()
+        except Exception as error:
+            self._cancel_goal_best_effort(child_handle)
+            self._mark_ownership_uncertain(
+                'accepted Nav2 rotation cannot be monitored; model commander '
+                'is latched closed until restart')
+            raise OwnedGoalStateUnknown(
+                'could not monitor accepted Nav2 Spin goal') from error
+
+        terminal_confirmed = False
+        try:
+            while not result_future.done():
                 self._check_parent_state(goal_handle, deadline)
                 revision, _, _ = self._registry_state()
                 if revision != expected_revision:
+                    self._cancel_goal_and_wait(child_handle, result_future)
+                    terminal_confirmed = True
                     return {
                         'outcome': 'registry_changed',
                         'message': 'registry changed during direct rotation',
@@ -1983,30 +2094,52 @@ class ModelCommanderNode(Node):
                         'observed_rotation_radians': round(max_observed, 6),
                     }
                 current_pose = self._robot_pose_snapshot()
-                if current_pose is not None:
-                    observed = abs(
-                        angle_delta(current_pose.yaw, start_pose.yaw))
-                    max_observed = max(max_observed, observed)
-                    if max_observed >= required_observed:
-                        return {
-                            'outcome': 'completed',
-                            'message': 'direct rotation completed from odometry',
-                            'completed_cycles': 1,
-                            'requested_rotation_radians': round(
-                                float(rotation_radians), 6),
-                            'observed_rotation_radians': round(max_observed, 6),
-                        }
-                self._rotate_cmd_vel_publisher.publish(command)
-                time.sleep(self.rotate_control_period)
+                if current_pose is not None and \
+                        current_pose.frame_id == start_pose.frame_id:
+                    max_observed = max(
+                        max_observed,
+                        abs(angle_delta(current_pose.yaw, start_pose.yaw)),
+                    )
+                time.sleep(self.monitor_period)
+            self._check_parent_state(goal_handle, deadline)
+            terminal_confirmed = True
+            wrapped = result_future.result()
+        except (CommanderCanceled, CommanderFailure, MissionBudgetExhausted):
+            self._cancel_goal_and_wait(child_handle, result_future)
+            terminal_confirmed = True
+            raise
         finally:
-            self._publish_rotate_stop()
-            with self._state_lock:
-                if self._active_child_token is child_token:
-                    self._active_child_token = None
+            if terminal_confirmed:
+                with self._state_lock:
+                    if self._active_child_goal is child_handle:
+                        self._active_child_goal = None
+                    if self._active_child_token is child_token:
+                        self._active_child_token = None
 
-        raise CommanderFailure(
-            'direct rotation timed out before odometry reached the requested yaw '
-            f'(observed {max_observed:.3f} rad of {target_radians:.3f} rad)')
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise CommanderFailure(
+                'Nav2 rejected or failed the collision-checked rotation')
+        current_pose = self._robot_pose_snapshot()
+        if current_pose is not None and \
+                current_pose.frame_id == start_pose.frame_id:
+            max_observed = max(
+                max_observed,
+                abs(angle_delta(current_pose.yaw, start_pose.yaw)),
+            )
+        required_observed = max(
+            0.0, target_radians - float(self.rotate_goal_tolerance))
+        if max_observed < required_observed:
+            raise CommanderFailure(
+                'Nav2 rotation reported success without sufficient measured '
+                f'yaw ({max_observed:.3f} of {target_radians:.3f} rad)')
+        return {
+            'outcome': 'completed',
+            'message': 'collision-checked rotation completed from odometry',
+            'completed_cycles': 1,
+            'requested_rotation_radians': round(
+                float(rotation_radians), 6),
+            'observed_rotation_radians': round(max_observed, 6),
+        }
 
     def _run_primitive(
             self, primitive_name, exploration_seconds, rotation_radians,
@@ -2538,6 +2671,7 @@ class ModelCommanderNode(Node):
         completed_primitives = 0
         consecutive_planner_failures = 0
         consecutive_command_failures = 0
+        consecutive_navigation_no_progress = 0
         consecutive_active_inspection_failures = 0
         visual_interrupts = 0
         last_command = 'none'
@@ -3445,7 +3579,17 @@ class ModelCommanderNode(Node):
                         if result is not None:
                             return result
                         continue
+                    if program['outcome'] == 'no_spatial_progress':
+                        consecutive_navigation_no_progress += 1
+                        if consecutive_navigation_no_progress >= \
+                                self.max_consecutive_navigation_no_progress:
+                            raise CommanderFailure(
+                                'observation-POI navigation repeatedly made '
+                                'no physical progress; stopping the mission '
+                                'instead of dispatching another goal')
+                        continue
                     if program['outcome'] == 'completed':
+                        consecutive_navigation_no_progress = 0
                         completed_primitives += 1
                         delta = memory_entry.get('delta_pose') or {}
                         completed_exploration_distance_m += float(

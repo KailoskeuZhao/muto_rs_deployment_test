@@ -5,7 +5,7 @@
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="4" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <Sequence name="PlanAndSmoothPath">
@@ -22,11 +22,13 @@
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
-        <RoundRobin name="RecoveryActions">
-          <Spin spin_dist="0.785"/>
-          <Wait wait_duration="2.0"/>
-          <BackUp backup_dist="0.30" backup_speed="0.15"/>
-        </RoundRobin>
+        <!--
+          A trapped hexapod must not spin its legs through nearby furniture or
+          back up blindly.  Pause once so freshly marked obstacles can trigger
+          a replan; if the retry still fails, return failure to the owning
+          action instead of issuing an autonomous moving recovery.
+        -->
+        <Wait wait_duration="2.0"/>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

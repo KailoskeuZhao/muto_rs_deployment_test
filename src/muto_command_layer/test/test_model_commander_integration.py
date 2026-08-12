@@ -11,7 +11,6 @@ import time
 import uuid
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
 from muto_command_layer.action import (
     ExploreAndRecord,
     FindObject,
@@ -22,7 +21,7 @@ from muto_command_layer.msg import ObjectMatch, VisibilityPointOfInterest
 from muto_command_layer.srv import GetVisibilityCoverage
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateToPose, Spin
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
@@ -103,7 +102,6 @@ class FakeCommanderBackends(Node):
         self.navigate_action = f'{prefix}/navigate_to_pose'
         self.visibility_service = f'{prefix}/visibility_coverage'
         self.spin_action = f'{prefix}/spin'
-        self.rotate_cmd_vel_topic = f'{prefix}/cmd_vel'
         self.odom_topic = f'{prefix}/odometry/filtered'
         self.checkpoint_service = f'{prefix}/save_stored_objects'
         self.detection_heartbeat_topic = f'{prefix}/detection_heartbeat'
@@ -148,9 +146,8 @@ class FakeCommanderBackends(Node):
         self.camera_sequence = 0
         self._yaw = 0.0
         self._x = 0.0
-        self._last_rotate_cmd = 0.0
-        self._rotate_command_seen = False
         self.simulate_explore_motion = True
+        self.simulate_navigate_motion = True
 
         self.vlm_server = ActionServer(
             self,
@@ -192,6 +189,14 @@ class FakeCommanderBackends(Node):
             cancel_callback=self.accept_cancel,
             callback_group=self._callback_group,
         )
+        self.spin_server = ActionServer(
+            self,
+            Spin,
+            self.spin_action,
+            execute_callback=self.execute_spin,
+            cancel_callback=self.accept_cancel,
+            callback_group=self._callback_group,
+        )
         self.visibility_server = self.create_service(
             GetVisibilityCoverage,
             self.visibility_service,
@@ -222,12 +227,6 @@ class FakeCommanderBackends(Node):
         self.odom_publisher = self.create_publisher(
             Odometry, self.odom_topic, 10)
         self.odom_timer = self.create_timer(0.02, self.publish_odometry)
-        self.rotate_subscription = self.create_subscription(
-            Twist,
-            self.rotate_cmd_vel_topic,
-            self.rotate_cmd_callback,
-            10,
-        )
         self.detection_heartbeat_publisher = self.create_publisher(
             Header, self.detection_heartbeat_topic, 10)
         self.detections_publisher = self.create_publisher(
@@ -428,15 +427,47 @@ class FakeCommanderBackends(Node):
             round(float(pose.position.x), 3),
             round(float(pose.position.y), 3),
         ))
-        while not goal_handle.is_cancel_requested and \
-                not self.release_program.is_set():
-            time.sleep(0.01)
+        if self.simulate_navigate_motion:
+            while not goal_handle.is_cancel_requested and \
+                    not self.release_program.is_set():
+                time.sleep(0.01)
+        else:
+            while not goal_handle.is_cancel_requested:
+                time.sleep(0.01)
         result = NavigateToPose.Result()
         if goal_handle.is_cancel_requested:
+            self.program_cancellations += 1
             goal_handle.canceled()
             return result
         with self._lock:
             self._x = float(pose.position.x)
+        self.publish_odometry()
+        goal_handle.succeed()
+        return result
+
+    def execute_spin(self, goal_handle):
+        self.primitive_names.append('rotate')
+        self.program_cycles.append(1)
+        target = float(goal_handle.request.target_yaw)
+        feedback = Spin.Feedback()
+        while not goal_handle.is_cancel_requested and \
+                not self.release_program.is_set():
+            with self._lock:
+                self._yaw += math.copysign(0.03, target)
+                traveled = abs(self._yaw)
+            feedback.angular_distance_traveled = min(abs(target), traveled)
+            goal_handle.publish_feedback(feedback)
+            self.publish_odometry()
+            if traveled >= abs(target):
+                break
+            time.sleep(0.01)
+        result = Spin.Result()
+        if goal_handle.is_cancel_requested:
+            self.program_cancellations += 1
+            goal_handle.canceled()
+            return result
+        with self._lock:
+            self._yaw = target
         self.publish_odometry()
         goal_handle.succeed()
         return result
@@ -483,29 +514,8 @@ class FakeCommanderBackends(Node):
         self.primitive_names.append('explore_frontier')
         return self.execute_program(goal_handle)
 
-    def rotate_cmd_callback(self, message):
-        angular_z = float(message.angular.z)
-        with self._lock:
-            was_active = abs(self._last_rotate_cmd) > 1.0e-6
-            self._last_rotate_cmd = angular_z
-            if abs(angular_z) > 1.0e-6 and not self._rotate_command_seen:
-                self._rotate_command_seen = True
-                self.primitive_names.append('rotate')
-                self.program_cycles.append(1)
-            if abs(angular_z) <= 1.0e-6 and was_active and \
-                    not self.release_program.is_set():
-                self.program_cancellations += 1
-            if abs(angular_z) <= 1.0e-6:
-                self._rotate_command_seen = False
-
     def publish_odometry(self):
         with self._lock:
-            angular_z = self._last_rotate_cmd
-            if abs(angular_z) > 1.0e-6:
-                if self.release_program.is_set():
-                    self._yaw += math.copysign(0.35, angular_z)
-                else:
-                    self._yaw += angular_z * 0.02
             yaw = self._yaw
             x = self._x
         odom = Odometry()
@@ -654,7 +664,6 @@ def running_commander():
             '-p', ('visibility_coverage_service:='
                    f'{backend.visibility_service}'),
             '-p', f'spin_action:={backend.spin_action}',
-            '-p', f'rotate_cmd_vel_topic:={backend.rotate_cmd_vel_topic}',
             '-p', f'registry_save_service:={backend.checkpoint_service}',
             '-p', ('detection_heartbeat_topic:='
                    f'{backend.detection_heartbeat_topic}'),
@@ -674,8 +683,6 @@ def running_commander():
             '-p', 'default_max_planning_steps:=12',
             '-p', 'rotate_executable_yaw_velocity:=0.19',
             '-p', 'rotate_goal_tolerance:=0.04',
-            '-p', 'rotate_control_period:=0.01',
-            '-p', 'rotate_stop_publish_count:=1',
             '-p', 'planner_retry_initial_delay:=0.05',
             '-p', 'planner_retry_max_delay:=0.1',
             '-p', 'command_retry_initial_delay:=0.05',
@@ -688,6 +695,9 @@ def running_commander():
             '-p', 'minimum_no_match_observations:=1',
             '-p', 'minimum_no_match_rotation_radians:=1.0',
             '-p', 'minimum_explore_progress_distance_m:=0.1',
+            '-p', 'navigation_progress_distance_m:=0.05',
+            '-p', 'navigation_no_progress_timeout:=0.3',
+            '-p', 'max_consecutive_navigation_no_progress:=2',
             '-p', 'minimum_no_match_travel_distance_m:=0.5',
             '-p', 'observation_min_detection_frames:=1',
             '-p', 'monitor_period:=0.01',
@@ -987,12 +997,38 @@ def test_commander_uses_visibility_poi_helper_and_records_context(
     assert result_event['selected_poi']['candidate_index'] == 7
     assert result_event['visibility_coverage']['available']
     assert result_event['delta_pose']['distance_xy'] > 0.0
-
     wait_future(goal_handle.cancel_goal_async())
     wrapped = wait_future(goal_handle.get_result_async())
     assert wrapped.status == GoalStatus.STATUS_CANCELED
     assert backend.visibility_queries >= 2
 
+
+def test_repeated_stationary_poi_navigation_stops_the_mission(
+        running_commander):
+    backend, client = running_commander
+    backend.simulate_navigate_motion = False
+    backend.queue_decision(
+        'explore_frontier', exploration_seconds=10.0,
+        reason='establish mapped-space search progress')
+    backend.queue_decision(
+        'navigate_to_observation_poi', reason='inspect first mapped POI')
+    backend.queue_decision(
+        'navigate_to_observation_poi', reason='inspect second mapped POI')
+    backend.release_program.set()
+
+    wrapped = wait_future(send_mission(client).get_result_async(), timeout=8.0)
+
+    assert wrapped.status == GoalStatus.STATUS_ABORTED
+    assert not wrapped.result.success
+    assert 'repeatedly made no physical progress' in wrapped.result.message
+    stalled = [
+        event for event in backend.trace_events
+        if event.get('command') == 'navigate_to_observation_poi' and
+        event.get('outcome') == 'no_spatial_progress'
+    ]
+    assert len(stalled) == 2
+    assert len(backend.poi_navigation_goals) == 2
+    assert backend.program_cancellations >= 2
 
 def test_initial_planning_does_not_block_on_visibility_coverage(
         running_commander):

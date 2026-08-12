@@ -36,8 +36,7 @@ joint angles. Their planar envelope is approximately:
 | Full X bounds | -0.239 m to 0.239 m |
 | Full Y bounds | -0.264 m to 0.264 m |
 
-A Nav2 `robot_radius` of 0.16 m therefore represents the central body, not the
-legs. A radius of approximately 0.30 m represents the zero-pose leg envelope;
-the existing 0.01 m costmap footprint padding would make its effective radius
-0.31 m. The final deployed value should still be checked against physical leg
-motion, gait poses, mounts, and cabling.
+Mesh zero-pose geometry reaches 0.295 m, but the field-measured walking
+envelope used for deployment is approximately 0.26 m. Nav2 therefore uses a
+0.26 m radius plus 0.01 m costmap padding, for an effective 0.27 m collision
+radius. Recheck this measured value after gait, mount, or cabling changes.

@@ -98,19 +98,23 @@ local_costmap:
       transform_tolerance: 0.2
       global_frame: odom
       robot_base_frame: base_frame
-      # Body + fixed sensor package from the MUTO URDF is ~0.145 m radius.
-      # Full zero-pose leg collision radius is ~0.30 m and is intentionally not used here.
+      # Field-measured walking envelope is approximately 0.26 m radius. The
+      # 0.01 m footprint padding below makes the effective radius 0.27 m.
       rolling_window: true
       width: 3
       height: 3
       resolution: 0.04
-      robot_radius: 0.16
+      robot_radius: 0.26
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         observation_sources: lidar camera
-        footprint_clearing_enabled: true
+        # The LiDAR scan plane is mounted above the robot. Near-field returns
+        # are therefore treated as external structure (for example chair
+        # uprights), not self-returns. Preserve them even after they enter the
+        # footprint so collision checks and recovery behaviors fail closed.
+        footprint_clearing_enabled: false
         max_obstacle_height: 2.0
         combination_method: 1
         lidar:
@@ -224,8 +228,8 @@ global_costmap:
       transform_tolerance: 0.2
       global_frame: map
       robot_base_frame: base_frame
-      # Match the local costmap's body-only navigation footprint.
-      robot_radius: 0.16
+      # Match the local costmap's measured walking envelope.
+      robot_radius: 0.26
       resolution: 0.04
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -238,7 +242,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         observation_sources: lidar camera
-        footprint_clearing_enabled: true
+        footprint_clearing_enabled: false
         max_obstacle_height: 2.0
         combination_method: 1
         lidar:

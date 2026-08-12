@@ -222,6 +222,13 @@ model_commander:
     minimum_no_match_checkpoints: 1
 
     # Model/VLM failure defers without motion. Repeated failure aborts safely.
+    # Visibility coverage is advisory planner context. Keep its deadline below
+    # camera freshness limits so a missing costmap can never block a mission.
+    visibility_context_timeout: 0.5
+    # Orbbec color camera horizontal FOV (58.4 degrees). Successful observe
+    # primitives contribute pose-aware inspection evidence to coverage.
+    visibility_observation_horizontal_fov_rad: 1.019272
+    visibility_max_observations: 64
     planner_retry_initial_delay: 2.0
     planner_retry_max_delay: 30.0
     command_retry_initial_delay: 1.0

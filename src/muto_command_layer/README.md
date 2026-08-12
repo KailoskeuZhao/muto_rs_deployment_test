@@ -271,6 +271,30 @@ visibility per travel-plus-scan cost. The same information is exposed through
 a higher-level commander can query the report to decide whether to observe,
 move elsewhere, or defer.
 
+The model commander treats this report as optional post-progress context. It
+does not query coverage before the first frontier step because a mapped
+line-of-sight estimate is not evidence that the current object-search mission
+has explored anything. Later context queries are bounded to 0.5 seconds and
+run before camera capture, so a missing or slow costmap cannot invalidate the
+fresh JPEG used for the scheduling decision. A model-selected
+`navigate_to_observation_poi` rechecks the helper immediately before motion
+with the normal endpoint deadline.
+
+Within one `/look_for_object` mission, every successful `observe` primitive
+also records the measured map pose, camera heading, configured horizontal FOV,
+and number of detector heartbeat frames. These bounded observation records are
+replayed into each later coverage query. The resulting `covered_*` fields and
+POI gains therefore describe remaining inspection work for that mission rather
+than restarting from zero on every request. Observations with no detector
+frames, an incompatible frame, or an invalid/unreachable pose are rejected and
+counted separately. Starting a new mission starts a new inspection history.
+
+Frontier exploration remains an unmodified independent map-expansion tool. The
+commander summarizes its measured outcomes as `frontier_search`: untried,
+productive, stalled, exhausted, or uncertain. The model compares that state
+with remaining visibility POIs when choosing its next primitive; neither helper
+silently dispatches the other.
+
 After Nav2 reaches a viewpoint and all configured spin steps complete, the
 planner credits the free and occupied-boundary cells that its 2-D line-of-sight
 model predicts were visible. The command does not use RGB delivery, depth
@@ -772,6 +796,13 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   `visual_observation_max_age`: camera source and freshness requirements for
   every model planning step; defaults are `/camera/color/image_raw`, `5.0`, and
   `2.0` seconds.
+- `visibility_context_timeout`: deadline for optional coverage context added
+  before a planning snapshot; default `0.5` seconds. Initial planning skips
+  the helper until frontier exploration or measured search progress exists.
+- `visibility_observation_horizontal_fov_rad` and
+  `visibility_max_observations`: geometry and bounded mission-memory capacity
+  used to credit completed detector-backed `observe` primitives; defaults are
+  `1.019272` radians (58.4 degrees) and `64` records.
 - `visual_observation_jpeg_quality`, `visual_observation_max_width`,
   `visual_observation_max_height`, and `visual_observation_max_jpeg_bytes`:
   bound the transmitted planning snapshot; defaults are `80`, `960`, `720`,

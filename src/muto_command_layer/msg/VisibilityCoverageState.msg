@@ -1,5 +1,7 @@
 std_msgs/Header header
 bool complete
+uint32 applied_observations
+uint32 rejected_observations
 uint32 candidate_count
 uint32 target_free_cells
 uint32 coverable_free_cells

@@ -103,6 +103,8 @@ public:
     std::size_t maximum_points = 0U) const;
   ViewpointSelection select_next(const GridCell & current) const;
   void observe(std::size_t candidate_index);
+  bool observe_from(
+    const GridCell & source, double yaw_rad, double horizontal_fov_rad);
   void discard(std::size_t candidate_index);
 
   VisibilityCoverageStats coverage_stats() const;

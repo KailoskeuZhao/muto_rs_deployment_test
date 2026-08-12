@@ -139,6 +139,7 @@ class FakeCommanderBackends(Node):
         self.approach_object_ids = []
         self.poi_navigation_goals = []
         self.visibility_queries = 0
+        self.visibility_observation_counts = []
         self.checkpoint_requests = 0
         self.statuses = []
         self.trace_events = []
@@ -442,10 +443,13 @@ class FakeCommanderBackends(Node):
 
     def handle_visibility_coverage(self, request, response):
         self.visibility_queries += 1
+        self.visibility_observation_counts.append(len(request.observations))
         response.success = True
         response.message = 'fake visibility coverage calculated'
         response.state.header.frame_id = 'map'
         response.state.complete = False
+        response.state.applied_observations = len(request.observations)
+        response.state.rejected_observations = 0
         response.state.candidate_count = 3
         response.state.target_free_cells = 100
         response.state.coverable_free_cells = 80
@@ -935,6 +939,11 @@ def test_commander_uses_visibility_poi_helper_and_records_context(
         running_commander):
     backend, client = running_commander
     backend.queue_decision(
+        'explore_frontier',
+        reason='first establish actual frontier-search progress',
+        exploration_seconds=10.0,
+    )
+    backend.queue_decision(
         'navigate_to_observation_poi',
         reason='coverage helper reports a useful observation point',
     )
@@ -946,10 +955,22 @@ def test_commander_uses_visibility_poi_helper_and_records_context(
     goal_handle = send_mission(client)
     wait_until(lambda: backend.poi_navigation_goals == [(1.2, 0.4)])
     wait_until(lambda: backend.vlm_requests >= 2)
+    wait_until(lambda: any(
+        event.get('event') == 'command_result' and
+        event.get('command') == 'navigate_to_observation_poi'
+        for event in backend.trace_events))
 
-    planning_request = next(
+    planning_requests = [
         event for event in backend.trace_events
         if event.get('event') == 'planning_request'
+    ]
+    assert not planning_requests[0]['state']['visibility_coverage'][
+        'available']
+    assert 'before frontier exploration' in planning_requests[0][
+        'state']['visibility_coverage']['message']
+    planning_request = next(
+        event for event in planning_requests[1:]
+        if event['state']['visibility_coverage'].get('available')
     )
     coverage = planning_request['state']['visibility_coverage']
     assert coverage['available']
@@ -971,6 +992,67 @@ def test_commander_uses_visibility_poi_helper_and_records_context(
     wrapped = wait_future(goal_handle.get_result_async())
     assert wrapped.status == GoalStatus.STATUS_CANCELED
     assert backend.visibility_queries >= 2
+
+
+def test_initial_planning_does_not_block_on_visibility_coverage(
+        running_commander):
+    backend, client = running_commander
+    backend.queue_decision(
+        'wait', reason='initial image and registry context are sufficient',
+        wait_seconds=10.0)
+
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.vlm_requests == 1)
+
+    first_request = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'planning_request'
+    )
+    assert backend.visibility_queries == 0
+    assert not first_request['state']['visibility_coverage']['available']
+    assert 'before frontier exploration' in first_request[
+        'state']['visibility_coverage']['message']
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+
+
+def test_completed_observation_is_replayed_into_later_coverage(
+        running_commander):
+    backend, client = running_commander
+    backend.queue_decision(
+        'explore_frontier', exploration_seconds=10.0,
+        reason='expand known space before inspection planning')
+    backend.queue_decision(
+        'observe', observation_seconds=0.15,
+        reason='collect detector-backed evidence at the current pose')
+    backend.queue_decision(
+        'navigate_to_observation_poi',
+        reason='move to remaining uninspected mapped space')
+    backend.queue_decision('wait', wait_seconds=10.0)
+    backend.release_program.set()
+
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.poi_navigation_goals == [(1.2, 0.4)])
+    wait_until(lambda: any(count >= 1 for count in
+                           backend.visibility_observation_counts))
+
+    planning_request = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'planning_request' and
+        event['state']['visibility_coverage'].get(
+            'applied_observations', 0) >= 1
+    )
+    assert planning_request['state']['frontier_search'][
+        'utility'] == 'productive'
+    assert planning_request['state']['visibility_coverage'][
+        'applied_observations'] == 1
+    assert backend.visibility_observation_counts[-1] == 1
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
 
 
 def test_repeated_transient_input_cycles_keep_commander_alive(

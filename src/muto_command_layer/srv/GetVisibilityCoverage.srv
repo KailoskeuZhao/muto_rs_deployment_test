@@ -1,5 +1,7 @@
 # Maximum ranked observation points to return. Zero uses the server default.
 uint32 max_points
+# Mission observations to replay before computing remaining coverage and POIs.
+muto_command_layer/VisibilityObservation[] observations
 ---
 bool success
 string message

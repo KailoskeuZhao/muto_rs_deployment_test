@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -209,6 +210,52 @@ TEST(VisibilityViewpointPlanner, ExcludesDisconnectedFreeSpace)
   const auto metrics = run_adaptive_plan(planner, parsed.start);
   EXPECT_DOUBLE_EQ(metrics.coverage.observable_coverage_ratio(), 1.0);
   EXPECT_DOUBLE_EQ(metrics.coverage.map_coverage_ratio(), 1.0);
+}
+
+TEST(VisibilityViewpointPlanner, PoseObservationReducesRemainingGain)
+{
+  const auto parsed = parse_grid({
+      "###############",
+      "#.............#",
+      "#......S......#",
+      "#.............#",
+      "###############",
+    });
+  auto config = test_config();
+  config.visibility_range = 4.0;
+  VisibilityViewpointPlanner planner(parsed.grid, parsed.start, config);
+  const auto before = planner.coverage_report(parsed.start, 0U);
+  const std::size_t before_gain = std::accumulate(
+    before.points_of_interest.begin(), before.points_of_interest.end(),
+    std::size_t{0}, [](const std::size_t total, const auto & point) {
+      return total + point.new_free_cells + point.new_boundary_cells;
+    });
+
+  EXPECT_TRUE(planner.observe_from(parsed.start, 0.0, std::acos(-1.0)));
+
+  const auto after = planner.coverage_report(parsed.start, 0U);
+  const std::size_t after_gain = std::accumulate(
+    after.points_of_interest.begin(), after.points_of_interest.end(),
+    std::size_t{0}, [](const std::size_t total, const auto & point) {
+      return total + point.new_free_cells + point.new_boundary_cells;
+    });
+  EXPECT_GT(after.stats.covered_free_cells, 0U);
+  EXPECT_LT(after_gain, before_gain);
+}
+
+TEST(VisibilityViewpointPlanner, RejectsInvalidMissionObservation)
+{
+  const auto parsed = parse_grid({
+      "#######",
+      "#..S..#",
+      "#######",
+    });
+  VisibilityViewpointPlanner planner(
+    parsed.grid, parsed.start, test_config());
+
+  EXPECT_FALSE(planner.observe_from(GridCell{-1, 1}, 0.0, 1.0));
+  EXPECT_FALSE(planner.observe_from(parsed.start, 0.0, 0.0));
+  EXPECT_EQ(planner.coverage_stats().covered_free_cells, 0U);
 }
 
 TEST(VisibilityViewpointPlanner, UsesNav2CostsForReachability)

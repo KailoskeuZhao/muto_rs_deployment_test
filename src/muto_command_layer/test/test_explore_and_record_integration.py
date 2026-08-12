@@ -14,6 +14,8 @@ from action_msgs.msg import GoalStatus, GoalStatusArray
 from frontier_exploration_ros2.srv import ControlExploration
 from geometry_msgs.msg import TransformStamped
 from muto_command_layer.action import ExploreAndRecord
+from muto_command_layer.msg import VisibilityObservation
+from muto_command_layer.srv import GetVisibilityCoverage
 from nav2_msgs.action import NavigateToPose, Spin
 from nav2_msgs.srv import GetCostmap
 from nav_msgs.msg import OccupancyGrid
@@ -441,6 +443,34 @@ def test_frontier_primitive_travels_without_scanning_or_checkpointing(
     ]
     assert backend.spin_angles == []
     assert backend.save_calls == 0
+
+
+def test_visibility_coverage_service_completes_costmap_request(
+        running_command_layer):
+    """The service callback must not deadlock its nested costmap client."""
+    backend, _ = running_command_layer
+    client = backend.create_client(
+        GetVisibilityCoverage, '/command_layer/visibility_coverage')
+    assert client.wait_for_service(timeout_sec=2.0)
+    request = GetVisibilityCoverage.Request()
+    request.max_points = 3
+    observation = VisibilityObservation()
+    observation.pose.header.frame_id = 'map'
+    observation.pose.pose.position.x = 1.0
+    observation.pose.pose.position.y = 1.0
+    observation.pose.pose.orientation.w = 1.0
+    observation.horizontal_fov_rad = math.pi
+    observation.detection_frames = 3
+    request.observations = [observation]
+
+    response = wait_future(client.call_async(request), timeout=2.0)
+
+    assert response.success, response.message
+    assert response.state.header.frame_id == 'map'
+    assert response.state.candidate_count >= 1
+    assert response.state.applied_observations == 1
+    assert response.state.covered_free_cells > 0
+    assert response.state.points_of_interest
 
 
 def test_frontier_primitive_waits_for_idle_when_stop_is_still_pending(

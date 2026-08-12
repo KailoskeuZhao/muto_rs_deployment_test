@@ -28,6 +28,9 @@ PARAMETER_DEFAULTS = (
     ('inspected_image_topic', '/model_commander/inspected_image'),
     ('vlm_model', 'gpt-5.6-luna'),
     ('endpoint_timeout', 5.0),
+    ('visibility_context_timeout', 0.5),
+    ('visibility_observation_horizontal_fov_rad', 1.019272),
+    ('visibility_max_observations', 64),
     ('vlm_result_timeout', 60.0),
     ('find_result_timeout', 400.0),
     ('child_stop_timeout', 10.0),
@@ -114,6 +117,8 @@ def validate_parameters(config):
             raise ValueError(f'{name} must not be empty')
     for name in (
             'endpoint_timeout', 'vlm_result_timeout', 'find_result_timeout',
+            'visibility_context_timeout',
+            'visibility_observation_horizontal_fov_rad',
             'child_stop_timeout', 'default_max_duration',
             'maximum_mission_duration', 'max_wait_seconds',
             'max_exploration_seconds', 'max_rotation_radians',
@@ -144,6 +149,11 @@ def validate_parameters(config):
     if config.command_retry_initial_delay > config.command_retry_max_delay:
         raise ValueError(
             'command_retry_initial_delay exceeds its maximum')
+    if config.visibility_observation_horizontal_fov_rad > 2.0 * math.pi:
+        raise ValueError(
+            'visibility_observation_horizontal_fov_rad must not exceed 2*pi')
+    if config.visibility_max_observations > 256:
+        raise ValueError('visibility_max_observations must not exceed 256')
     for name in (
             'default_max_planning_steps', 'maximum_planning_steps',
             'maximum_command_dispatches', 'max_prompt_characters',
@@ -161,6 +171,7 @@ def validate_parameters(config):
             'visual_observation_max_source_width',
             'visual_observation_max_source_height',
             'visual_observation_max_source_bytes', 'rotate_stop_publish_count',
+            'visibility_max_observations',
             'max_consecutive_active_inspection_failures',
             'max_visual_interrupts'):
         value = getattr(config, name)

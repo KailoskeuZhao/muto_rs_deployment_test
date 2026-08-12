@@ -772,6 +772,54 @@ void VisibilityViewpointPlanner::observe(const std::size_t candidate_index)
   }
 }
 
+bool VisibilityViewpointPlanner::observe_from(
+  const GridCell & source,
+  const double yaw_rad,
+  const double horizontal_fov_rad)
+{
+  if (!is_reachable(source) || !std::isfinite(yaw_rad) ||
+    !std::isfinite(horizontal_fov_rad) || horizontal_fov_rad <= 0.0 ||
+    horizontal_fov_rad > 2.0 * std::acos(-1.0))
+  {
+    return false;
+  }
+
+  std::vector<uint64_t> visible(word_count_, 0U);
+  const int radius_cells = std::max(
+    1, static_cast<int>(std::ceil(config_.visibility_range / grid_.resolution)));
+  for (int y = source.y - radius_cells; y <= source.y + radius_cells; ++y) {
+    for (int x = source.x - radius_cells; x <= source.x + radius_cells; ++x) {
+      const GridCell target{x, y};
+      if (!in_bounds(target) || !is_free(target)) {
+        continue;
+      }
+      const double dx = static_cast<double>(target.x - source.x);
+      const double dy = static_cast<double>(target.y - source.y);
+      const double range = std::hypot(dx, dy) * grid_.resolution;
+      if (range > config_.visibility_range + 1.0e-9) {
+        continue;
+      }
+      if (range > 1.0e-9) {
+        const double bearing = std::atan2(dy, dx);
+        const double offset = std::atan2(
+          std::sin(bearing - yaw_rad), std::cos(bearing - yaw_rad));
+        if (std::abs(offset) > horizontal_fov_rad * 0.5 + 1.0e-9) {
+          continue;
+        }
+      }
+      if (line_of_sight(source, target)) {
+        set_bit(visible, index(target));
+      }
+    }
+  }
+  for (std::size_t word = 0; word < word_count_; ++word) {
+    covered_free_bits_[word] |= visible[word];
+    covered_boundary_bits_[word] |=
+      visible[word] & target_boundary_bits_[word];
+  }
+  return true;
+}
+
 void VisibilityViewpointPlanner::discard(const std::size_t candidate_index)
 {
   if (candidate_index >= discarded_candidates_.size()) {

@@ -1,4 +1,5 @@
-"""Internal exception taxonomy for the model commander.
+"""
+Internal exception taxonomy for the model commander.
 
 Keeping these types independent from the ROS node makes failure handling
 explicit across the scheduler, bounded input workers, and visual codec.

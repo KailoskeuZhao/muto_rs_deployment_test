@@ -7,12 +7,11 @@ import threading
 import time
 
 import cv2
+from model_commander_errors import InputFlowFailure, PlannerFailure
 import numpy as np
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-
-from model_commander_errors import InputFlowFailure, PlannerFailure
 
 
 class TransientSubscriptionRequest:
@@ -65,7 +64,8 @@ class TransientSubscriptionRequest:
 
 
 class TransientSubscriptionWorker:
-    """Own dynamic subscriptions on an isolated single-threaded executor.
+    """
+    Own dynamic subscriptions on an isolated single-threaded executor.
 
     The commander never destroys a subscription still referenced by its main
     executor. Admission is single-flight and shutdown is bounded, avoiding the

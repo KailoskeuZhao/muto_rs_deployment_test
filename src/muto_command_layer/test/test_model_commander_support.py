@@ -5,9 +5,6 @@ import re
 import sys
 from types import SimpleNamespace
 
-import pytest
-
-
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
@@ -21,6 +18,7 @@ from model_commander_memory import (  # noqa: E402
     pose_delta_context,
     primitive_memory_entry,
 )
+import pytest  # noqa: E402
 
 
 class FakeParameterNode:

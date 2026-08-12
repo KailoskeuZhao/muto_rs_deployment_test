@@ -8,7 +8,7 @@ import time
 import traceback
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from model_commander_config import (
     declare_parameters,
     read_parameters,
@@ -29,7 +29,6 @@ from model_commander_errors import (
 from model_commander_inputs import (
     TransientSubscriptionWorker,
     VisualCodecLimits,
-    VisualObservation,
     VisualObservationCodec,
 )
 from model_commander_memory import (
@@ -52,6 +51,7 @@ from muto_command_layer.action import (
     GoToObject,
     LookForObject,
 )
+from muto_command_layer.msg import VisibilityObservation
 from muto_command_layer.srv import GetVisibilityCoverage
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
@@ -402,6 +402,54 @@ class ModelCommanderNode(Node):
             'last_requested_path_length_m': round(requested_distance, 4),
         }
 
+    @staticmethod
+    def _frontier_search_summary(
+            primitive_history, frontier_exhausted,
+            completed_exploration_seconds,
+            completed_exploration_distance_m):
+        attempts = [
+            entry for entry in primitive_history
+            if entry.get('primitive') == 'explore_frontier'
+        ]
+        outcomes = [entry.get('outcome', '') for entry in attempts]
+        no_progress_count = sum(
+            outcome == 'no_spatial_progress' for outcome in outcomes)
+        consecutive_no_progress = 0
+        for outcome in reversed(outcomes):
+            if outcome != 'no_spatial_progress':
+                break
+            consecutive_no_progress += 1
+        completed_count = sum(
+            outcome == 'completed' for outcome in outcomes)
+        if frontier_exhausted:
+            utility = 'exhausted'
+            advice = 'prefer inspection of mapped space over more frontier travel'
+        elif consecutive_no_progress >= 2:
+            utility = 'stalled'
+            advice = 'prefer a different information-gathering primitive'
+        elif not attempts:
+            utility = 'untried'
+            advice = 'frontier exploration is the primary map-expansion option'
+        elif completed_exploration_distance_m > 0.0:
+            utility = 'productive'
+            advice = 'frontier travel remains useful while unknown space remains'
+        else:
+            utility = 'uncertain'
+            advice = 'compare frontier travel with available inspection POIs'
+        return {
+            'utility': utility,
+            'advice': advice,
+            'exhausted': bool(frontier_exhausted),
+            'attempts': len(attempts),
+            'completed_steps': completed_count,
+            'no_progress_steps': no_progress_count,
+            'consecutive_no_progress_steps': consecutive_no_progress,
+            'completed_seconds': round(completed_exploration_seconds, 3),
+            'measured_travel_m': round(
+                completed_exploration_distance_m, 4),
+            'last_outcome': outcomes[-1] if outcomes else None,
+        }
+
     def _perception_readiness_summary(self):
         with self._state_lock:
             latest_camera_time = self._latest_camera_receipt_time
@@ -435,7 +483,9 @@ class ModelCommanderNode(Node):
             'ownership_uncertain': ownership_uncertain,
         }
 
-    def _visibility_coverage_summary(self, goal_handle, deadline):
+    def _visibility_coverage_summary(
+            self, goal_handle, deadline, *, timeout=None,
+            observations=()):
         if not self._visibility_coverage_client.service_is_ready():
             return {
                 'available': False,
@@ -447,12 +497,17 @@ class ModelCommanderNode(Node):
             }
         request = GetVisibilityCoverage.Request()
         request.max_points = 3
+        request.observations = list(observations)[
+            -self.visibility_max_observations:]
+        query_timeout = (
+            self.visibility_context_timeout if timeout is None else timeout
+        )
         try:
             response = self._wait_for_future(
                 self._visibility_coverage_client.call_async(request),
                 goal_handle,
                 deadline,
-                self.endpoint_timeout,
+                query_timeout,
                 'visibility coverage query',
             )
         except CommanderFailure as error:
@@ -493,6 +548,8 @@ class ModelCommanderNode(Node):
             'available': True,
             'message': response.message[:self.max_state_message_characters],
             'complete': bool(state.complete),
+            'applied_observations': int(state.applied_observations),
+            'rejected_observations': int(state.rejected_observations),
             'candidate_count': int(state.candidate_count),
             'map_coverage_ratio': round(float(state.map_coverage_ratio), 4),
             'observable_coverage_ratio': round(
@@ -503,6 +560,52 @@ class ModelCommanderNode(Node):
                 float(state.combined_coverage_ratio), 4),
             'points_of_interest': points,
         }
+
+    def _planning_visibility_coverage(
+            self, goal_handle, deadline, completed_exploration_seconds,
+            completed_exploration_distance_m, frontier_exhausted,
+            active_command='', observations=()):
+        """Return optional post-progress geometry without delaying imagery."""
+        search_has_started = (
+            completed_exploration_distance_m >=
+            self.minimum_explore_progress_distance_m or
+            frontier_exhausted or
+            active_command == 'explore_frontier'
+        )
+        if not search_has_started:
+            return {
+                'available': False,
+                'message': (
+                    'not queried before frontier exploration or verified '
+                    'search progress'),
+                'points_of_interest': [],
+            }
+        return self._visibility_coverage_summary(
+            goal_handle, deadline, observations=observations)
+
+    def _visibility_observation(self, pose_context, detection_frames):
+        """Build one bounded, measured mission inspection sample."""
+        if pose_context is None or detection_frames <= 0:
+            return None
+        observation = VisibilityObservation()
+        observation.pose = PoseStamped()
+        observation.pose.header.frame_id = pose_context['frame_id']
+        stamp_seconds = float(pose_context['stamp_seconds'])
+        stamp_nanoseconds = max(0, int(round(stamp_seconds * 1e9)))
+        observation.pose.header.stamp.sec = stamp_nanoseconds // 1000000000
+        observation.pose.header.stamp.nanosec = (
+            stamp_nanoseconds % 1000000000)
+        observation.pose.pose.position.x = float(pose_context['x'])
+        observation.pose.pose.position.y = float(pose_context['y'])
+        observation.pose.pose.position.z = float(pose_context['z'])
+        yaw = float(pose_context['yaw_rad'])
+        observation.pose.pose.orientation.z = math.sin(yaw * 0.5)
+        observation.pose.pose.orientation.w = math.cos(yaw * 0.5)
+        observation.horizontal_fov_rad = (
+            self.visibility_observation_horizontal_fov_rad)
+        observation.detection_frames = min(
+            int(detection_frames), 0xffffffff)
+        return observation
 
     def _match_context(self, matches):
         robot_pose = self._robot_pose_snapshot()
@@ -761,7 +864,7 @@ class ModelCommanderNode(Node):
                 self._status['visual_observation_available'] = True
                 self._status['visual_observation_sequence'] = sequence
                 observation = self._visual_codec.encode(
-                message, sequence, receipt_time)
+                    message, sequence, receipt_time)
             if expected_world_revision is not None:
                 revision, _, _ = self._registry_state()
                 if revision != expected_world_revision:
@@ -1628,7 +1731,7 @@ class ModelCommanderNode(Node):
 
     def _run_observation_poi_navigation(
             self, expected_revision, goal_handle, deadline,
-            planning_steps, commands_dispatched):
+            planning_steps, commands_dispatched, observations):
         """Navigate to the current best visibility-coverage POI."""
         revision, _, _ = self._registry_state()
         if revision != expected_revision:
@@ -1636,7 +1739,9 @@ class ModelCommanderNode(Node):
                 'outcome': 'registry_changed',
                 'message': 'registry changed before observation-POI dispatch',
             }
-        coverage = self._visibility_coverage_summary(goal_handle, deadline)
+        coverage = self._visibility_coverage_summary(
+            goal_handle, deadline, timeout=self.endpoint_timeout,
+            observations=observations)
         if not coverage.get('available'):
             raise CommanderFailure(
                 coverage.get('message') or
@@ -2328,14 +2433,13 @@ class ModelCommanderNode(Node):
             completed_exploration_distance_m,
             completed_observations, completed_rotation_radians,
             completed_checkpoints, frontier_exhausted,
-            goal_handle=None):
+            goal_handle=None, visibility_coverage=None):
         revision, object_count, _ = self._registry_state()
-        coverage = (
-            self._visibility_coverage_summary(goal_handle, deadline)
-            if goal_handle is not None else
-            {'available': False, 'message': 'not queried',
-             'points_of_interest': []}
-        )
+        coverage = visibility_coverage or {
+            'available': False,
+            'message': 'not queried',
+            'points_of_interest': [],
+        }
         return {
             'schema_version': 1,
             'elapsed_seconds': round(time.monotonic() - start_time, 3),
@@ -2348,6 +2452,12 @@ class ModelCommanderNode(Node):
             'robot_pose': self._robot_pose_context(),
             'motion_progress': self._motion_progress_summary(
                 primitive_history),
+            'frontier_search': self._frontier_search_summary(
+                primitive_history,
+                frontier_exhausted,
+                completed_exploration_seconds,
+                completed_exploration_distance_m,
+            ),
             'perception_readiness': self._perception_readiness_summary(),
             'navigation_health': self._navigation_health_summary(),
             'visibility_coverage': coverage,
@@ -2445,6 +2555,7 @@ class ModelCommanderNode(Node):
         completed_rotation_radians = 0.0
         completed_checkpoints = 0
         frontier_exhausted = False
+        visibility_observations = []
         matches = []
         confirmed_match_revision = -1
         approach_completed = False
@@ -2765,6 +2876,15 @@ class ModelCommanderNode(Node):
             inspection_step = planning_steps + 1
             inspection_started = None
             try:
+                visibility_coverage = self._planning_visibility_coverage(
+                    goal_handle,
+                    active_deadline,
+                    completed_exploration_seconds,
+                    completed_exploration_distance_m,
+                    frontier_exhausted,
+                    active_command=active_command,
+                    observations=visibility_observations,
+                )
                 observation = self._capture_visual_observation(
                     last_visual_sequence,
                     goal_handle,
@@ -2796,6 +2916,7 @@ class ModelCommanderNode(Node):
                     completed_checkpoints,
                     frontier_exhausted,
                     goal_handle=goal_handle,
+                    visibility_coverage=visibility_coverage,
                 )
                 state.update(completion_state())
                 state.update({
@@ -2996,6 +3117,14 @@ class ModelCommanderNode(Node):
                     commands_dispatched,
                 )
                 try:
+                    visibility_coverage = self._planning_visibility_coverage(
+                        goal_handle,
+                        deadline,
+                        completed_exploration_seconds,
+                        completed_exploration_distance_m,
+                        frontier_exhausted,
+                        observations=visibility_observations,
+                    )
                     observation = self._capture_visual_observation(
                         last_visual_sequence,
                         goal_handle,
@@ -3025,6 +3154,7 @@ class ModelCommanderNode(Node):
                         completed_checkpoints,
                         frontier_exhausted,
                         goal_handle=goal_handle,
+                        visibility_coverage=visibility_coverage,
                     )
                     state.update(completion_state())
                     self._publish_feedback(
@@ -3204,6 +3334,25 @@ class ModelCommanderNode(Node):
                     continue
 
                 if decision.decision == 'navigate_to_observation_poi':
+                    coverage_context = state.get(
+                        'visibility_coverage', {})
+                    if not coverage_context.get('available'):
+                        last_command = 'navigate_to_observation_poi'
+                        last_outcome = 'precondition_failed'
+                        last_message = (
+                            'observation-POI navigation requires a fresh '
+                            'post-progress visibility report; frontier '
+                            'exploration remains the available search move'
+                        )
+                        self._publish_trace_event(
+                            'command_result', mission_id,
+                            planning_step=planning_steps,
+                            command='navigate_to_observation_poi',
+                            outcome=last_outcome,
+                            message=last_message,
+                            world_revision=decision_revision,
+                        )
+                        continue
                     if not dispatch_budget_available():
                         raise MissionBudgetExhausted(
                             'command-dispatch budget exhausted')
@@ -3216,6 +3365,7 @@ class ModelCommanderNode(Node):
                             deadline,
                             planning_steps,
                             commands_dispatched,
+                            visibility_observations,
                         )
                         consecutive_command_failures = 0
                     except OwnedGoalStateUnknown:
@@ -3714,6 +3864,16 @@ class ModelCommanderNode(Node):
                                 )))
                         elif decision.decision == 'observe':
                             completed_observations += 1
+                            inspection = self._visibility_observation(
+                                ended_pose,
+                                int(program.get('detection_frames', 0) or 0),
+                            )
+                            if inspection is not None:
+                                visibility_observations.append(inspection)
+                                if len(visibility_observations) > \
+                                        self.visibility_max_observations:
+                                    del visibility_observations[
+                                        :-self.visibility_max_observations]
                         elif decision.decision == 'checkpoint_registry':
                             completed_checkpoints += 1
                     matches = check_registry()

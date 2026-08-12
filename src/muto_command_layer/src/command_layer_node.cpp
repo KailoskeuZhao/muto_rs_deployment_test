@@ -126,8 +126,13 @@ public:
     registry_client_ = create_client<RegistryService>(registry_service_);
     registry_save_client_ = create_client<RegistrySaveService>(
       registry_save_service_);
+    costmap_client_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
+    visibility_coverage_service_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::MutuallyExclusive);
     global_costmap_client_ = create_client<CostmapService>(
-      global_costmap_service_);
+      global_costmap_service_, rmw_qos_profile_services_default,
+      costmap_client_group_);
     navigate_client_ = rclcpp_action::create_client<NavigateAction>(
       this, navigate_action_);
     spin_client_ = rclcpp_action::create_client<SpinAction>(
@@ -172,7 +177,9 @@ public:
         std::shared_ptr<VisibilityCoverageService::Response> response)
       {
         handle_visibility_coverage_request(request, response);
-      });
+      },
+      rmw_qos_profile_services_default,
+      visibility_coverage_service_group_);
     exploration_completion_sub_ = create_subscription<std_msgs::msg::Empty>(
       exploration_completion_topic_,
       rclcpp::QoS(1).reliable().durability_volatile(),
@@ -2490,6 +2497,42 @@ private:
       static_cast<std::size_t>(std::min<uint32_t>(
         request->max_points,
         static_cast<uint32_t>(visibility_coverage_max_points_)));
+    uint32_t applied_observations = 0U;
+    uint32_t rejected_observations = 0U;
+    for (const auto & observation : request->observations) {
+      if (observation.detection_frames == 0U ||
+        observation.pose.header.frame_id.empty())
+      {
+        ++rejected_observations;
+        continue;
+      }
+      geometry_msgs::msg::PoseStamped global_observation;
+      try {
+        if (observation.pose.header.frame_id == global_frame_) {
+          global_observation = observation.pose;
+        } else {
+          const auto observation_transform = tf_buffer_->lookupTransform(
+            global_frame_, observation.pose.header.frame_id,
+            tf2::TimePointZero, tf2::durationFromSec(tf_timeout_));
+          tf2::doTransform(
+            observation.pose, global_observation, observation_transform);
+        }
+      } catch (const tf2::TransformException &) {
+        ++rejected_observations;
+        continue;
+      }
+      const auto observation_cell = world_to_grid_cell(
+        *map, global_observation.pose.position.x,
+        global_observation.pose.position.y);
+      if (!observation_cell || !planner->observe_from(
+          *observation_cell, tf2::getYaw(global_observation.pose.orientation),
+          observation.horizontal_fov_rad))
+      {
+        ++rejected_observations;
+        continue;
+      }
+      ++applied_observations;
+    }
     const auto report = planner->coverage_report(current, maximum_points);
     const double combined_coverage =
       combined_visibility_coverage(report.stats);
@@ -2498,6 +2541,8 @@ private:
     state.header.stamp = now();
     state.header.frame_id = global_frame_;
     state.complete = combined_coverage >= visibility_completion_ratio_;
+    state.applied_observations = applied_observations;
+    state.rejected_observations = rejected_observations;
     state.candidate_count = static_cast<uint32_t>(std::min<std::size_t>(
         report.stats.candidate_count,
         std::numeric_limits<uint32_t>::max()));
@@ -3682,6 +3727,8 @@ private:
   rclcpp::CallbackGroup::SharedPtr explore_service_group_;
   rclcpp::CallbackGroup::SharedPtr save_map_client_group_;
   rclcpp::CallbackGroup::SharedPtr save_map_service_group_;
+  rclcpp::CallbackGroup::SharedPtr costmap_client_group_;
+  rclcpp::CallbackGroup::SharedPtr visibility_coverage_service_group_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr
     target_pose_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr

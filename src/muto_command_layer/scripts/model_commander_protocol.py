@@ -11,7 +11,9 @@ class ModelCommanderProtocolError(ValueError):
 
 SUPPORTED_DECISIONS = (
     'verify_registry',
+    'refine_registry_selection',
     'explore_frontier',
+    'navigate_to_observation_poi',
     'rotate',
     'observe',
     'checkpoint_registry',
@@ -93,9 +95,19 @@ def build_commander_prompt(objective, state):
         'You may choose exactly one bounded command primitive:\n'
         '- verify_registry: semantically query the current confirmed-object '
         'registry without moving.\n'
+        '- refine_registry_selection: use stored registry JPEGs to narrow '
+        'the current confirmed target list. Use it when an approach mission '
+        'has multiple confirmed candidates and visual attributes or stored '
+        'crops may select one exact ID. It cannot create new objects and '
+        'cannot search outside the current confirmed candidate IDs.\n'
         '- explore_frontier: run frontier navigation for a bounded interval, '
         'stop it, and return control. Set exploration_seconds. This primitive '
         'does not rotate or checkpoint objects.\n'
+        '- navigate_to_observation_poi: query the local visibility-coverage '
+        'calculator and navigate to the current best observation point of '
+        'interest. This primitive does not rotate, observe, or checkpoint. '
+        'Use it when STATE_JSON reports useful visibility_coverage POIs and '
+        'frontier travel is not the best next information-gathering move.\n'
         '- rotate: rotate in place by rotation_radians. Positive is '
         'counter-clockwise; negative is clockwise. This primitive does not '
         'observe or checkpoint.\n'
@@ -128,9 +140,11 @@ def build_commander_prompt(objective, state):
         'owns cancellation, updates the mission blackboard, and enforces all '
         'limits. Do not claim that an '
         'object exists. Prefer a registry check after new objects or completed '
-        'motion. Prefer a short bounded exploration step when more evidence '
-        'is needed. Use wait when a dependency or recent failure should be '
-        'retried later. Keep reason concise and operational.\n\n'
+        'motion. For approach missions with multiple confirmed candidates, '
+        'prefer refine_registry_selection before asking to approach. Prefer a '
+        'short bounded exploration step when more evidence is needed. Use wait '
+        'when a dependency or recent failure should be retried later. Keep '
+        'reason concise and operational.\n\n'
         'A LIVE_CAMERA_VIEW JPEG follows this prompt. Inspect it before every '
         'decision. Summarize only relevant visible conditions in '
         'visual_observation and classify target_evidence as not_visible, '
@@ -430,6 +444,11 @@ def parse_commander_decision(
                 rotation_radians != 0.0 or observation_seconds != 0.0:
             raise ModelCommanderProtocolError(
                 'explore_frontier requires positive exploration_seconds')
+    elif decision == 'navigate_to_observation_poi':
+        if wait_seconds != 0.0 or exploration_seconds != 0.0 or \
+                rotation_radians != 0.0 or observation_seconds != 0.0:
+            raise ModelCommanderProtocolError(
+                'navigate_to_observation_poi accepts no primitive arguments')
     elif decision == 'rotate':
         if rotation_radians == 0.0 or wait_seconds != 0.0 or \
                 exploration_seconds != 0.0 or observation_seconds != 0.0:

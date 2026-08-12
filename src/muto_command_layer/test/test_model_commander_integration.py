@@ -18,9 +18,11 @@ from muto_command_layer.action import (
     GoToObject,
     LookForObject,
 )
-from muto_command_layer.msg import ObjectMatch
+from muto_command_layer.msg import ObjectMatch, VisibilityPointOfInterest
+from muto_command_layer.srv import GetVisibilityCoverage
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
+from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry
 import pytest
 import rclpy
@@ -98,6 +100,8 @@ class FakeCommanderBackends(Node):
         self.find_action = f'{prefix}/find_object'
         self.explore_action = f'{prefix}/explore_frontier'
         self.go_action = f'{prefix}/go_to_object'
+        self.navigate_action = f'{prefix}/navigate_to_pose'
+        self.visibility_service = f'{prefix}/visibility_coverage'
         self.spin_action = f'{prefix}/spin'
         self.rotate_cmd_vel_topic = f'{prefix}/cmd_vel'
         self.odom_topic = f'{prefix}/odometry/filtered'
@@ -116,6 +120,7 @@ class FakeCommanderBackends(Node):
         self._decisions = deque()
         self.match_available = False
         self.unrelated_object_available = False
+        self.ambiguous_matches_available = False
         self.find_failures_remaining = 0
         self.find_started = threading.Event()
         self.find_release_event = None
@@ -127,10 +132,13 @@ class FakeCommanderBackends(Node):
         self.vlm_rejections_remaining = 0
         self.ignore_vlm_cancel = False
         self.find_prompts = []
+        self.find_candidate_id_sets = []
         self.program_cycles = []
         self.primitive_names = []
         self.program_cancellations = 0
         self.approach_object_ids = []
+        self.poi_navigation_goals = []
+        self.visibility_queries = 0
         self.checkpoint_requests = 0
         self.statuses = []
         self.trace_events = []
@@ -173,6 +181,20 @@ class FakeCommanderBackends(Node):
             self.go_action,
             execute_callback=self.execute_go_to_object,
             cancel_callback=self.accept_cancel,
+            callback_group=self._callback_group,
+        )
+        self.navigate_server = ActionServer(
+            self,
+            NavigateToPose,
+            self.navigate_action,
+            execute_callback=self.execute_navigate,
+            cancel_callback=self.accept_cancel,
+            callback_group=self._callback_group,
+        )
+        self.visibility_server = self.create_service(
+            GetVisibilityCoverage,
+            self.visibility_service,
+            self.handle_visibility_coverage,
             callback_group=self._callback_group,
         )
         self.checkpoint_server = self.create_service(
@@ -335,8 +357,11 @@ class FakeCommanderBackends(Node):
 
     def execute_find(self, goal_handle):
         self.find_prompts.append(goal_handle.request.prompt)
+        candidate_ids = list(goal_handle.request.candidate_ids)
+        self.find_candidate_id_sets.append(candidate_ids)
         with self._lock:
             match_available = self.match_available
+            ambiguous_available = self.ambiguous_matches_available
             fail = self.find_failures_remaining > 0
             release_event = self.find_release_event
             if fail:
@@ -359,6 +384,25 @@ class FakeCommanderBackends(Node):
             match.description = 'fake matching red mug'
             result.matches = [match]
             result.message = 'found one matching static object'
+        elif ambiguous_available and not candidate_ids:
+            first = ObjectMatch()
+            first.object_id = 'red_mug_2'
+            first.label = 'cup'
+            first.description = 'fake matching red mug'
+            second = ObjectMatch()
+            second.object_id = 'red_mug_3'
+            second.label = 'cup'
+            second.description = 'fake second red mug candidate'
+            result.matches = [first, second]
+            result.message = 'found two matching static objects'
+        elif ambiguous_available and candidate_ids == ['red_mug_2',
+                                                       'red_mug_3']:
+            match = ObjectMatch()
+            match.object_id = 'red_mug_3'
+            match.label = 'cup'
+            match.description = 'stored JPEG best matches the requested mug'
+            result.matches = [match]
+            result.message = 'refined to one matching static object'
         else:
             result.message = 'no registered object matched'
         goal_handle.succeed()
@@ -376,6 +420,60 @@ class FakeCommanderBackends(Node):
         result.message = 'fake object approach completed'
         goal_handle.succeed()
         return result
+
+    def execute_navigate(self, goal_handle):
+        pose = goal_handle.request.pose.pose
+        self.poi_navigation_goals.append((
+            round(float(pose.position.x), 3),
+            round(float(pose.position.y), 3),
+        ))
+        while not goal_handle.is_cancel_requested and \
+                not self.release_program.is_set():
+            time.sleep(0.01)
+        result = NavigateToPose.Result()
+        if goal_handle.is_cancel_requested:
+            goal_handle.canceled()
+            return result
+        with self._lock:
+            self._x = float(pose.position.x)
+        self.publish_odometry()
+        goal_handle.succeed()
+        return result
+
+    def handle_visibility_coverage(self, request, response):
+        self.visibility_queries += 1
+        response.success = True
+        response.message = 'fake visibility coverage calculated'
+        response.state.header.frame_id = 'map'
+        response.state.complete = False
+        response.state.candidate_count = 3
+        response.state.target_free_cells = 100
+        response.state.coverable_free_cells = 80
+        response.state.covered_free_cells = 24
+        response.state.target_boundary_cells = 40
+        response.state.coverable_boundary_cells = 35
+        response.state.covered_boundary_cells = 10
+        response.state.map_coverage_ratio = 0.24
+        response.state.observable_coverage_ratio = 0.30
+        response.state.boundary_coverage_ratio = 0.286
+        response.state.combined_coverage_ratio = 0.286
+        response.state.robot_pose.header.frame_id = 'map'
+        poi = VisibilityPointOfInterest()
+        poi.candidate_index = 7
+        poi.pose.header.frame_id = 'map'
+        poi.pose.pose.position.x = 1.2
+        poi.pose.pose.position.y = 0.4
+        poi.pose.pose.orientation.w = 1.0
+        poi.cell_x = 12
+        poi.cell_y = 4
+        poi.new_free_cells = 20
+        poi.new_boundary_cells = 8
+        poi.path_length_m = 1.2
+        poi.weighted_gain = 36.0
+        poi.score = 1.44
+        response.state.points_of_interest = [poi]
+        _ = request
+        return response
 
     def execute_explore(self, goal_handle):
         self.primitive_names.append('explore_frontier')
@@ -455,6 +553,7 @@ class FakeCommanderBackends(Node):
         with self._lock:
             match_available = self.match_available
             unrelated_available = self.unrelated_object_available
+            ambiguous_available = self.ambiguous_matches_available
         objects = []
         if unrelated_available:
             unrelated = StoredObject()
@@ -470,6 +569,14 @@ class FakeCommanderBackends(Node):
             stored.class_id = 2
             stored.image_path = '/tmp/red_mug_2.jpg'
             objects.append(stored)
+        if ambiguous_available:
+            for name in ('red_mug_2', 'red_mug_3'):
+                stored = StoredObject()
+                stored.name = name
+                stored.label = 'cup'
+                stored.class_id = 2
+                stored.image_path = f'/tmp/{name}.jpg'
+                objects.append(stored)
         message.objects = objects
         self.registry_publisher.publish(message)
 
@@ -491,6 +598,11 @@ class FakeCommanderBackends(Node):
     def make_match_available(self):
         with self._lock:
             self.match_available = True
+        self.publish_registry()
+
+    def make_ambiguous_matches_available(self):
+        with self._lock:
+            self.ambiguous_matches_available = True
         self.publish_registry()
 
     def clear_match(self):
@@ -534,6 +646,9 @@ def running_commander():
             '-p', f'find_object_action:={backend.find_action}',
             '-p', f'go_to_object_action:={backend.go_action}',
             '-p', f'explore_frontier_action:={backend.explore_action}',
+            '-p', f'navigate_to_pose_action:={backend.navigate_action}',
+            '-p', ('visibility_coverage_service:='
+                   f'{backend.visibility_service}'),
             '-p', f'spin_action:={backend.spin_action}',
             '-p', f'rotate_cmd_vel_topic:={backend.rotate_cmd_vel_topic}',
             '-p', f'registry_save_service:={backend.checkpoint_service}',
@@ -676,6 +791,45 @@ def test_approach_completion_is_planned_after_exact_registry_confirmation(
     assert approach_event['outcome'] == 'completed'
 
 
+def test_approach_can_refine_multiple_confirmed_registry_candidates(
+        running_commander):
+    backend, client = running_commander
+    backend.make_ambiguous_matches_available()
+    backend.queue_decision(
+        'refine_registry_selection',
+        reason='use stored registry crop images to choose one mug',
+    )
+    backend.queue_decision(
+        'approach_object',
+        reason='the registry refinement selected one exact target',
+    )
+
+    goal_handle = send_mission(
+        client,
+        completion_mode=LookForObject.Goal.COMPLETION_APPROACH_OBJECT,
+    )
+    wrapped = wait_future(goal_handle.get_result_async())
+
+    assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
+    assert wrapped.result.success
+    assert wrapped.result.found
+    assert wrapped.result.approached
+    assert [item.object_id for item in wrapped.result.matches] == [
+        'red_mug_3']
+    assert backend.approach_object_ids == ['red_mug_3']
+    assert backend.find_candidate_id_sets == [
+        [],
+        ['red_mug_2', 'red_mug_3'],
+    ]
+    refine_event = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'command_result' and
+        event.get('command') == 'refine_registry_selection'
+    )
+    assert refine_event['candidate_object_ids'] == ['red_mug_2', 'red_mug_3']
+    assert refine_event['matched_object_ids'] == ['red_mug_3']
+
+
 def test_transient_registry_search_failure_retries_without_motion(
         running_commander):
     backend, client = running_commander
@@ -775,6 +929,48 @@ def test_commander_schedules_rotate_observe_and_checkpoint_independently(
     assert backend.inspected_images
     assert all(image.startswith(b'\xff\xd8') for image in
                backend.inspected_images)
+
+
+def test_commander_uses_visibility_poi_helper_and_records_context(
+        running_commander):
+    backend, client = running_commander
+    backend.queue_decision(
+        'navigate_to_observation_poi',
+        reason='coverage helper reports a useful observation point',
+    )
+    backend.queue_decision(
+        'wait', reason='hold after reaching observation point',
+        wait_seconds=10.0)
+    backend.release_program.set()
+
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.poi_navigation_goals == [(1.2, 0.4)])
+    wait_until(lambda: backend.vlm_requests >= 2)
+
+    planning_request = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'planning_request'
+    )
+    coverage = planning_request['state']['visibility_coverage']
+    assert coverage['available']
+    assert coverage['points_of_interest'][0]['candidate_index'] == 7
+    assert planning_request['state']['perception_readiness'][
+        'camera_snapshot_seen']
+    assert 'navigation_health' in planning_request['state']
+    result_event = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'command_result' and
+        event.get('command') == 'navigate_to_observation_poi'
+    )
+    assert result_event['outcome'] == 'completed'
+    assert result_event['selected_poi']['candidate_index'] == 7
+    assert result_event['visibility_coverage']['available']
+    assert result_event['delta_pose']['distance_xy'] > 0.0
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+    assert backend.visibility_queries >= 2
 
 
 def test_repeated_transient_input_cycles_keep_commander_alive(

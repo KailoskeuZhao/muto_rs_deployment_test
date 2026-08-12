@@ -52,8 +52,10 @@ from muto_command_layer.action import (
     GoToObject,
     LookForObject,
 )
+from muto_command_layer.srv import GetVisibilityCoverage
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
+from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
@@ -101,9 +103,20 @@ class ModelCommanderNode(Node):
             self.explore_frontier_action,
             callback_group=self._callback_group,
         )
+        self._navigate_client = ActionClient(
+            self,
+            NavigateToPose,
+            self.navigate_to_pose_action,
+            callback_group=self._callback_group,
+        )
         self._checkpoint_client = self.create_client(
             Trigger,
             self.registry_save_service,
+            callback_group=self._callback_group,
+        )
+        self._visibility_coverage_client = self.create_client(
+            GetVisibilityCoverage,
+            self.visibility_coverage_service,
             callback_group=self._callback_group,
         )
 
@@ -352,6 +365,144 @@ class ModelCommanderNode(Node):
     def _robot_pose_snapshot(self):
         with self._state_lock:
             return self._latest_robot_pose
+
+    def _motion_progress_summary(self, primitive_history):
+        moving = [
+            entry for entry in primitive_history
+            if entry.get('primitive') in (
+                'explore_frontier',
+                'navigate_to_observation_poi',
+                'rotate',
+                'approach_object',
+            )
+        ]
+        last_motion = moving[-1] if moving else None
+        if last_motion is None:
+            return {
+                'last_motion_primitive': None,
+                'last_motion_effective': None,
+                'last_motion_delta_pose': None,
+            }
+        delta = last_motion.get('delta_pose')
+        distance = 0.0 if delta is None else float(
+            delta.get('distance_xy', 0.0))
+        yaw = 0.0 if delta is None else float(
+            delta.get('dyaw_abs_rad', 0.0))
+        requested_distance = float(last_motion.get(
+            'requested_path_length_m', 0.0) or 0.0)
+        motion_effective = (
+            distance >= self.minimum_explore_progress_distance_m or
+            yaw >= self.rotate_goal_tolerance
+        )
+        return {
+            'last_motion_primitive': last_motion.get('primitive'),
+            'last_motion_outcome': last_motion.get('outcome'),
+            'last_motion_effective': motion_effective,
+            'last_motion_delta_pose': delta,
+            'last_requested_path_length_m': round(requested_distance, 4),
+        }
+
+    def _perception_readiness_summary(self):
+        with self._state_lock:
+            latest_camera_time = self._latest_camera_receipt_time
+            visual_sequence = self._camera_sequence
+            visual_subscription_active = self._status.get(
+                'visual_subscription_active', False)
+            visual_inspection_count = self._status.get(
+                'visual_inspection_count', 0)
+        camera_age = None if latest_camera_time is None else round(
+            max(0.0, time.monotonic() - latest_camera_time), 3)
+        return {
+            'camera_topic': self.visual_observation_topic,
+            'detector_heartbeat_topic': self.detection_heartbeat_topic,
+            'registry_topic': self.registry_topic,
+            'camera_snapshot_seen': latest_camera_time is not None,
+            'last_camera_snapshot_age_seconds': camera_age,
+            'visual_observation_sequence': int(visual_sequence),
+            'visual_subscription_active': bool(visual_subscription_active),
+            'visual_inspection_count': int(visual_inspection_count),
+        }
+
+    def _navigation_health_summary(self):
+        with self._state_lock:
+            active_child = self._active_child_goal is not None
+            ownership_uncertain = self._ownership_uncertain
+        return {
+            'navigate_to_pose_action': self.navigate_to_pose_action,
+            'explore_frontier_action': self.explore_frontier_action,
+            'go_to_object_action': self.go_to_object_action,
+            'owned_child_active': active_child,
+            'ownership_uncertain': ownership_uncertain,
+        }
+
+    def _visibility_coverage_summary(self, goal_handle, deadline):
+        if not self._visibility_coverage_client.service_is_ready():
+            return {
+                'available': False,
+                'message': (
+                    'visibility coverage service is unavailable: '
+                    f'{self.visibility_coverage_service}'
+                ),
+                'points_of_interest': [],
+            }
+        request = GetVisibilityCoverage.Request()
+        request.max_points = 3
+        try:
+            response = self._wait_for_future(
+                self._visibility_coverage_client.call_async(request),
+                goal_handle,
+                deadline,
+                self.endpoint_timeout,
+                'visibility coverage query',
+            )
+        except CommanderFailure as error:
+            return {
+                'available': False,
+                'message': str(error)[:self.max_state_message_characters],
+                'points_of_interest': [],
+            }
+        if not response.success:
+            return {
+                'available': False,
+                'message': response.message[
+                    :self.max_state_message_characters],
+                'points_of_interest': [],
+            }
+        state = response.state
+        points = []
+        for point in state.points_of_interest[:3]:
+            pose = point.pose.pose
+            points.append({
+                'candidate_index': int(point.candidate_index),
+                'cell': [int(point.cell_x), int(point.cell_y)],
+                'pose': {
+                    'frame_id': point.pose.header.frame_id,
+                    'x': round(float(pose.position.x), 4),
+                    'y': round(float(pose.position.y), 4),
+                    'yaw_rad': round(2.0 * math.atan2(
+                        float(pose.orientation.z),
+                        float(pose.orientation.w)), 6),
+                },
+                'new_free_cells': int(point.new_free_cells),
+                'new_boundary_cells': int(point.new_boundary_cells),
+                'path_length_m': round(float(point.path_length_m), 4),
+                'weighted_gain': round(float(point.weighted_gain), 4),
+                'score': round(float(point.score), 6),
+            })
+        return {
+            'available': True,
+            'message': response.message[:self.max_state_message_characters],
+            'complete': bool(state.complete),
+            'candidate_count': int(state.candidate_count),
+            'map_coverage_ratio': round(float(state.map_coverage_ratio), 4),
+            'observable_coverage_ratio': round(
+                float(state.observable_coverage_ratio), 4),
+            'boundary_coverage_ratio': round(
+                float(state.boundary_coverage_ratio), 4),
+            'combined_coverage_ratio': round(
+                float(state.combined_coverage_ratio), 4),
+            'points_of_interest': points,
+        }
 
     def _match_context(self, matches):
         robot_pose = self._robot_pose_snapshot()
@@ -1283,13 +1434,18 @@ class ModelCommanderNode(Node):
 
     def _run_find(
             self, objective, goal_handle, deadline,
-            planning_steps, commands_dispatched):
+            planning_steps, commands_dispatched, candidate_ids=None):
         child_goal = FindObject.Goal()
         child_goal.prompt = objective
+        if candidate_ids:
+            child_goal.candidate_ids = list(candidate_ids)
         self._publish_feedback(
             goal_handle,
             LookForObject.Feedback.PHASE_CHECKING_REGISTRY,
+            'refining confirmed registry candidates'
+            if candidate_ids else
             'checking the confirmed-object registry',
+            'refine_registry_selection' if candidate_ids else
             'verify_registry',
             planning_steps,
             commands_dispatched,
@@ -1468,6 +1624,169 @@ class ModelCommanderNode(Node):
             'message': wrapped.result.message or (
                 f'approach completed for {object_id}'),
             'object_id': object_id,
+        }
+
+    def _run_observation_poi_navigation(
+            self, expected_revision, goal_handle, deadline,
+            planning_steps, commands_dispatched):
+        """Navigate to the current best visibility-coverage POI."""
+        revision, _, _ = self._registry_state()
+        if revision != expected_revision:
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before observation-POI dispatch',
+            }
+        coverage = self._visibility_coverage_summary(goal_handle, deadline)
+        if not coverage.get('available'):
+            raise CommanderFailure(
+                coverage.get('message') or
+                'visibility coverage helper is unavailable')
+        points = coverage.get('points_of_interest') or []
+        if not points:
+            return {
+                'outcome': 'no_observation_poi',
+                'message': 'visibility helper returned no observation POI',
+                'visibility_coverage': coverage,
+            }
+        selected = points[0]
+        if coverage.get('complete'):
+            return {
+                'outcome': 'coverage_complete',
+                'message': 'visibility coverage is already complete',
+                'visibility_coverage': coverage,
+                'selected_poi': selected,
+            }
+
+        nav_goal = NavigateToPose.Goal()
+        nav_goal.pose.header.frame_id = selected['pose']['frame_id']
+        nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
+        nav_goal.pose.pose.position.x = float(selected['pose']['x'])
+        nav_goal.pose.pose.position.y = float(selected['pose']['y'])
+        yaw = float(selected['pose']['yaw_rad'])
+        nav_goal.pose.pose.orientation.z = math.sin(yaw * 0.5)
+        nav_goal.pose.pose.orientation.w = math.cos(yaw * 0.5)
+        child_token = object()
+
+        def feedback_callback(message):
+            feedback = message.feedback
+            self._publish_feedback(
+                goal_handle,
+                LookForObject.Feedback.PHASE_EXECUTING,
+                'navigating to visibility observation point '
+                f"{selected['candidate_index']}",
+                'navigate_to_observation_poi',
+                planning_steps,
+                commands_dispatched,
+                child_token=child_token,
+            )
+            _ = feedback
+
+        self._publish_feedback(
+            goal_handle,
+            LookForObject.Feedback.PHASE_EXECUTING,
+            'navigating to best visibility observation point',
+            'navigate_to_observation_poi',
+            planning_steps,
+            commands_dispatched,
+        )
+        with self._state_lock:
+            self._active_child_token = child_token
+        try:
+            child_handle = self._send_goal(
+                self._navigate_client,
+                nav_goal,
+                goal_handle,
+                deadline,
+                'NavigateToPose action server',
+                feedback_callback=feedback_callback,
+                pre_dispatch_callback=lambda: self._assert_registry_revision(
+                    expected_revision),
+            )
+        except StalePlan:
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before observation-POI dispatch',
+                'visibility_coverage': coverage,
+                'selected_poi': selected,
+            }
+        except OwnedGoalStateUnknown:
+            self._mark_ownership_uncertain(
+                'observation-POI navigation dispatch state is unknown; model '
+                'commander is latched closed until restart')
+            raise
+        except Exception:
+            with self._state_lock:
+                if self._active_child_token is child_token:
+                    self._active_child_token = None
+            raise
+
+        with self._state_lock:
+            self._active_child_goal = child_handle
+        try:
+            result_future = child_handle.get_result_async()
+        except Exception as error:
+            self._cancel_goal_best_effort(child_handle)
+            self._mark_ownership_uncertain(
+                'accepted observation-POI navigation cannot be monitored; '
+                'model commander is latched closed until restart')
+            raise OwnedGoalStateUnknown(
+                'could not monitor accepted observation-POI navigation goal'
+            ) from error
+
+        terminal_confirmed = False
+        try:
+            while not result_future.done():
+                self._check_parent_state(goal_handle, deadline)
+                revision, _, _ = self._registry_state()
+                if revision != expected_revision:
+                    self._cancel_goal_and_wait(child_handle, result_future)
+                    terminal_confirmed = True
+                    return {
+                        'outcome': 'registry_changed',
+                        'message': (
+                            'registry changed during observation-POI '
+                            'navigation; motion was stopped'),
+                        'visibility_coverage': coverage,
+                        'selected_poi': selected,
+                    }
+                time.sleep(self.monitor_period)
+            self._check_parent_state(goal_handle, deadline)
+            terminal_confirmed = True
+            try:
+                wrapped = result_future.result()
+            except Exception as error:
+                raise CommanderFailure(
+                    'observation-POI navigation result failed') from error
+        except (CommanderCanceled, CommanderFailure, MissionBudgetExhausted):
+            try:
+                self._cancel_goal_and_wait(child_handle, result_future)
+                terminal_confirmed = True
+            except OwnedGoalStateUnknown:
+                self._mark_ownership_uncertain(
+                    'observation-POI navigation stop is unconfirmed; model '
+                    'commander is latched closed until restart')
+                raise
+            raise
+        finally:
+            if terminal_confirmed:
+                with self._state_lock:
+                    if self._active_child_goal is child_handle:
+                        self._active_child_goal = None
+                    if self._active_child_token is child_token:
+                        self._active_child_token = None
+
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise CommanderFailure(
+                'observation-POI navigation did not succeed')
+        return {
+            'outcome': 'completed',
+            'message': 'reached visibility observation point',
+            'visibility_coverage': coverage,
+            'selected_poi': selected,
+            'requested_path_length_m': selected.get('path_length_m'),
         }
 
     def _assert_registry_revision(self, expected_revision):
@@ -2008,8 +2327,15 @@ class ModelCommanderNode(Node):
             primitive_history, completed_exploration_seconds,
             completed_exploration_distance_m,
             completed_observations, completed_rotation_radians,
-            completed_checkpoints, frontier_exhausted):
+            completed_checkpoints, frontier_exhausted,
+            goal_handle=None):
         revision, object_count, _ = self._registry_state()
+        coverage = (
+            self._visibility_coverage_summary(goal_handle, deadline)
+            if goal_handle is not None else
+            {'available': False, 'message': 'not queried',
+             'points_of_interest': []}
+        )
         return {
             'schema_version': 1,
             'elapsed_seconds': round(time.monotonic() - start_time, 3),
@@ -2020,6 +2346,11 @@ class ModelCommanderNode(Node):
             'world_revision': revision,
             'confirmed_object_count': object_count,
             'robot_pose': self._robot_pose_context(),
+            'motion_progress': self._motion_progress_summary(
+                primitive_history),
+            'perception_readiness': self._perception_readiness_summary(),
+            'navigation_health': self._navigation_health_summary(),
+            'visibility_coverage': coverage,
             'registry_checked_revision': registry_checked_revision,
             'search_primitives_completed': completed_primitives,
             'primitive_history': primitive_history[-12:],
@@ -2236,6 +2567,137 @@ class ModelCommanderNode(Node):
                     matched_object_ids=[],
                 )
 
+        def refine_registry_selection():
+            nonlocal commands_dispatched
+            nonlocal registry_checked_revision
+            nonlocal consecutive_command_failures
+            nonlocal last_command
+            nonlocal last_outcome
+            nonlocal last_message
+            nonlocal confirmed_match_revision
+            if not matches:
+                last_command = 'refine_registry_selection'
+                last_outcome = 'confirmation_required'
+                last_message = (
+                    'registry refinement requires existing confirmed '
+                    'candidate matches')
+                return []
+            if len(matches) == 1:
+                last_command = 'refine_registry_selection'
+                last_outcome = 'already_unambiguous'
+                last_message = 'registry selection already has one exact ID'
+                return matches
+            if confirmed_match_revision < 0:
+                last_command = 'refine_registry_selection'
+                last_outcome = 'confirmation_required'
+                last_message = (
+                    'registry refinement requires a current candidate '
+                    'revision')
+                return matches
+            while True:
+                if not dispatch_budget_available():
+                    raise MissionBudgetExhausted(
+                        'command-dispatch budget exhausted')
+                start_revision, _, _ = self._registry_state()
+                if start_revision != confirmed_match_revision:
+                    last_command = 'refine_registry_selection'
+                    last_outcome = 'stale_world_revision'
+                    last_message = (
+                        'registry changed before candidate refinement')
+                    return check_registry()
+                candidate_ids = [match.object_id for match in matches]
+                commands_dispatched += 1
+                try:
+                    refined_matches, message = self._run_find(
+                        objective,
+                        goal_handle,
+                        deadline,
+                        planning_steps,
+                        commands_dispatched,
+                        candidate_ids=candidate_ids,
+                    )
+                except OwnedGoalStateUnknown:
+                    raise
+                except CommanderFailure as error:
+                    consecutive_command_failures += 1
+                    last_command = 'refine_registry_selection'
+                    last_outcome = 'command_failure'
+                    last_message = str(error)
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='refine_registry_selection',
+                        outcome=last_outcome,
+                        message=last_message[
+                            :self.max_state_message_characters],
+                        world_revision=start_revision,
+                        matched_object_ids=candidate_ids,
+                    )
+                    if consecutive_command_failures >= \
+                            self.max_consecutive_command_failures:
+                        raise CommanderFailure(
+                            'registry candidate refinement repeatedly failed'
+                        ) from error
+                    revision, _, _ = self._registry_state()
+                    retry_delay = min(
+                        self.command_retry_max_delay,
+                        self.command_retry_initial_delay
+                        * (2 ** (consecutive_command_failures - 1)),
+                    )
+                    self._wait_while_monitoring(
+                        retry_delay,
+                        revision,
+                        goal_handle,
+                        deadline,
+                        planning_steps,
+                        commands_dispatched,
+                        'registry refinement unavailable; retrying without '
+                        'motion',
+                    )
+                    continue
+                revision, _, _ = self._registry_state()
+                consecutive_command_failures = 0
+                last_command = 'refine_registry_selection'
+                last_message = message
+                if revision == start_revision:
+                    registry_checked_revision = revision
+                    confirmed_match_revision = revision \
+                        if refined_matches else -1
+                    last_outcome = (
+                        'match_found' if refined_matches else 'no_match')
+                    matched_objects = self._match_context(refined_matches)
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='refine_registry_selection',
+                        outcome=last_outcome,
+                        message=message[
+                            :self.max_state_message_characters],
+                        world_revision=revision,
+                        candidate_object_ids=candidate_ids,
+                        matched_object_ids=[
+                            match.object_id for match in refined_matches
+                        ],
+                        matched_objects=matched_objects,
+                    )
+                    return refined_matches
+                registry_checked_revision = start_revision
+                last_outcome = 'registry_changed_during_check'
+                last_message = (
+                    'registry changed during candidate refinement; checking '
+                    'the new snapshot before replanning'
+                )
+                self._publish_trace_event(
+                    'command_result', mission_id,
+                    planning_step=planning_steps,
+                    command='refine_registry_selection',
+                    outcome=last_outcome,
+                    message=last_message,
+                    world_revision=revision,
+                    candidate_object_ids=candidate_ids,
+                    matched_object_ids=[],
+                )
+
         def completion_state():
             return {
                 'requested_completion': completion_name,
@@ -2245,6 +2707,8 @@ class ModelCommanderNode(Node):
                 'approach_required': approach_required,
                 'approach_completed': approach_completed,
                 'remaining_completion_requirements': (
+                    ['refine_registry_selection']
+                    if approach_required and len(matches) > 1 else
                     ['approach_confirmed_object']
                     if approach_required and matches and
                     not approach_completed else
@@ -2256,11 +2720,6 @@ class ModelCommanderNode(Node):
             if not matches:
                 return None
             if approach_required and not approach_completed:
-                if len(matches) != 1:
-                    raise CommanderFailure(
-                        'approach mission requires one unambiguous confirmed '
-                        'object; matching IDs: {}'.format(', '.join(
-                            match.object_id for match in matches)))
                 return None
             completed_result = self._fill_result(
                 LookForObject.Result.OUTCOME_FOUND,
@@ -2336,6 +2795,7 @@ class ModelCommanderNode(Node):
                     completed_rotation_radians,
                     completed_checkpoints,
                     frontier_exhausted,
+                    goal_handle=goal_handle,
                 )
                 state.update(completion_state())
                 state.update({
@@ -2564,6 +3024,7 @@ class ModelCommanderNode(Node):
                         completed_rotation_radians,
                         completed_checkpoints,
                         frontier_exhausted,
+                        goal_handle=goal_handle,
                     )
                     state.update(completion_state())
                     self._publish_feedback(
@@ -2725,7 +3186,10 @@ class ModelCommanderNode(Node):
                 )
 
                 if decision.target_evidence in ('possible', 'likely') and \
-                        decision.decision != 'verify_registry':
+                        decision.decision not in (
+                            'verify_registry',
+                            'refine_registry_selection',
+                        ):
                     last_command = decision.decision
                     last_outcome = 'visual_evidence_requires_registry_check'
                     last_message = (
@@ -2737,6 +3201,105 @@ class ModelCommanderNode(Node):
                         result = finish_if_satisfied(last_message)
                         if result is not None:
                             return result
+                    continue
+
+                if decision.decision == 'navigate_to_observation_poi':
+                    if not dispatch_budget_available():
+                        raise MissionBudgetExhausted(
+                            'command-dispatch budget exhausted')
+                    commands_dispatched += 1
+                    started_pose = self._robot_pose_context()
+                    try:
+                        program = self._run_observation_poi_navigation(
+                            decision_revision,
+                            goal_handle,
+                            deadline,
+                            planning_steps,
+                            commands_dispatched,
+                        )
+                        consecutive_command_failures = 0
+                    except OwnedGoalStateUnknown:
+                        raise
+                    except CommanderFailure as error:
+                        consecutive_command_failures += 1
+                        last_command = 'navigate_to_observation_poi'
+                        last_outcome = 'command_failure'
+                        last_message = str(error)
+                        ended_pose = self._robot_pose_context()
+                        memory_entry = self._primitive_memory_entry(
+                            'navigate_to_observation_poi',
+                            last_outcome,
+                            last_message,
+                            decision_revision,
+                            started_pose,
+                            ended_pose,
+                        )
+                        primitive_history.append(memory_entry)
+                        self._publish_trace_event(
+                            'command_result', mission_id,
+                            planning_step=planning_steps,
+                            command='navigate_to_observation_poi',
+                            outcome=last_outcome,
+                            message=last_message[
+                                :self.max_state_message_characters],
+                            world_revision=decision_revision,
+                            started_pose=memory_entry['started_pose'],
+                            ended_pose=memory_entry['ended_pose'],
+                            delta_pose=memory_entry['delta_pose'],
+                        )
+                        if consecutive_command_failures >= \
+                                self.max_consecutive_command_failures:
+                            raise CommanderFailure(
+                                'observation-POI navigation repeatedly failed'
+                            ) from error
+                        continue
+
+                    last_command = 'navigate_to_observation_poi'
+                    last_outcome = program['outcome']
+                    last_message = program['message']
+                    ended_pose = self._robot_pose_context()
+                    selected_poi = program.get('selected_poi')
+                    visibility_coverage = program.get('visibility_coverage')
+                    memory_entry = self._primitive_memory_entry(
+                        'navigate_to_observation_poi',
+                        program['outcome'],
+                        program['message'],
+                        decision_revision,
+                        started_pose,
+                        ended_pose,
+                        selected_poi=selected_poi,
+                        visibility_coverage=visibility_coverage,
+                        requested_path_length_m=program.get(
+                            'requested_path_length_m'),
+                    )
+                    primitive_history.append(memory_entry)
+                    self._publish_trace_event(
+                        'command_result', mission_id,
+                        planning_step=planning_steps,
+                        command='navigate_to_observation_poi',
+                        outcome=program['outcome'],
+                        message=program['message'][
+                            :self.max_state_message_characters],
+                        world_revision=decision_revision,
+                        selected_poi=selected_poi,
+                        visibility_coverage=visibility_coverage,
+                        requested_path_length_m=program.get(
+                            'requested_path_length_m'),
+                        started_pose=memory_entry['started_pose'],
+                        ended_pose=memory_entry['ended_pose'],
+                        delta_pose=memory_entry['delta_pose'],
+                    )
+                    if program['outcome'] == 'registry_changed':
+                        matches = check_registry()
+                        result = finish_if_satisfied(last_message)
+                        if result is not None:
+                            return result
+                        continue
+                    if program['outcome'] == 'completed':
+                        completed_primitives += 1
+                        delta = memory_entry.get('delta_pose') or {}
+                        completed_exploration_distance_m += float(
+                            delta.get('distance_xy', 0.0) or 0.0)
                     continue
 
                 if decision.decision == 'verify_registry':
@@ -2755,6 +3318,30 @@ class ModelCommanderNode(Node):
                         result = finish_if_satisfied(last_message)
                         if result is not None:
                             return result
+                    continue
+
+                if decision.decision == 'refine_registry_selection':
+                    started_pose = self._robot_pose_context()
+                    previous_ids = [match.object_id for match in matches]
+                    matches = refine_registry_selection()
+                    ended_pose = self._robot_pose_context()
+                    primitive_history.append(self._primitive_memory_entry(
+                        'refine_registry_selection',
+                        last_outcome,
+                        last_message,
+                        confirmed_match_revision
+                        if confirmed_match_revision >= 0 else
+                        decision_revision,
+                        started_pose,
+                        ended_pose,
+                        candidate_object_ids=previous_ids,
+                        matched_object_ids=[
+                            match.object_id for match in matches
+                        ],
+                    ))
+                    result = finish_if_satisfied(last_message)
+                    if result is not None:
+                        return result
                     continue
 
                 if decision.decision == 'wait':

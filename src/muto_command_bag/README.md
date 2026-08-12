@@ -55,9 +55,11 @@ The default profile records the append-only decision trace, including a final
 the exact bounded JPEGs inspected by the commander, registry/object changes,
 hidden action traffic, primitive lifecycle events, navigation context, TF,
 odometry, maps, scans, logs, and operator events. Each decision trace event
-also includes the latest `/odometry/filtered` pose snapshot when available, so
-high-level replay can answer where the robot was when it planned, dispatched, or
-finished a primitive. It excludes continuous raw
+also includes the latest `/odometry/filtered` pose snapshot, compact motion
+progress, perception readiness, navigation ownership, and visibility-coverage
+POI context when available, so high-level replay can answer where the robot was
+when it planned, dispatched, or finished a primitive and what helper state the
+agent saw. It excludes continuous raw
 camera images, camera point clouds, SAM masks/annotations/instance point
 clouds, and legacy LiDAR point clouds.
 

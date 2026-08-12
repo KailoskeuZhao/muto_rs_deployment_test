@@ -9,6 +9,8 @@ PARAMETER_DEFAULTS = (
     ('find_object_action', '/find_object'),
     ('go_to_object_action', '/go_to_object'),
     ('explore_frontier_action', '/command_primitives/explore_frontier'),
+    ('navigate_to_pose_action', '/navigate_to_pose'),
+    ('visibility_coverage_service', '/command_layer/visibility_coverage'),
     ('spin_action', '/spin'),
     ('rotate_cmd_vel_topic', '/cmd_vel'),
     ('registry_save_service', '/sam2/save_stored_objects'),
@@ -43,7 +45,7 @@ PARAMETER_DEFAULTS = (
     ('max_rotation_radians', 6.283185307179586),
     ('max_observation_seconds', 30.0),
     ('spin_time_allowance', 15.0),
-    ('rotate_executable_yaw_velocity', 0.80),
+    ('rotate_executable_yaw_velocity', 0.30),
     ('rotate_timeout_reference_yaw_velocity', 0.15),
     ('rotate_goal_tolerance', 0.08),
     ('rotate_control_period', 0.05),
@@ -100,7 +102,9 @@ def validate_parameters(config):
     """Validate cross-field and resource-bound invariants at startup."""
     for name in (
             'action_name', 'vlm_action', 'find_object_action',
-            'go_to_object_action', 'explore_frontier_action', 'spin_action',
+            'go_to_object_action', 'explore_frontier_action',
+            'navigate_to_pose_action', 'visibility_coverage_service',
+            'spin_action',
             'rotate_cmd_vel_topic', 'registry_save_service',
             'detection_heartbeat_topic', 'registry_topic', 'robot_pose_topic',
             'visual_observation_topic', 'status_topic',

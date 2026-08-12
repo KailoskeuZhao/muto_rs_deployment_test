@@ -80,7 +80,9 @@ def test_schema_matches_local_decisions_and_bounds():
 
     assert SUPPORTED_DECISIONS == (
         'verify_registry',
+        'refine_registry_selection',
         'explore_frontier',
+        'navigate_to_observation_poi',
         'rotate',
         'observe',
         'checkpoint_registry',
@@ -153,6 +155,7 @@ def test_active_inspection_rejects_excess_authority_or_bad_evidence(text):
     'verify_registry',
     'checkpoint_registry',
     'finish_not_found',
+    'navigate_to_observation_poi',
 ])
 def test_argumentless_decisions_accept_only_zeroed_arguments(decision):
     assert parse(response(decision)).decision == decision
@@ -199,6 +202,7 @@ def test_each_parameterized_primitive_has_one_independent_argument():
     response('explore_frontier'),
     response('explore_frontier', exploration_seconds=61.0),
     response('explore_frontier', exploration_seconds=True),
+    response('navigate_to_observation_poi', exploration_seconds=1.0),
     response('rotate'),
     response('rotate', rotation_radians=6.4),
     response('rotate', rotation_radians=True),

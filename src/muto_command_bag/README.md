@@ -6,6 +6,12 @@ registry check and closes after success, cancellation, abort, or a fail-closed
 `ownership_uncertain` terminal state, so waits and replanning gaps remain in
 the same timeline.
 
+This is the primary default overall monitor for high-level autonomous command
+missions. “Overall” means the complete parent mission lifecycle, not continuous
+recording from robot startup. The exploration recorder may open a second,
+child-scoped bag during an exploration primitive. See the workspace-wide
+[Default Bags And Mission Monitoring](../../docs/bags.md) overview.
+
 The default recorder also watches the transient `/model_commander/status`
 heartbeat. If the commander process crashes or its executor stops publishing
 for 10 seconds while a bag is active, the independent recorder finalizes the

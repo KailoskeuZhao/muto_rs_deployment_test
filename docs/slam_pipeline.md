@@ -410,6 +410,14 @@ The current Nav2 launch starts:
 - `bt_navigator`
 - the associated lifecycle manager and local/global costmaps
 
+After the top-level Nav2 readiness gate succeeds,
+`muto_nav2_pipeline_launch.py` also starts the compact `muto_nav2_bag`
+session recorder by default. It records the target-plan-command-response chain,
+filtered obstacle scans, action/lifecycle state, and config snapshots under
+`/opt/muto_rs_ws/bags`. It deliberately omits continuous costmaps, raw sensor
+streams, and high-rate action feedback; use `nav2_bag_full.yaml` only for a
+short deep-dive capture. Set `launch_nav2_bag:=false` to opt out.
+
 The local costmap uses `odom`; the global costmap uses `map`. Both use
 `base_frame` as the robot frame. Each obstacle layer consumes the downsampled
 LiDAR scan and the optional narrow camera scan as separate observation sources. The path
@@ -421,10 +429,14 @@ This is the current planner/controller/navigation-action stack, not every
 optional Nav2 server. It does not start AMCL, waypoint following, route,
 docking, or a full saved-map localization workflow.
 
-The Humble behavior trees explicitly compute a Navfn path, collision-check a
-Simple Smoother result, and feed that `smoothed_path` to Regulated Pure
-Pursuit. They replan at 1 Hz. The controller reads `/odometry/filtered`, uses a
-fixed 0.25 m lookahead and requests up to 0.20 m/s linear motion. Its 0.30
+The Humble behavior trees explicitly compute a Navfn path, apply Humble's
+fixed seven-point Savitzky-Golay filter, collision-check the result, and feed
+that `smoothed_path` to Regulated Pure Pursuit. `SimpleSmoother` remains loaded
+as an explicit rollback but is not selected by either behavior tree. They
+replan at 1 Hz. The controller reads `/odometry/filtered`, uses a fixed `0.40 m`
+lookahead and requests up to 0.20 m/s linear motion. Keeping the carrot beyond
+the approximately `0.26 m` robot radius reduces turn-direction sensitivity
+when the path initially lies behind the robot. Its 0.30
 rad/s yaw request is a conservative physical envelope for the current Muto
 gait: higher geometric commands are possible, but field bags showed poor
 achieved yaw and weak simultaneous forward-turn response. Odometry remains
@@ -646,7 +658,9 @@ and `camera_depth_to_laserscan_node`.
 
 | File | Role |
 | --- | --- |
-| `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Full readiness-gated startup. |
+| `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Full readiness-gated startup, including the compact default Nav2 session recorder. |
+| `src/muto_nav2_bag/config/nav2_bag.yaml` | Compact default navigation evidence profile. |
+| `src/muto_nav2_bag/config/nav2_bag_full.yaml` | Opt-in broad costmap/action-feedback diagnostic profile. |
 | `src/muto_slam_mapping/launch/online_async_mapping_launch.py` | SLAM Toolbox mapping only. |
 | `src/muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Current Nav2 server set. |
 | `src/muto_slam_mapping/launch/frontier_exploration_launch.py` | Optional exploration client launch; not part of one-shot Nav2 startup. |

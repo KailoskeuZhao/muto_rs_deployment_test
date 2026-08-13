@@ -40,15 +40,12 @@ TEST(Nav2TopicProfile, KeepsRecorderAndNavigationEvidence)
   EXPECT_TRUE(contains(topics, "/clock"));
   EXPECT_TRUE(contains(topics, "/tf"));
   EXPECT_TRUE(contains(topics, "/odometry/filtered"));
-  EXPECT_TRUE(contains(topics, "/muto/commanded_gait_state"));
   EXPECT_TRUE(contains(topics, "/muto/motion_command_state"));
   EXPECT_TRUE(contains(topics, "/plan"));
   EXPECT_TRUE(contains(topics, "/cmd_vel_nav"));
   EXPECT_TRUE(contains(topics, "/cmd_vel"));
-  EXPECT_TRUE(contains(topics, "/navigate_to_pose/_action/feedback"));
+  EXPECT_TRUE(contains(topics, "/navigate_to_pose/_action/status"));
   EXPECT_TRUE(contains(topics, "/explore/selected_frontier"));
-  EXPECT_TRUE(contains(topics, "/global_costmap/costmap_raw"));
-  EXPECT_TRUE(contains(topics, "/local_costmap/costmap_raw"));
 }
 
 TEST(Nav2TopicProfile, ExcludesKnownHighVolumeOrUnrelatedStreams)
@@ -60,6 +57,9 @@ TEST(Nav2TopicProfile, ExcludesKnownHighVolumeOrUnrelatedStreams)
   EXPECT_FALSE(contains(topics, "/camera/depth/points"));
   EXPECT_FALSE(contains(topics, "/sam2/instance_mask"));
   EXPECT_FALSE(contains(topics, "/bond"));
+  EXPECT_FALSE(contains(topics, "/navigate_to_pose/_action/feedback"));
+  EXPECT_FALSE(contains(topics, "/global_costmap/costmap_raw"));
+  EXPECT_FALSE(contains(topics, "/local_costmap/costmap_raw"));
 }
 
 TEST(Nav2TopicProfile, AppendsOnlyOnce)

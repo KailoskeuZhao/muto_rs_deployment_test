@@ -1,19 +1,32 @@
 # Muto Nav2 bag
 
-This package records a standalone, compact diagnostic bag for navigation. It
-starts recording as soon as its launch file runs and is independent of the
-exploration mission recorder.
+This package records a compact session-level diagnostic bag for navigation. It
+starts after the normal Nav2 pipeline passes its readiness gate and remains
+independent of mission-scoped command and exploration recorders.
 
-The default profile keeps TF, maps, fused and source odometry, processed IMU,
-filtered laser scans, goals, paths, costmaps, controller commands, Nav2 action
-progress, frontier targets, diagnostics, and lifecycle events. It deliberately
-does not record camera images, point clouds, SAM output, or `/bond`. MCAP's
-`zstd_fast` preset compresses the repeated maps and costmaps by default; use
-`storage_preset:=none` only when measuring uncompressed recorder throughput.
+It is enabled by default by `muto_nav2_pipeline_launch.py`, covering direct
+Nav2 goals and the navigation portions of commander missions. Set
+`launch_nav2_bag:=false` only when recording is intentionally disabled. See
+[Default Bags And Mission Monitoring](../../docs/bags.md) for how the layers
+relate.
+
+The default profile keeps TF, map state, fused pose and scan-odometry response,
+the two filtered obstacle scans, goals, paths, controller commands, compact
+action state, selected frontier/object targets, diagnostics, and lifecycle
+events. It deliberately omits full costmaps, raw sensors, high-rate action
+feedback, camera images, point clouds, SAM output, and `/bond`.
+
+For a short deep-dive capture, opt into the preserved broad profile:
+
+```bash
+ros2 launch muto_nav2_bag record_nav2_bag_launch.py \
+  params_file:=$(ros2 pkg prefix muto_nav2_bag)/share/muto_nav2_bag/config/nav2_bag_full.yaml
+```
 
 ## Record
 
-Start the normal robot/Nav2 pipeline first. In another sourced terminal:
+The normal pipeline starts it automatically. For a standalone interval against
+an already-running Nav2 graph:
 
 ```bash
 ros2 launch muto_nav2_bag record_nav2_bag_launch.py
@@ -34,8 +47,9 @@ ros2 topic echo --once --qos-durability transient_local \
   /muto/nav2_bag/status
 ```
 
-The bag also contains a manifest plus snapshots of the active Nav2, frontier,
-SLAM, and both behavior-tree files. The default geometric locomotion mapping
+When included by the pipeline, the bag also contains a manifest plus snapshots
+of the active Nav2, frontier, SLAM, and both behavior-tree files. The default
+geometric locomotion mapping
 has no external profile; `/muto/motion_command_state` records its profile ID,
 selected amplitudes, and configured/observed phase rates. If the pipeline used
 `locomotion_command_mapping:=calibrated`, pass that measured profile explicitly:
@@ -79,21 +93,20 @@ ros2 bag info /opt/muto_rs_ws/bags/muto_nav2_<timestamp>_<session-id>
 The complete allowlist is in `config/nav2_bag.yaml`. Two command topics are
 kept intentionally: `/cmd_vel_nav` is the controller output and `/cmd_vel` is
 the final command after velocity smoothing. `/muto/motion_command_state`
-records how that SI command was projected into integer gait levels, the
-feed-forward achievable twist, projection flags, and the profile ID. It is
-republished with every motor phase so selected and active levels plus the
-pending flag remain time-aligned. `/muto/commanded_gait_state` retains its
-backward-compatible stance/swing and continuous-foot-target schema. Both
-translated occupancy-grid costmaps
-and exact Nav2 raw costmaps are retained; their duplicate grid data compresses
-efficiently. If the exploration mission recorder is also active, its transient
-status and bag path are retained to cross-link both recordings.
+records how that SI command was projected into gait output, the feed-forward
+achievable twist, projection flags, and profile ID. The default bag uses scans
+and paths instead of continuously duplicating full local/global costmaps. Use
+`nav2_bag_full.yaml` when exact costmap replay and action feedback are required.
 
 On the deployed ROS 2 Humble system, ordinary action goal/result requests are
 services and are not recordable unless service introspection is enabled. Nav2
-feedback/status, generated plans, and this stack's goal-mirror topics are
-recorded. For a direct `NavigateToPose` action sent by another client, publish a
-short `/muto/nav2_bag/event` describing the target as well.
+status, generated plans, and this stack's goal-mirror topics are recorded. For
+a direct `NavigateToPose` action sent by another client, publish a short
+`/muto/nav2_bag/event` describing the target as well.
+
+The recorder participates directly in the shared default retention cap of 20
+recognized Muto bag directories and prunes after clean finalization. Set
+`max_bag_directories:=0` only when retention is managed externally.
 
 Replay bags only on an isolated ROS domain because they contain `/cmd_vel`:
 

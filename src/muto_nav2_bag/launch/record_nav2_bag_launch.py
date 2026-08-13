@@ -10,19 +10,8 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     bag_share = get_package_share_directory('muto_nav2_bag')
-    mapping_share = get_package_share_directory('muto_slam_mapping')
 
     default_params = os.path.join(bag_share, 'config', 'nav2_bag.yaml')
-    default_nav2_params = os.path.join(
-        mapping_share, 'config', 'nav2_params.yaml')
-    default_frontier_params = os.path.join(
-        mapping_share, 'config', 'frontier_exploration_params.yaml')
-    default_slam_params = os.path.join(
-        mapping_share, 'config', 'mapper_params_online_async.yaml')
-    default_nav_to_pose_bt = os.path.join(
-        mapping_share, 'behavior_trees', 'muto_nav_to_pose.xml')
-    default_nav_through_poses_bt = os.path.join(
-        mapping_share, 'behavior_trees', 'muto_nav_through_poses.xml')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -48,31 +37,32 @@ def generate_launch_description():
         DeclareLaunchArgument('storage_id', default_value='mcap'),
         DeclareLaunchArgument('storage_preset', default_value='zstd_fast'),
         DeclareLaunchArgument('max_cache_size', default_value='52428800'),
+        DeclareLaunchArgument('max_bag_directories', default_value='20'),
         DeclareLaunchArgument(
             'nav2_params_file',
-            default_value=default_nav2_params,
-            description='Active Nav2 parameters copied into the bag.',
+            default_value='',
+            description='Optional active Nav2 parameters copied into the bag.',
         ),
         DeclareLaunchArgument(
             'frontier_params_file',
-            default_value=default_frontier_params,
-            description='Active frontier parameters copied into the bag.',
+            default_value='',
+            description='Optional frontier parameters copied into the bag.',
         ),
         DeclareLaunchArgument(
             'slam_params_file',
-            default_value=default_slam_params,
-            description='Active SLAM parameters copied into the bag.',
+            default_value='',
+            description='Optional SLAM parameters copied into the bag.',
         ),
         DeclareLaunchArgument(
             'nav_to_pose_bt_file',
-            default_value=default_nav_to_pose_bt,
-            description='NavigateToPose behavior tree copied into the bag.',
+            default_value='',
+            description='Optional NavigateToPose tree copied into the bag.',
         ),
         DeclareLaunchArgument(
             'nav_through_poses_bt_file',
-            default_value=default_nav_through_poses_bt,
+            default_value='',
             description=(
-                'NavigateThroughPoses behavior tree copied into the bag.'
+                'Optional NavigateThroughPoses tree copied into the bag.'
             ),
         ),
         DeclareLaunchArgument(
@@ -108,6 +98,10 @@ def generate_launch_description():
                         LaunchConfiguration('storage_preset'), value_type=str),
                     'max_cache_size': ParameterValue(
                         LaunchConfiguration('max_cache_size'), value_type=int),
+                    'max_bag_directories': ParameterValue(
+                        LaunchConfiguration('max_bag_directories'),
+                        value_type=int,
+                    ),
                     'nav2_params_file': ParameterValue(
                         LaunchConfiguration('nav2_params_file'),
                         value_type=str,

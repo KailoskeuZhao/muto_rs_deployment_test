@@ -15,6 +15,8 @@ The 2026-08-05 10 Hz joint-feedback mini-test is documented in
 [docs/odometry_10hz_mini_test_2026-08-05.md](docs/odometry_10hz_mini_test_2026-08-05.md).
 Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
 The current SLAM and Nav2 runbook is in [docs/slam_pipeline.md](docs/slam_pipeline.md).
+Default command/exploration/Nav2 monitoring, diagnostic bags, retention,
+manual notes, and replay safety are in [docs/bags.md](docs/bags.md).
 Repeatable odometry recording and replay is in [src/muto_odometry_bag/README.md](src/muto_odometry_bag/README.md).
 Action-scoped exploration recording and manual milestones are in
 [src/muto_exploration_bag/README.md](src/muto_exploration_bag/README.md).

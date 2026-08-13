@@ -38,6 +38,12 @@ constexpr char kDefaultStatusTopic[] = "/muto/nav2_bag/status";
 constexpr char kDefaultPathTopic[] = "/muto/nav2_bag/path";
 constexpr char kDefaultStopService[] = "/muto/nav2_bag/stop";
 constexpr char kManifestFilename[] = "muto_nav2_recording_manifest.json";
+constexpr const char * kManagedBagPrefixes[] = {
+  "muto_command_",
+  "muto_explore_",
+  "muto_nav2_",
+  "muto_odometry_",
+};
 
 struct ConfigSnapshot
 {
@@ -137,6 +143,24 @@ std::string join_topics(const std::vector<std::string> & topics)
   return value.str();
 }
 
+std::filesystem::file_time_type directory_sort_time(
+  const std::filesystem::directory_entry & entry)
+{
+  std::error_code error;
+  const auto last_write = entry.last_write_time(error);
+  return error ? std::filesystem::file_time_type::min() : last_write;
+}
+
+bool is_managed_muto_bag_directory(const std::filesystem::path & path)
+{
+  const auto name = path.filename().string();
+  return std::any_of(
+    std::begin(kManagedBagPrefixes), std::end(kManagedBagPrefixes),
+    [&name](const char * prefix) {
+      return name.rfind(prefix, 0U) == 0U;
+    });
+}
+
 }  // namespace
 
 class Nav2BagRecorderNode : public rclcpp::Node
@@ -153,6 +177,8 @@ public:
       "storage_preset", "zstd_fast");
     max_cache_size_ =
       declare_parameter<int64_t>("max_cache_size", 52428800);
+    max_bag_directories_ =
+      declare_parameter<int64_t>("max_bag_directories", 20);
     topics_ = declare_parameter<std::vector<std::string>>(
       "topics", muto_nav2_bag::default_nav2_topics());
     include_hidden_topics_ =
@@ -265,6 +291,10 @@ private:
     if (max_cache_size_ < 0) {
       throw std::invalid_argument("max_cache_size must be nonnegative");
     }
+    if (max_bag_directories_ < 0) {
+      throw std::invalid_argument(
+              "max_bag_directories must be nonnegative");
+    }
     if (topics_.empty()) {
       topics_ = muto_nav2_bag::default_nav2_topics();
     }
@@ -327,6 +357,7 @@ private:
       {"topics", join_topics(topics_)},
       {"event_topic", event_topic_},
       {"manifest_file", kManifestFilename},
+      {"max_bag_directories", std::to_string(max_bag_directories_)},
     };
 
     try {
@@ -466,6 +497,8 @@ private:
     manifest << "  \"storage_preset\": \"" <<
       json_escape(storage_preset_) << "\",\n";
     manifest << "  \"max_cache_size_bytes\": " << max_cache_size_ << ",\n";
+    manifest << "  \"max_bag_directories\": " <<
+      max_bag_directories_ << ",\n";
     manifest << "  \"include_hidden_topics\": " <<
       (include_hidden_topics_ ? "true" : "false") << ",\n";
     manifest << "  \"record_all_services_requested\": " <<
@@ -630,8 +663,76 @@ private:
       RCLCPP_INFO(
         get_logger(), "Finalized Nav2 bag after %s: %s", reason.c_str(),
         finalized_path.c_str());
+      prune_old_bag_directories(finalized_path);
     }
     return stopped_cleanly;
+  }
+
+  void prune_old_bag_directories(const std::string & preserve_path)
+  {
+    if (max_bag_directories_ <= 0) {
+      return;
+    }
+
+    std::error_code error;
+    if (!std::filesystem::is_directory(output_directory_, error)) {
+      return;
+    }
+
+    const auto preserved =
+      std::filesystem::path(preserve_path).lexically_normal();
+    std::vector<std::filesystem::directory_entry> candidates;
+    for (const auto & entry :
+      std::filesystem::directory_iterator(output_directory_, error))
+    {
+      if (error) {
+        RCLCPP_WARN(
+          get_logger(), "Could not inspect Nav2 bag retention directory: %s",
+          error.message().c_str());
+        return;
+      }
+      if (!entry.is_directory(error) || error) {
+        error.clear();
+        continue;
+      }
+      if (entry.path().lexically_normal() != preserved &&
+        is_managed_muto_bag_directory(entry.path()))
+      {
+        candidates.push_back(entry);
+      }
+    }
+
+    const auto keep_count = static_cast<std::size_t>(max_bag_directories_);
+    if (candidates.size() + 1U <= keep_count) {
+      return;
+    }
+    std::sort(
+      candidates.begin(), candidates.end(),
+      [](const auto & left, const auto & right) {
+        const auto left_time = directory_sort_time(left);
+        const auto right_time = directory_sort_time(right);
+        return left_time == right_time ?
+               left.path().filename().string() <
+               right.path().filename().string() :
+               left_time < right_time;
+      });
+
+    const auto remove_count = candidates.size() + 1U - keep_count;
+    for (std::size_t index = 0U; index < remove_count; ++index) {
+      const auto & path = candidates[index].path();
+      error.clear();
+      const auto removed = std::filesystem::remove_all(path, error);
+      if (error) {
+        RCLCPP_WARN(
+          get_logger(), "Could not prune old Muto bag %s: %s",
+          path.string().c_str(), error.message().c_str());
+      } else {
+        RCLCPP_INFO(
+          get_logger(),
+          "Pruned old Muto bag %s for shared retention (%ju entries)",
+          path.string().c_str(), static_cast<std::uintmax_t>(removed));
+      }
+    }
   }
 
   std::unique_ptr<muto_nav2_bag::Nav2BagTransport> transport_;
@@ -641,6 +742,7 @@ private:
   std::string storage_id_;
   std::string storage_preset_;
   int64_t max_cache_size_{52428800};
+  int64_t max_bag_directories_{20};
   std::vector<std::string> topics_;
   bool include_hidden_topics_{true};
   bool record_all_services_{false};

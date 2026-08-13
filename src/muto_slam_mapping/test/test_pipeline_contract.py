@@ -19,6 +19,7 @@ SENSOR_ROOT = SOURCE_ROOT / 'lidar_pointcloud_filter'
 HARDWARE_ROOT = SOURCE_ROOT / 'yahboomcar_bringup'
 ODOMETRY_BAG_ROOT = SOURCE_ROOT / 'muto_odometry_bag'
 COMMAND_LAYER_ROOT = SOURCE_ROOT / 'muto_command_layer'
+NAV2_BAG_ROOT = SOURCE_ROOT / 'muto_nav2_bag'
 
 RETIRED_RUNTIME_IDENTIFIERS = (
     '/fused/laserscan',
@@ -135,6 +136,7 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
     assert smoother['max_decel'][0] == -0.2
     assert smoother['max_decel'][2] == -0.6
     assert controller['desired_linear_vel'] == 0.20
+    assert controller['lookahead_dist'] == 0.40
     assert controller['rotate_to_heading_angular_vel'] == 0.30
     assert controller['max_angular_accel'] == 0.6
     assert behavior['max_rotational_vel'] == 0.30
@@ -148,6 +150,27 @@ def test_navigation_recovery_does_not_move_a_trapped_hexapod():
         assert '<Wait wait_duration="2.0"/>' in text
         assert '<Spin ' not in text
         assert '<BackUp ' not in text
+
+
+def test_navfn_paths_use_humble_savitzky_golay_smoothing():
+    config = _load_yaml(PACKAGE_ROOT / 'config' / 'nav2_params.yaml')
+    parameters = config['smoother_server']['ros__parameters']
+
+    assert parameters['smoother_plugins'] == [
+        'savitzky_golay_smoother', 'simple_smoother'
+    ]
+    savitzky_golay = parameters['savitzky_golay_smoother']
+    assert savitzky_golay['plugin'] == (
+        'nav2_smoother::SavitzkyGolaySmoother'
+    )
+    assert savitzky_golay['do_refinement'] is True
+    assert savitzky_golay['refinement_num'] == 2
+
+    for name in ('muto_nav_to_pose.xml', 'muto_nav_through_poses.xml'):
+        text = (PACKAGE_ROOT / 'behavior_trees' / name).read_text(
+            encoding='utf-8')
+        assert 'smoother_id="savitzky_golay_smoother"' in text
+        assert 'smoother_id="simple_smoother"' not in text
 
 
 def test_frontier_goal_stays_stable_while_nav2_is_driving():
@@ -210,6 +233,26 @@ def test_camera_preprocessing_is_owned_by_the_top_level_pipeline():
     assert 'launch_camera_obstacle_scan' not in mapping_defaults
     assert pipeline_defaults['launch_camera_obstacle_scan'] == 'true'
     assert float(pipeline_defaults['camera_scan_max_publish_rate']) == 7.0
+
+
+def test_compact_nav2_bag_is_a_default_pipeline_stage():
+    pipeline_launch = (
+        PACKAGE_ROOT / 'launch' / 'muto_nav2_pipeline_launch.py'
+    )
+    defaults, _ = _launch_defaults(pipeline_launch)
+    source = pipeline_launch.read_text(encoding='utf-8')
+
+    assert defaults['launch_nav2_bag'] == 'true'
+    assert defaults['nav2_bag_output_directory'] == '/opt/muto_rs_ws/bags'
+    assert int(defaults['max_bag_directories']) == 20
+    assert defaults['nav2_bag_params_file'].endswith(
+        'muto_nav2_bag/config/nav2_bag.yaml'
+    )
+    assert 'record_nav2_bag_launch.py' in source
+    assert 'additional_success_actions=[nav2_bag_include]' in source
+    assert (
+        NAV2_BAG_ROOT / 'config' / 'nav2_bag_full.yaml'
+    ).is_file()
 
 
 def test_locomotion_loop_defaults_are_forwarded_by_the_pipeline():

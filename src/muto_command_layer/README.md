@@ -18,6 +18,12 @@ checkpoint_registry | approach_object | wait | finish_not_found
         -> record result -> update mission state -> choose again
 ```
 
+The default launch also arms a mission-wide command bag and a child-scoped
+exploration bag. Together they are the normal high-level monitor, but they open
+files only during relevant missions rather than recording continuously. See
+[Default Bags And Mission Monitoring](../../docs/bags.md) for scope, paths,
+retention, manual notes, the default Nav2 session bag, and odometry captures.
+
 `/command_primitives/explore_frontier` performs bounded frontier travel and
 confirms it stopped. `rotate` sends one bounded executable yaw command and
 verifies the achieved angle from `/odometry/filtered`; `observe`
@@ -194,16 +200,19 @@ best-effort final registry checkpoint.
 `/go_to_object` goals and direct `/explore` calls are rejected while this
 program owns navigation.
 
-### Automatic mission bag
+### Automatic exploration child bag
 
-The standalone `muto_exploration_bag` package opens one MCAP rosbag for each
-`/explore_and_record` goal and finalizes it after success, cancellation, or
-failure. `command_layer_launch.py` starts that recorder by default; this
-command node only publishes mission lifecycle events and waits for the
-recorder-ready acknowledgement. By default the recorder discovers the graph
-but filters out raw camera images, derived mask/annotation images, and point
-clouds. It retains navigation, odometry, hidden action, structured object
-result, lifecycle, operator-event, and available service-event topics.
+The standalone `muto_exploration_bag` package opens one child-scoped MCAP for
+each compatible exploration action or primitive and finalizes it after success,
+cancellation, or failure. The separate parent `muto_command_bag` remains the
+overall monitor for a complete commander mission; this exploration bag is the
+deeper record of one child interval. `command_layer_launch.py` starts both
+recorder processes by default, but neither writes while idle. The command node
+only publishes mission lifecycle events and waits for the recorder-ready
+acknowledgement. By default the exploration recorder discovers the graph but
+filters out raw camera images, derived mask/annotation images, and point clouds.
+It retains navigation, odometry, hidden action, structured object result,
+lifecycle, operator-event, and available service-event topics.
 Each bag's `muto_recording_manifest.json` stores the action goal context, ROS
 distribution, recorder Git revision, dirty flag, and topic scope. Newer
 rosbag2 releases also copy these fields into `metadata.yaml`; ROS 2 Humble does
@@ -730,6 +739,12 @@ excluded. The latest parent path is published on
 `/model_commander/last_bag_path`. The command recorder keeps the newest 20
 recognized Muto bag directories in the parent directory by default. Set
 `command_bag_max_directories:=0` to disable pruning.
+
+This parent bag is the default overall command monitor. It is mission-scoped,
+not a continuous system-wide recorder. Direct `/go_to_object`, `/explore`,
+joystick, or arbitrary Nav2 goals are instead retained by the compact Nav2 bag
+started with the normal Nav2 pipeline. See
+[Default Bags And Mission Monitoring](../../docs/bags.md) for that boundary.
 
 Add a manual mission observation with:
 

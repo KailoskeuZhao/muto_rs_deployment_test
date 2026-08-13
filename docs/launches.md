@@ -6,6 +6,10 @@ This document summarizes the launch files that matter for the current Muto RS
 workspace. It separates the normal robot sequence from experimental and
 component launches.
 
+For the default command/exploration/Nav2 monitoring layers, optional deep Nav2
+and odometry captures, shared retention policy, manual notes, and replay safety,
+see [Default Bags And Mission Monitoring](bags.md).
+
 ## Removed Packages
 
 `src/Simple-2D-LiDAR-Odometry` and `src/simple_vlm` were removed from the
@@ -20,7 +24,7 @@ files use the installed Humble or Jazzy `ekf_node`; this workspace does not keep
 
 | Launch file | What it starts | Usual role |
 | --- | --- | --- |
-| `muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Includes hardware, static sensor TF, LiDAR odometry/EKF, online async mapping, camera depth projection, and Nav2 planner/controller/action servers with minimum delays and topic/TF readiness gates. | One-shot full robot Nav2 pipeline. Use this for normal bringup once the robot dependencies are installed. |
+| `muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Includes hardware, static sensor TF, LiDAR odometry/EKF, online async mapping, camera depth projection, Nav2 servers, and the compact Nav2 session recorder after readiness succeeds. | One-shot full robot Nav2 pipeline. Use `launch_nav2_bag:=false` only when recording is intentionally disabled. |
 | `yahboomcar_bringup/launch/muto_hardware_launch.py` | `lidar_tg30/lidar_node`, Orbbec `astra_pro_plus.launch.py`, and the fixed-rate `yahboomcar_bringup/muto_driver` locomotion loop. The driver also publishes raw/processed IMU, diagnostic controller-fused `0x60` attitude, and cumulative IMU scheduler status. | Hardware source layer. Run first on the robot. The initial driver tick commands standby, so support the robot and keep its legs clear. |
 | `tf2_publisher/launch/all_tf2_publishers_launch.py` | Static TF publishers for `base_frame -> camera_link`, `base_frame -> lidar_frame`, and `base_frame -> imu_link`. Optional odom TF publisher is off by default. | Sensor TF layer. Needed before scan conversion, RF2O, mapping, and Nav2. |
 | `lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | Default path filters `/lidar/raw_laserscan` into `/lidar/filtered_laserscan` and `/lidar/filtered_laserscan_no_downsample`, then runs RF2O and the odometry deadband/jump wrapper. | LiDAR odometry chain. Direct standalone launch lets the wrapper publish `odom -> base_frame` by default. |
@@ -28,8 +32,9 @@ files use the installed Humble or Jazzy `ekf_node`; this workspace does not keep
 | `muto_odometry_bag/launch/record_odometry_bag_launch.py` | Records raw LiDAR, raw/processed IMU, controller attitude, telemetry and yaw-gate status, motion/gait state, `cmd_vel`, endpoint events, build metadata, `/tf_static`, and optional motor snapshots. | Attach to a live hardware pipeline to capture odometry source data and field-test provenance. |
 | `muto_odometry_bag/launch/replay_odometry_bag_launch.py` | Publishes recorded source topics and `/clock`, recreates `get_motor_angles`, and starts the normal LiDAR/optional-foot/EKF launch. Stop-only controller yaw is enabled by default; recorded static TF can be pre-published before the first scan. | Offline repeatable odometry run through the original nodes; no hardware, mapping, or Nav2. |
 | `muto_odometry_bag/launch/replay_odometry_comparison_launch.py` | Replays one source bag through LiDAR-only, raw-gyro, raw-RF2O, and optional relative-controller-yaw EKF branches concurrently; foot input is independently optional. Only `/odometry/filtered` publishes odom TF. | Side-by-side odometry comparison under one replay clock. Use 2x or slower for quantitative work. |
-| `muto_exploration_bag/launch/record_exploration_bag_launch.py` | Arms a standalone compact MCAP recorder that retains navigation, odometry, structured object results, action traffic, and operator events while excluding bulky image and point-cloud payloads. | Automatic with the command launch, or launch separately before an exploration action. |
-| `muto_nav2_bag/launch/record_nav2_bag_launch.py` | Immediately opens a manually controlled, navigation-only MCAP with TF, maps, odometry, scans, goals, paths, costmaps, commands, Nav2 action progress, and diagnostic context. | Attach to any live Nav2 run; stop with its service or `Ctrl-C`. It is independent of the mission recorder. |
+| `muto_command_bag/launch/record_command_bag_launch.py` | Arms the parent mission monitor with decisions, exact inspected JPEGs, registry changes, primitive outcomes, navigation context, pose/progress snapshots, and operator events. | Automatic with the command launch; one MCAP spans each complete `/look_for_object` commander mission. |
+| `muto_exploration_bag/launch/record_exploration_bag_launch.py` | Arms a child-scoped compact MCAP recorder that retains navigation, odometry, structured object results, action traffic, and operator events while excluding bulky image and point-cloud payloads. | Automatic with the command launch; opens only while an exploration child is active, or launch separately before a compatibility action. |
+| `muto_nav2_bag/launch/record_nav2_bag_launch.py` | Opens a navigation-only MCAP with TF, maps, compact pose/scan evidence, goals, paths, commands, action state, diagnostics, and config snapshots. | Included by the normal pipeline. It can also be launched separately; select `nav2_bag_full.yaml` for a short costmap/action-feedback deep dive. |
 | `lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Converts raw depth plus CameraInfo into the narrow, NaN-masked `/camera/filtered_laserscan`. It does not subscribe to LiDAR. | Independent camera preprocessing component. The top-level pipeline includes it when `launch_camera_obstacle_scan:=true`. |
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
@@ -349,6 +354,12 @@ publish to `/cmd_vel_nav`; the velocity smoother publishes the final
 `/cmd_vel` sent to the Muto driver. This keeps one Humble-compatible hard
 velocity/acceleration limiter before hardware.
 
+The navigation behavior trees select Humble's Savitzky-Golay path smoother for
+small NavFn artifacts and retain `SimpleSmoother` as a configured rollback.
+RPP uses a fixed `0.40 m` lookahead, beyond the approximately `0.26 m` robot
+radius, to reduce left/right turn-direction flipping when a new path starts
+behind the robot.
+
 ### Object Perception And Commands
 
 Run this beside, not inside, the Nav2 pipeline:
@@ -445,16 +456,17 @@ exploration interval is a minimum: an active frontier trip is allowed to finish
 before the scan begins. The action owns
 command-layer navigation until it succeeds, aborts, or is canceled.
 
-The launch starts the standalone `muto_exploration_bag` recorder by default.
-It opens one MCAP per mission under `/opt/muto_rs_ws/bags`, retains the
-navigation, odometry, structured object-result, log, lifecycle, and hidden
-action graph, and finalizes on success, cancellation, or abort. Raw camera
-images, derived SAM2 images, and point clouds are excluded by default. Read the
-exact transient-local path from
-`/explore_and_record/last_bag_path`. Publish a short manual note on
-`/explore_and_record/operator_event` while the action is active. Clear
-`exploration_bag_exclude_regex` only for a dedicated raw-perception capture, or
-use `exploration_bag_topics_regex` for a narrower recording contract.
+The command launch arms two mission-scoped monitoring layers. The parent
+`muto_command_bag` opens for the complete commander mission and records what
+the agent knew, decided, dispatched, and achieved. `muto_exploration_bag`
+opens a second child-scoped MCAP only while an exploration action is active.
+Both write under `/opt/muto_rs_ws/bags`; neither opens a mission file while the
+robot is idle. The normal Nav2 pipeline independently opens one compact
+boot-session Nav2 bag, including idle navigation health and direct goals. All
+three profiles exclude continuous camera imagery, SAM image products, and
+point clouds. See [Default Bags And Mission
+Monitoring](bags.md) for exact scope, path/status topics, manual-event commands,
+the shared 20-directory retention limit, and replay safety.
 
 When frontier exploration reports completion, the action snapshots `/map` and
 Nav2's global costmap and queries a 2-D line-of-sight calculator for current
@@ -467,10 +479,10 @@ RGB, depth, detector, and registry results are not coverage inputs. Treat this
 as a geometric mission-progress estimate, not measured camera coverage or
 proof that every object was seen.
 
-### Standalone Nav2 Diagnostic Bag
+### Nav2 Diagnostic Bag
 
-To inspect navigation without recording perception imagery or the full ROS
-graph, start this in a separate terminal after the Nav2 pipeline:
+The normal Nav2 pipeline starts the compact recorder by default. To run the
+recorder separately against an already-running Nav2 graph:
 
 ```bash
 ros2 launch muto_nav2_bag record_nav2_bag_launch.py
@@ -490,9 +502,11 @@ Nav2, frontier, and SLAM parameter files plus both Muto behavior trees used by
 the recorder launch.
 
 The Humble deployment cannot capture ordinary Nav2 action goal/result service
-payloads unless service introspection is enabled. Plans, feedback/status, RViz
-goals, frontier/object goal mirrors, and operator events are retained; annotate
-a goal sent directly through an action client when its target matters.
+payloads unless service introspection is enabled. The compact default retains
+plans, action status, RViz goals, frontier/object goal mirrors, and operator
+events; annotate a goal sent directly through an action client when its target
+matters. Use `nav2_bag_full.yaml` for short captures that also require action
+feedback and complete costmaps.
 
 ### Joystick Teleop
 

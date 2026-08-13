@@ -13,7 +13,7 @@
             <SmoothPath
               unsmoothed_path="{path}"
               smoothed_path="{smoothed_path}"
-              smoother_id="simple_smoother"
+              smoother_id="savitzky_golay_smoother"
               max_smoothing_duration="0.5"
               check_for_collisions="true"/>
           </Sequence>

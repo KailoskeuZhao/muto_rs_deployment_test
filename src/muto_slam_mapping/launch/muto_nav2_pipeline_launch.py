@@ -61,6 +61,7 @@ def readiness_gated_include(
     package_name,
     launch_name,
     launch_arguments=None,
+    additional_success_actions=None,
 ):
     gate_arguments = [
         '--stage',
@@ -86,7 +87,7 @@ def readiness_gated_include(
 
     def handle_gate_exit(event, _context):
         if event.returncode == 0:
-            return [include]
+            return [include, *(additional_success_actions or [])]
         return [
             EmitEvent(
                 event=Shutdown(
@@ -123,6 +124,26 @@ def generate_launch_description():
         get_package_share_directory('muto_slam_mapping'),
         'config',
         'nav2_params.yaml',
+    )
+    default_frontier_params_file = os.path.join(
+        get_package_share_directory('muto_slam_mapping'),
+        'config',
+        'frontier_exploration_params.yaml',
+    )
+    default_nav_to_pose_bt_file = os.path.join(
+        get_package_share_directory('muto_slam_mapping'),
+        'behavior_trees',
+        'muto_nav_to_pose.xml',
+    )
+    default_nav_through_poses_bt_file = os.path.join(
+        get_package_share_directory('muto_slam_mapping'),
+        'behavior_trees',
+        'muto_nav_through_poses.xml',
+    )
+    default_nav2_bag_params_file = os.path.join(
+        get_package_share_directory('muto_nav2_bag'),
+        'config',
+        'nav2_bag.yaml',
     )
     default_locomotion_calibration_file = os.path.join(
         get_package_share_directory('yahboomcar_bringup'),
@@ -253,6 +274,35 @@ def generate_launch_description():
             'slam_params_file': LaunchConfiguration('slam_params_file'),
         },
     )
+    nav2_bag_include = scoped_include(
+        'muto_nav2_bag',
+        'record_nav2_bag_launch.py',
+        {
+            'params_file': LaunchConfiguration('nav2_bag_params_file'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'output_directory': LaunchConfiguration(
+                'nav2_bag_output_directory'
+            ),
+            'max_bag_directories': LaunchConfiguration(
+                'max_bag_directories'
+            ),
+            'nav2_params_file': LaunchConfiguration('nav2_params_file'),
+            'frontier_params_file': LaunchConfiguration(
+                'frontier_params_file'
+            ),
+            'slam_params_file': LaunchConfiguration('slam_params_file'),
+            'nav_to_pose_bt_file': LaunchConfiguration(
+                'nav_to_pose_bt_file'
+            ),
+            'nav_through_poses_bt_file': LaunchConfiguration(
+                'nav_through_poses_bt_file'
+            ),
+            'locomotion_calibration_file': LaunchConfiguration(
+                'locomotion_calibration_file'
+            ),
+        },
+        condition=IfCondition(LaunchConfiguration('launch_nav2_bag')),
+    )
     nav2_actions = readiness_gated_include(
         'nav2',
         'nav2_delay',
@@ -274,6 +324,7 @@ def generate_launch_description():
             'use_respawn': LaunchConfiguration('nav2_use_respawn'),
             'log_level': LaunchConfiguration('nav2_log_level'),
         },
+        additional_success_actions=[nav2_bag_include],
     )
 
     return LaunchDescription([
@@ -541,6 +592,29 @@ def generate_launch_description():
             description='Start Nav2 planner, controller, and navigator servers.',
         ),
         DeclareLaunchArgument(
+            'launch_nav2_bag',
+            default_value='true',
+            description=(
+                'Start the compact session-level Nav2 recorder after the '
+                'Nav2 readiness gate succeeds.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'nav2_bag_params_file',
+            default_value=default_nav2_bag_params_file,
+            description='Nav2 recorder topic profile; compact by default.',
+        ),
+        DeclareLaunchArgument(
+            'nav2_bag_output_directory',
+            default_value='/opt/muto_rs_ws/bags',
+            description='Parent directory for automatic Nav2 session bags.',
+        ),
+        DeclareLaunchArgument(
+            'max_bag_directories',
+            default_value='20',
+            description='Shared maximum count of recognized Muto bag folders.',
+        ),
+        DeclareLaunchArgument(
             'sensor_tf_delay',
             default_value='1.0',
             description='Minimum delay before static sensor TF starts.',
@@ -599,6 +673,23 @@ def generate_launch_description():
             'nav2_params_file',
             default_value=default_nav2_params_file,
             description='Nav2 parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'frontier_params_file',
+            default_value=default_frontier_params_file,
+            description='Frontier parameters snapshotted by the Nav2 bag.',
+        ),
+        DeclareLaunchArgument(
+            'nav_to_pose_bt_file',
+            default_value=default_nav_to_pose_bt_file,
+            description='NavigateToPose tree snapshotted by the Nav2 bag.',
+        ),
+        DeclareLaunchArgument(
+            'nav_through_poses_bt_file',
+            default_value=default_nav_through_poses_bt_file,
+            description=(
+                'NavigateThroughPoses tree snapshotted by the Nav2 bag.'
+            ),
         ),
         DeclareLaunchArgument(
             'namespace',

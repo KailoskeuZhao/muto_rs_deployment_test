@@ -1,16 +1,14 @@
 nav2_bag_recorder:
   ros__parameters:
-    # One session-level Nav2 diagnostic bag is opened when the normal Nav2
-    # pipeline starts. The directory name is generated when bag_name is empty.
+    # Opt-in broad Nav2 profile for short, manually bounded deep dives. The
+    # directory name is generated when bag_name is empty.
     output_directory: "/opt/muto_rs_ws/bags"
     bag_name: ""
     storage_id: mcap
-    # Fast chunk compression keeps map, TF and scan evidence inexpensive while
+    # Fast chunk compression makes repeated maps/costmaps inexpensive while
     # keeping CPU cost low enough for field diagnostics.
     storage_preset: zstd_fast
     max_cache_size: 52428800
-    # Shared cap across muto_command_*, muto_explore_*, muto_nav2_* and
-    # muto_odometry_* directories. Zero disables pruning.
     max_bag_directories: 20
     include_hidden_topics: true
     # Keep the recorder topic-scoped on every ROS distro. Humble cannot select
@@ -23,8 +21,8 @@ nav2_bag_recorder:
     path_topic: /muto/nav2_bag/path
     stop_service: /muto/nav2_bag/stop
 
-    # Explicitly navigation-scoped. Full costmaps, raw sensors, camera images,
-    # point clouds, detector output, and /bond are intentionally absent.
+    # Explicitly navigation-scoped. Camera images, point clouds, SAM output,
+    # raw sensor streams, and /bond are intentionally absent.
     topics:
       # Recorder provenance and operator annotations.
       - /muto/nav2_bag/metadata
@@ -33,7 +31,7 @@ nav2_bag_recorder:
       - /muto/nav2_bag/path
       - /clock
 
-      # Map and compact pose evidence.
+      # Robot pose, map, and localization inputs used by Nav2.
       - /tf
       - /tf_static
       - /map
@@ -41,8 +39,13 @@ nav2_bag_recorder:
       - /pose
       - /odometry/filtered
       - /scan_odom
+      - /scan_odom_raw
+      - /foot_odom
+      - /imu/data_processed
+      - /muto/commanded_gait_state
       - /muto/motion_command_state
       - /lidar/filtered_laserscan
+      - /lidar/filtered_laserscan_no_downsample
       - /camera/filtered_laserscan
 
       # Goal sources, paths, and the command before/after velocity smoothing.
@@ -53,27 +56,55 @@ nav2_bag_recorder:
       - /plan_smoothed
       - /received_global_plan
       - /lookahead_point
+      - /lookahead_collision_arc
       - /cmd_vel_nav
       - /cmd_vel
 
-      # Nav2 action state. High-rate feedback is omitted because pose, plans,
-      # target mirrors, and status retain the useful diagnostic information.
+      # Published costmaps and footprints.
+      - /global_costmap/costmap
+      - /global_costmap/costmap_raw
+      - /global_costmap/costmap_updates
+      - /global_costmap/published_footprint
+      - /local_costmap/costmap
+      - /local_costmap/costmap_raw
+      - /local_costmap/costmap_updates
+      - /local_costmap/published_footprint
+
+      # Nav2 action progress. Goal/result service payloads require service
+      # introspection and are not available on the deployed Humble graph.
+      - /navigate_to_pose/_action/feedback
       - /navigate_to_pose/_action/status
+      - /navigate_through_poses/_action/feedback
       - /navigate_through_poses/_action/status
+      - /compute_path_to_pose/_action/feedback
       - /compute_path_to_pose/_action/status
+      - /compute_path_through_poses/_action/feedback
       - /compute_path_through_poses/_action/status
+      - /smooth_path/_action/feedback
       - /smooth_path/_action/status
+      - /follow_path/_action/feedback
       - /follow_path/_action/status
+      - /spin/_action/feedback
       - /spin/_action/status
+      - /backup/_action/feedback
       - /backup/_action/status
+      - /wait/_action/feedback
       - /wait/_action/status
 
-      # Frontier/object-navigation targets and action state.
+      # Frontier/object-navigation goal mirrors and mission context.
+      - /explore/frontiers
       - /explore/selected_frontier
+      - /explore/optimized_map
       - /explore/exploration_complete
       - /explore/visibility_target_pose
       - /object_navigation/target_pose
+      - /explore_and_record/_action/feedback
       - /explore_and_record/_action/status
+      - /explore_and_record/recording_event
+      - /explore_and_record/operator_event
+      - /explore_and_record/bag_status
+      - /explore_and_record/last_bag_path
+      - /go_to_object/_action/feedback
       - /go_to_object/_action/status
 
       # Behavior, diagnostics, parameter changes, and lifecycle state.

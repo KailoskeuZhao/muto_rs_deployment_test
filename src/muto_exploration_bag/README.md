@@ -4,6 +4,11 @@ This package records one diagnostic MCAP bag for each
 `/explore_and_record` action. It is a standalone recorder: the command layer
 publishes mission lifecycle events and does not own rosbag2 or write files.
 
+In the normal command launch this is the child-detail layer of the default
+monitor. The separate command bag spans the entire commander mission; this bag
+opens only for the exploration interval. See [Default Bags And Mission
+Monitoring](../../docs/bags.md) for the combined monitoring contract.
+
 `command_layer_launch.py` starts this recorder by default. To keep it in a
 separate terminal, arm it first:
 

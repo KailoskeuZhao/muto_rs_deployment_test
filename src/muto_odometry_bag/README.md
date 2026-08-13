@@ -4,6 +4,10 @@ This package records the hardware-originated inputs to the Muto odometry
 pipeline and replays them into the normal ROS interfaces. It does not contain
 an alternative odometry implementation.
 
+It is an optional controlled-test recorder, not part of default mission
+monitoring. See [Default Bags And Mission Monitoring](../../docs/bags.md) for
+the distinction between automatic mission bags and diagnostic captures.
+
 During replay, the existing packages still perform every calculation:
 
 1. `lidar_pointcloud_filter` filters the virtual raw scan.

@@ -8,27 +8,45 @@
     <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
-          <Sequence name="PlanAndSmoothPath">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-            <SmoothPath
-              unsmoothed_path="{path}"
-              smoothed_path="{smoothed_path}"
-              smoother_id="savitzky_golay_smoother"
-              max_smoothing_duration="0.5"
-              check_for_collisions="true"/>
-          </Sequence>
+          <RecoveryNode number_of_retries="1" name="PlanAndSmoothRecovery">
+            <Sequence name="PlanAndSmoothPath">
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+              <SmoothPath
+                unsmoothed_path="{path}"
+                smoothed_path="{smoothed_path}"
+                smoother_id="savitzky_golay_smoother"
+                max_smoothing_duration="0.5"
+                check_for_collisions="true"/>
+            </Sequence>
+            <Sequence name="RefreshGlobalCostmap">
+              <ClearEntireCostmap
+                name="ClearGlobalCostmap-PlanFailure"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+              <Wait wait_duration="1.2"/>
+            </Sequence>
+          </RecoveryNode>
         </RateController>
-        <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
+        <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
+          <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
+          <Sequence name="RefreshLocalCostmap">
+            <ClearEntireCostmap
+              name="ClearLocalCostmap-ControlFailure"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+            <Wait wait_duration="0.4"/>
+          </Sequence>
+        </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <!--
-          A trapped hexapod must not spin its legs through nearby furniture or
-          back up blindly.  Pause once so freshly marked obstacles can trigger
-          a replan; if the retry still fails, return failure to the owning
-          action instead of issuing an autonomous moving recovery.
+          After targeted refresh/retry has failed, change the sensor viewpoint
+          by only 30 degrees. Nav2 Spin collision-checks the complete footprint.
+          Never back up blindly in the cluttered deployment room.
         -->
-        <Wait wait_duration="2.0"/>
+        <RoundRobin name="BoundedRecoveryActions">
+          <Spin spin_dist="0.52"/>
+          <Wait wait_duration="2.0"/>
+        </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

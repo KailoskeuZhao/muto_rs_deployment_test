@@ -189,9 +189,9 @@ behaviors.
 | Resolution | `0.04 m/cell` |
 | Update / publish | `5 / 2 Hz` |
 | Plugins | obstacle, inflation |
-| Robot radius | `0.16 m` |
-| Inflation radius | `0.40 m` |
-| Cost scaling factor | `12.0` |
+| Robot radius | `0.26 m` (`0.27 m` with padding) |
+| Inflation radius | `0.42 m` |
+| Cost scaling factor | `6.0` |
 | Transform tolerance | `0.2 s` |
 
 Both `lidar` and `camera` are declared under the same obstacle layer. They update
@@ -210,19 +210,24 @@ The global costmap combines the SLAM map with current sensor observations.
 | Update / publish | `1 / 1 Hz` |
 | Track unknown | `true` |
 | Plugins | static, obstacle, inflation |
-| Robot radius | `0.16 m` |
-| Inflation radius | `0.40 m` |
+| Robot radius | `0.26 m` (`0.27 m` with padding) |
+| Inflation radius | `0.42 m` |
+| Cost scaling factor | `6.0` |
 | Transform tolerance | `0.2 s` |
 
 The static layer consumes `/map`. The obstacle layer adds current LiDAR and
 camera observations. The inflation layer expands lethal costs for planning.
+It does not inflate around unknown cells: frontier exploration and NavFn are
+configured to enter unknown space, so treating each unknown cell as an
+inflation source would turn the exploration boundary into a virtual wall.
 
 ## Footprint Assumption
 
-The configured `robot_radius: 0.16` models the central body and fixed sensor
-package. It does not cover the complete swept leg envelope. The reference
-zero-pose leg collision radius is roughly `0.30 m`, and walking can change the
-shape further.
+The configured `robot_radius: 0.26` follows the field-measured walking
+envelope; `footprint_padding: 0.01` makes the effective collision radius
+`0.27 m`. The reference zero-pose leg collision radius is roughly `0.30 m`,
+and walking can change the shape further, so this remains an approximation
+rather than a certified swept-volume model.
 
 This is a deployment risk, not a cosmetic tuning choice. Before autonomous
 navigation near narrow gaps:

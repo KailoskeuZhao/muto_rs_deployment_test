@@ -9,22 +9,41 @@
     <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
-          <Sequence name="PlanAndSmoothPath">
-            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
-            <SmoothPath
-              unsmoothed_path="{path}"
-              smoothed_path="{smoothed_path}"
-              smoother_id="savitzky_golay_smoother"
-              max_smoothing_duration="0.5"
-              check_for_collisions="true"/>
-          </Sequence>
+          <RecoveryNode number_of_retries="1" name="PlanAndSmoothRecovery">
+            <Sequence name="PlanAndSmoothPath">
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              <SmoothPath
+                unsmoothed_path="{path}"
+                smoothed_path="{smoothed_path}"
+                smoother_id="savitzky_golay_smoother"
+                max_smoothing_duration="0.5"
+                check_for_collisions="true"/>
+            </Sequence>
+            <Sequence name="RefreshGlobalCostmap">
+              <ClearEntireCostmap
+                name="ClearGlobalCostmap-PlanFailure"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+              <Wait wait_duration="1.2"/>
+            </Sequence>
+          </RecoveryNode>
         </RateController>
-        <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
+        <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
+          <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
+          <Sequence name="RefreshLocalCostmap">
+            <ClearEntireCostmap
+              name="ClearLocalCostmap-ControlFailure"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+            <Wait wait_duration="0.4"/>
+          </Sequence>
+        </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
-        <!-- Fail without moving recovery when the full leg envelope is blocked. -->
-        <Wait wait_duration="2.0"/>
+        <!-- Collision-checked small turn only; never blind-back the hexapod. -->
+        <RoundRobin name="BoundedRecoveryActions">
+          <Spin spin_dist="0.52"/>
+          <Wait wait_duration="2.0"/>
+        </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

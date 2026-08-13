@@ -439,13 +439,44 @@ the approximately `0.26 m` robot radius reduces turn-direction sensitivity
 when the path initially lies behind the robot. Its 0.30
 rad/s yaw request is a conservative physical envelope for the current Muto
 gait: higher geometric commands are possible, but field bags showed poor
-achieved yaw and weak simultaneous forward-turn response. Odometry remains
-authoritative for achieved motion and completion. Its
+achieved yaw and weak simultaneous forward-turn response. Humble RPP's own
+`max_angular_accel` is intentionally `12.0 rad/s^2`: this is not a physical
+limit. RPP otherwise clamps every rotate-to-path request around the measured
+odometry yaw rate, which reduced a requested `0.30 rad/s` turn to approximately
+`0.03 rad/s` in the 2026-08-13 field bag. The downstream velocity smoother is
+the physical acceleration authority and still ramps yaw at `0.6 rad/s^2`.
+Odometry remains authoritative for achieved motion and completion. Its
 output is remapped to `/cmd_vel_nav`; the lifecycle-managed
 velocity smoother publishes the normal follow-path `/cmd_vel` at 20 Hz.
 Recovery behavior output and model-commander direct-rotate output are also
 sent to `/cmd_vel_nav`, so the velocity smoother remains the final limiter
 before the Muto driver.
+
+NavFn plans a point-center path and therefore cannot itself guarantee that the
+complete circular footprint clears an obstacle. Both costmaps use a gradual
+`0.42 m` inflation field with scaling factor `6.0`. This leaves a modest
+`0.15 m` soft-clearance band outside the effective `0.27 m` robot radius while
+still allowing narrow routes in the cluttered deployment room. The smoother
+and RPP retain full-footprint collision checking; inflation is a planning
+preference, not permission to ignore a collision.
+
+`inflate_around_unknown` is disabled. This is required for frontier
+navigation: Humble otherwise uses every unknown map cell as an inflation
+source, contradicting NavFn's `allow_unknown: true`. The 2026-08-13 diagnostic
+bag showed the consequence of that mismatch: 58,256 unknown SLAM cells became
+51,696 lethal and 7,294 inscribed cells in the global costmap. Unknown space
+now remains unknown while mapped obstacle cells retain inflation and
+full-footprint collision checks.
+
+Recovery is bounded and failure-specific. A planning or smoothing failure
+clears only the global costmap, waits `1.2 s` for its 1 Hz static/sensor layers
+to repopulate, and retries the full compute-and-collision-check sequence once.
+A controller/progress failure clears only the local costmap, waits `0.4 s` for
+fresh 5 Hz obstacle updates, and retries FollowPath once. If the complete
+navigation pipeline still fails, Nav2 may make one collision-checked `0.52 rad`
+sensor-view turn and one stationary `2 s` retry. It never performs blind
+backup, never disables footprint collision checking, and returns failure after
+the bounded attempts so the owning command layer can replan at mission level.
 
 ## Main Runtime Contract
 

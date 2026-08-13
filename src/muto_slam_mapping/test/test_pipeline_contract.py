@@ -138,17 +138,59 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
     assert controller['desired_linear_vel'] == 0.20
     assert controller['lookahead_dist'] == 0.40
     assert controller['rotate_to_heading_angular_vel'] == 0.30
-    assert controller['max_angular_accel'] == 0.6
+    # Humble RPP clamps rotate-to-heading around measured yaw velocity before
+    # the velocity smoother. Its internal limit must be non-binding across the
+    # complete signed yaw range; the smoother owns the physical 0.6 rad/s^2
+    # acceleration limit.
+    controller_period = 1.0 / config[
+        'controller_server']['ros__parameters']['controller_frequency']
+    yaw_limit = controller['rotate_to_heading_angular_vel']
+    internal_delta = controller['max_angular_accel'] * controller_period
+    assert internal_delta >= 2.0 * yaw_limit
+    assert min(yaw_limit, 0.0 + internal_delta) == yaw_limit
+    assert min(yaw_limit, -yaw_limit + internal_delta) == yaw_limit
     assert behavior['max_rotational_vel'] == 0.30
     assert behavior['rotational_acc_lim'] == 0.6
 
 
-def test_navigation_recovery_does_not_move_a_trapped_hexapod():
+def test_navfn_clearance_field_covers_the_effective_robot_footprint():
+    config = _load_yaml(PACKAGE_ROOT / 'config' / 'nav2_params.yaml')
+
+    for costmap_name in ('local_costmap', 'global_costmap'):
+        parameters = config[costmap_name][costmap_name]['ros__parameters']
+        inflation = parameters['inflation_layer']
+        effective_radius = (
+            parameters['robot_radius'] + parameters['footprint_padding'])
+
+        soft_clearance = inflation['inflation_radius'] - effective_radius
+        assert inflation['inflation_radius'] >= effective_radius
+        assert 0.10 <= soft_clearance <= 0.20
+        assert inflation['cost_scaling_factor'] == 6.0
+        assert inflation['inflate_unknown'] is False
+        assert inflation['inflate_around_unknown'] is False
+        assert parameters['obstacle_layer'][
+            'footprint_clearing_enabled'] is False
+
+    planner = config['planner_server']['ros__parameters']['GridBased']
+    assert planner['allow_unknown'] is True
+
+
+def test_navigation_recovery_is_bounded_and_failure_specific():
+    config = _load_yaml(PACKAGE_ROOT / 'config' / 'nav2_params.yaml')
+    plugins = config['bt_navigator']['ros__parameters']['plugin_lib_names']
+    assert 'nav2_clear_costmap_service_bt_node' in plugins
+
     for name in ('muto_nav_to_pose.xml', 'muto_nav_through_poses.xml'):
         text = (PACKAGE_ROOT / 'behavior_trees' / name).read_text(
             encoding='utf-8')
+        assert 'name="PlanAndSmoothRecovery"' in text
+        assert 'name="FollowPathRecovery"' in text
+        assert 'global_costmap/clear_entirely_global_costmap' in text
+        assert 'local_costmap/clear_entirely_local_costmap' in text
+        assert '<Wait wait_duration="1.2"/>' in text
+        assert '<Wait wait_duration="0.4"/>' in text
         assert '<Wait wait_duration="2.0"/>' in text
-        assert '<Spin ' not in text
+        assert '<Spin spin_dist="0.52"/>' in text
         assert '<BackUp ' not in text
 
 

@@ -17,6 +17,7 @@ bt_navigator:
       - nav2_spin_action_bt_node
       - nav2_wait_action_bt_node
       - nav2_back_up_action_bt_node
+      - nav2_clear_costmap_service_bt_node
       - nav2_goal_updated_condition_bt_node
       - nav2_rate_controller_bt_node
       - nav2_recovery_node_bt_node
@@ -67,7 +68,7 @@ controller_server:
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      # Conservative physical Muto yaw envelope. Higher geometric gait
+      # Conservative physical Muto yaw-speed envelope. Higher geometric gait
       # commands are possible, but field bags showed poor achieved yaw and
       # weak combined forward+turn response. Odometry remains authoritative.
       rotate_to_heading_angular_vel: 0.30
@@ -86,7 +87,13 @@ controller_server:
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 0.6
+      # Humble RPP applies this limit around the *measured* odometry yaw rate
+      # every controller tick. At 20 Hz, a physical 0.6 rad/s^2 value clamps a
+      # 0.30 rad/s rotate-to-path request to 0.03 rad/s indefinitely when the
+      # measured response is weak or delayed. Keep this controller-internal
+      # clamp non-binding across the full configured [-0.30, +0.30] range;
+      # nav2_velocity_smoother below remains the physical 0.6 rad/s^2 limiter.
+      max_angular_accel: 12.0
 
 local_costmap:
   local_costmap:
@@ -149,10 +156,17 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        cost_scaling_factor: 12.0
-        inflation_radius: 0.4
+        # NavFn searches with a point center while the smoother/controller
+        # validate the complete 0.27 m effective footprint. Retain a modest
+        # 0.15 m soft-clearance band for this cluttered room; the footprint
+        # collision check, not inflation, remains the hard safety boundary.
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.42
         inflate_unknown: false
-        inflate_around_unknown: true
+        # Frontier navigation intentionally plans into NO_INFORMATION cells.
+        # Humble treats every unknown cell as an inflation source when this is
+        # true, which can turn nearly the complete rolling/global map lethal.
+        inflate_around_unknown: false
       always_send_full_costmap: true
 
 planner_server:
@@ -284,8 +298,12 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        cost_scaling_factor: 12.0
-        inflation_radius: 0.4
+        # Match the local soft-clearance preference without making narrow but
+        # physically passable routes prohibitively expensive.
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.42
         inflate_unknown: false
-        inflate_around_unknown: true
+        # Must agree with GridBased.allow_unknown below. Real mapped obstacles
+        # are inflated; unexplored cells are not converted into virtual walls.
+        inflate_around_unknown: false
       always_send_full_costmap: true

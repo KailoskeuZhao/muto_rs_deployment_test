@@ -23,7 +23,7 @@
               <ClearEntireCostmap
                 name="ClearGlobalCostmap-PlanFailure"
                 service_name="global_costmap/clear_entirely_global_costmap"/>
-              <Wait wait_duration="1.2"/>
+              <Wait wait_duration="2"/>
             </Sequence>
           </RecoveryNode>
         </RateController>
@@ -33,7 +33,7 @@
             <ClearEntireCostmap
               name="ClearLocalCostmap-ControlFailure"
               service_name="local_costmap/clear_entirely_local_costmap"/>
-            <Wait wait_duration="0.4"/>
+            <Wait wait_duration="1"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>
@@ -42,7 +42,7 @@
         <!-- Collision-checked small turn only; never blind-back the hexapod. -->
         <RoundRobin name="BoundedRecoveryActions">
           <Spin spin_dist="0.52"/>
-          <Wait wait_duration="2.0"/>
+          <Wait wait_duration="2"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

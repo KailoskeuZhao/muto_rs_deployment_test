@@ -469,12 +469,14 @@ now remains unknown while mapped obstacle cells retain inflation and
 full-footprint collision checks.
 
 Recovery is bounded and failure-specific. A planning or smoothing failure
-clears only the global costmap, waits `1.2 s` for its 1 Hz static/sensor layers
+clears only the global costmap, waits `2 s` for its 1 Hz static/sensor layers
 to repopulate, and retries the full compute-and-collision-check sequence once.
-A controller/progress failure clears only the local costmap, waits `0.4 s` for
+A controller/progress failure clears only the local costmap, waits `1 s` for
 fresh 5 Hz obstacle updates, and retries FollowPath once. If the complete
 navigation pipeline still fails, Nav2 may make one collision-checked `0.52 rad`
-sensor-view turn and one stationary `2 s` retry. It never performs blind
+sensor-view turn and one stationary `2 s` retry. Humble's Wait BT input is
+integer seconds, so these delays deliberately avoid sub-second literals. It
+never performs blind
 backup, never disables footprint collision checking, and returns failure after
 the bounded attempts so the owning command layer can replan at mission level.
 

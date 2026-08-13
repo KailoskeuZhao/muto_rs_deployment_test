@@ -187,9 +187,9 @@ def test_navigation_recovery_is_bounded_and_failure_specific():
         assert 'name="FollowPathRecovery"' in text
         assert 'global_costmap/clear_entirely_global_costmap' in text
         assert 'local_costmap/clear_entirely_local_costmap' in text
-        assert '<Wait wait_duration="1.2"/>' in text
-        assert '<Wait wait_duration="0.4"/>' in text
-        assert '<Wait wait_duration="2.0"/>' in text
+        assert '<Wait wait_duration="2"/>' in text
+        assert '<Wait wait_duration="1"/>' in text
+        assert 'wait_duration="0.' not in text
         assert '<Spin spin_dist="0.52"/>' in text
         assert '<BackUp ' not in text
 

@@ -53,6 +53,22 @@ def generate_launch_description():
             description='ROS log level for the frontier explorer node.',
         ),
         Node(
+            package='muto_slam_mapping',
+            executable='frontier_goal_adapter',
+            name='frontier_goal_adapter',
+            output='screen',
+            parameters=[
+                params_file,
+                {
+                    'use_sim_time': ParameterValue(
+                        use_sim_time,
+                        value_type=bool,
+                    ),
+                },
+            ],
+            arguments=['--ros-args', '--log-level', log_level],
+        ),
+        Node(
             package='frontier_exploration_ros2',
             executable='frontier_explorer',
             name='frontier_explorer',

@@ -746,6 +746,24 @@ def generate_launch_description():
         ),
         object_pipeline,
         Node(
+            package='muto_slam_mapping',
+            executable='frontier_goal_adapter',
+            name='frontier_goal_adapter',
+            output='screen',
+            condition=IfCondition(
+                LaunchConfiguration('launch_frontier_explorer')
+            ),
+            parameters=[
+                LaunchConfiguration('frontier_params_file'),
+                {
+                    'use_sim_time': ParameterValue(
+                        LaunchConfiguration('use_sim_time'),
+                        value_type=bool,
+                    ),
+                },
+            ],
+        ),
+        Node(
             package='frontier_exploration_ros2',
             executable='frontier_explorer',
             name='frontier_explorer',

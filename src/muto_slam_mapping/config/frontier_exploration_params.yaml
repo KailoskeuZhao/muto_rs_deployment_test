@@ -4,7 +4,9 @@ frontier_explorer:
     map_topic: /map
     costmap_topic: /global_costmap/costmap
     local_costmap_topic: /local_costmap/costmap
-    navigate_to_pose_action_name: /navigate_to_pose
+    # Frontier goals pass through the Muto adapter. It projects the endpoint
+    # into footprint-safe raw known-free space before calling Nav2.
+    navigate_to_pose_action_name: /frontier/navigate_to_pose
     global_frame: map
     robot_base_frame: base_frame
 
@@ -78,9 +80,10 @@ frontier_explorer:
     post_goal_settle_enabled: true
     post_goal_min_settle: 3.2
 
-    # Leave failure suppression opt-in until real navigation failure behavior
-    # has been observed on the robot. The bounded settings are ready if enabled.
-    frontier_suppression_enabled: false
+    # Repeated planning/controller failures and adapter rejections must not
+    # immediately redispatch the same unusable frontier. Suppression expires,
+    # so a later map/costmap update can make the area eligible again.
+    frontier_suppression_enabled: true
     frontier_suppression_attempt_threshold: 2
     frontier_suppression_base_size_m: 1.0
     frontier_suppression_expansion_size_m: 0.5
@@ -91,3 +94,22 @@ frontier_explorer:
     frontier_suppression_max_attempt_records: 256
     frontier_suppression_max_regions: 64
     all_frontiers_suppressed_behavior: stay
+
+frontier_goal_adapter:
+  ros__parameters:
+    input_action: /frontier/navigate_to_pose
+    nav2_action: /navigate_to_pose
+    map_topic: /map
+    # Matches Nav2's 0.26 m robot radius plus 0.01 m footprint padding.
+    effective_robot_radius: 0.27
+    # Large enough to move an optimized frontier endpoint back through the
+    # footprint-clearance band while remaining local to that frontier.
+    maximum_projection_distance: 0.80
+    free_space_max_occupancy: 0
+    map_wait_timeout: 5.0
+    map_maximum_age: 10.0
+    nav2_server_timeout: 5.0
+    orient_toward_frontier: true
+    original_goal_topic: /frontier_goal_adapter/original_goal
+    projected_goal_topic: /frontier_goal_adapter/projected_goal
+    status_topic: /frontier_goal_adapter/status

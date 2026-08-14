@@ -97,6 +97,11 @@ nav2_bag_recorder:
       - /explore/optimized_map
       - /explore/exploration_complete
       - /explore/visibility_target_pose
+      - /frontier_goal_adapter/original_goal
+      - /frontier_goal_adapter/projected_goal
+      - /frontier_goal_adapter/status
+      - /frontier/navigate_to_pose/_action/feedback
+      - /frontier/navigate_to_pose/_action/status
       - /object_navigation/target_pose
       - /explore_and_record/_action/feedback
       - /explore_and_record/_action/status

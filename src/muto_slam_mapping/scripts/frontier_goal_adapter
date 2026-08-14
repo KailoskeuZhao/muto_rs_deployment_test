@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+
+"""Project frontier goals into raw known-free space before forwarding to Nav2."""
+
+import copy
+from dataclasses import dataclass
+import json
+import math
+import threading
+import time
+from typing import Optional
+
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped
+from nav2_msgs.action import NavigateToPose
+from nav_msgs.msg import OccupancyGrid
+import rclpy
+from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+
+@dataclass(frozen=True)
+class ProjectedGoal:
+    x: float
+    y: float
+    displaced: bool
+    displacement: float
+
+
+def _origin_yaw(grid: OccupancyGrid) -> float:
+    orientation = grid.info.origin.orientation
+    return math.atan2(
+        2.0 * (
+            orientation.w * orientation.z
+            + orientation.x * orientation.y
+        ),
+        1.0 - 2.0 * (
+            orientation.y * orientation.y
+            + orientation.z * orientation.z
+        ),
+    )
+
+
+def _world_to_map_continuous(grid: OccupancyGrid, x: float, y: float):
+    resolution = float(grid.info.resolution)
+    if resolution <= 0.0:
+        return None
+    dx = x - grid.info.origin.position.x
+    dy = y - grid.info.origin.position.y
+    yaw = _origin_yaw(grid)
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    return (
+        (cos_yaw * dx + sin_yaw * dy) / resolution,
+        (-sin_yaw * dx + cos_yaw * dy) / resolution,
+    )
+
+
+def _map_to_world(grid: OccupancyGrid, cell_x: int, cell_y: int):
+    resolution = float(grid.info.resolution)
+    local_x = (cell_x + 0.5) * resolution
+    local_y = (cell_y + 0.5) * resolution
+    yaw = _origin_yaw(grid)
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    return (
+        grid.info.origin.position.x + cos_yaw * local_x - sin_yaw * local_y,
+        grid.info.origin.position.y + sin_yaw * local_x + cos_yaw * local_y,
+    )
+
+
+def _cell_is_known_free(
+    grid: OccupancyGrid,
+    cell_x: int,
+    cell_y: int,
+    free_space_max_occupancy: int,
+) -> bool:
+    width = int(grid.info.width)
+    height = int(grid.info.height)
+    if cell_x < 0 or cell_y < 0 or cell_x >= width or cell_y >= height:
+        return False
+    index = cell_y * width + cell_x
+    if index >= len(grid.data):
+        return False
+    occupancy = int(grid.data[index])
+    return 0 <= occupancy <= free_space_max_occupancy
+
+
+def _footprint_is_known_free(
+    grid: OccupancyGrid,
+    center_x: int,
+    center_y: int,
+    effective_radius: float,
+    free_space_max_occupancy: int,
+) -> bool:
+    """Conservatively reject every map cell touched by the circular footprint."""
+    resolution = float(grid.info.resolution)
+    if resolution <= 0.0 or effective_radius < 0.0:
+        return False
+
+    reach = int(math.ceil(effective_radius / resolution)) + 1
+    for offset_y in range(-reach, reach + 1):
+        for offset_x in range(-reach, reach + 1):
+            # Minimum distance from the candidate center to this cell square.
+            distance_x = max(
+                abs(offset_x) * resolution - 0.5 * resolution,
+                0.0,
+            )
+            distance_y = max(
+                abs(offset_y) * resolution - 0.5 * resolution,
+                0.0,
+            )
+            if math.hypot(distance_x, distance_y) > effective_radius:
+                continue
+            if not _cell_is_known_free(
+                grid,
+                center_x + offset_x,
+                center_y + offset_y,
+                free_space_max_occupancy,
+            ):
+                return False
+    return True
+
+
+def project_goal_to_known_free(
+    grid: OccupancyGrid,
+    target_x: float,
+    target_y: float,
+    effective_radius: float,
+    maximum_projection_distance: float,
+    free_space_max_occupancy: int = 0,
+) -> Optional[ProjectedGoal]:
+    """Return the nearest footprint-safe cell center to the frontier target."""
+    map_target = _world_to_map_continuous(grid, target_x, target_y)
+    resolution = float(grid.info.resolution)
+    if map_target is None or maximum_projection_distance < 0.0:
+        return None
+    if len(grid.data) != int(grid.info.width) * int(grid.info.height):
+        return None
+
+    target_cell_x = int(math.floor(map_target[0]))
+    target_cell_y = int(math.floor(map_target[1]))
+    search_reach = int(math.ceil(maximum_projection_distance / resolution)) + 1
+    best = None
+    best_score = None
+
+    for cell_y in range(target_cell_y - search_reach, target_cell_y + search_reach + 1):
+        for cell_x in range(target_cell_x - search_reach, target_cell_x + search_reach + 1):
+            world_x, world_y = _map_to_world(grid, cell_x, cell_y)
+            displacement = math.hypot(world_x - target_x, world_y - target_y)
+            if displacement > maximum_projection_distance + 1.0e-9:
+                continue
+            if not _footprint_is_known_free(
+                grid,
+                cell_x,
+                cell_y,
+                effective_radius,
+                free_space_max_occupancy,
+            ):
+                continue
+
+            # Distance is the primary criterion. Stable cell indices make ties
+            # deterministic across runs and ROS distributions.
+            score = (displacement, cell_y, cell_x)
+            if best_score is None or score < best_score:
+                best_score = score
+                best = ProjectedGoal(
+                    x=world_x,
+                    y=world_y,
+                    displaced=displacement > 0.5 * resolution,
+                    displacement=displacement,
+                )
+    return best
+
+
+def _copy_navigation_result(source):
+    result = NavigateToPose.Result()
+    for field_name in ('error_code', 'error_msg'):
+        if hasattr(source, field_name) and hasattr(result, field_name):
+            setattr(result, field_name, getattr(source, field_name))
+    return result
+
+
+def _failure_result(message: str):
+    result = NavigateToPose.Result()
+    if hasattr(result, 'error_code'):
+        # NavigateToPose reserves zero for NONE on supported Humble/Jazzy APIs.
+        result.error_code = 1
+    if hasattr(result, 'error_msg'):
+        result.error_msg = message
+    return result
+
+
+class FrontierGoalAdapter(Node):
+    def __init__(self):
+        super().__init__('frontier_goal_adapter')
+        self.declare_parameter('input_action', '/frontier/navigate_to_pose')
+        self.declare_parameter('nav2_action', '/navigate_to_pose')
+        self.declare_parameter('map_topic', '/map')
+        self.declare_parameter('effective_robot_radius', 0.27)
+        self.declare_parameter('maximum_projection_distance', 0.80)
+        self.declare_parameter('free_space_max_occupancy', 0)
+        self.declare_parameter('map_wait_timeout', 5.0)
+        self.declare_parameter('map_maximum_age', 10.0)
+        self.declare_parameter('nav2_server_timeout', 5.0)
+        self.declare_parameter('orient_toward_frontier', True)
+        self.declare_parameter(
+            'original_goal_topic', '/frontier_goal_adapter/original_goal')
+        self.declare_parameter(
+            'projected_goal_topic', '/frontier_goal_adapter/projected_goal')
+        self.declare_parameter(
+            'status_topic', '/frontier_goal_adapter/status')
+
+        self._input_action = self.get_parameter('input_action').value
+        self._nav2_action = self.get_parameter('nav2_action').value
+        self._map_topic = self.get_parameter('map_topic').value
+        self._effective_radius = float(
+            self.get_parameter('effective_robot_radius').value)
+        self._maximum_projection_distance = float(
+            self.get_parameter('maximum_projection_distance').value)
+        self._free_space_max_occupancy = int(
+            self.get_parameter('free_space_max_occupancy').value)
+        self._map_wait_timeout = float(
+            self.get_parameter('map_wait_timeout').value)
+        self._map_maximum_age = float(
+            self.get_parameter('map_maximum_age').value)
+        self._nav2_server_timeout = float(
+            self.get_parameter('nav2_server_timeout').value)
+        self._orient_toward_frontier = bool(
+            self.get_parameter('orient_toward_frontier').value)
+
+        if self._effective_radius <= 0.0:
+            raise ValueError('effective_robot_radius must be positive')
+        if self._maximum_projection_distance < self._effective_radius:
+            raise ValueError(
+                'maximum_projection_distance must cover effective_robot_radius')
+        if not 0 <= self._free_space_max_occupancy <= 100:
+            raise ValueError('free_space_max_occupancy must be in [0, 100]')
+        for name, value in (
+            ('map_wait_timeout', self._map_wait_timeout),
+            ('map_maximum_age', self._map_maximum_age),
+            ('nav2_server_timeout', self._nav2_server_timeout),
+        ):
+            if value <= 0.0:
+                raise ValueError(f'{name} must be positive')
+
+        callback_group = ReentrantCallbackGroup()
+        map_qos = QoSProfile(depth=1)
+        map_qos.reliability = ReliabilityPolicy.RELIABLE
+        map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        diagnostic_qos = QoSProfile(depth=10)
+        diagnostic_qos.reliability = ReliabilityPolicy.RELIABLE
+
+        self._state_lock = threading.Lock()
+        self._latest_map = None
+        self._latest_map_receipt = 0.0
+        self._busy = False
+        self._active_child = None
+
+        self._map_subscription = self.create_subscription(
+            OccupancyGrid,
+            self._map_topic,
+            self._map_callback,
+            map_qos,
+            callback_group=callback_group,
+        )
+        self._original_goal_publisher = self.create_publisher(
+            PoseStamped,
+            self.get_parameter('original_goal_topic').value,
+            diagnostic_qos,
+        )
+        self._projected_goal_publisher = self.create_publisher(
+            PoseStamped,
+            self.get_parameter('projected_goal_topic').value,
+            diagnostic_qos,
+        )
+        self._status_publisher = self.create_publisher(
+            String,
+            self.get_parameter('status_topic').value,
+            diagnostic_qos,
+        )
+        self._nav2_client = ActionClient(
+            self,
+            NavigateToPose,
+            self._nav2_action,
+            callback_group=callback_group,
+        )
+        self._action_server = ActionServer(
+            self,
+            NavigateToPose,
+            self._input_action,
+            goal_callback=self._goal_callback,
+            cancel_callback=self._cancel_callback,
+            execute_callback=self._execute_callback,
+            callback_group=callback_group,
+        )
+        self.get_logger().info(
+            f'Frontier goal adapter ready: {self._input_action} -> '
+            f'{self._nav2_action}, radius={self._effective_radius:.3f} m')
+
+    def _map_callback(self, message):
+        with self._state_lock:
+            self._latest_map = message
+            self._latest_map_receipt = time.monotonic()
+
+    def _goal_callback(self, _goal_request):
+        with self._state_lock:
+            if self._busy:
+                self.get_logger().warning(
+                    'Rejecting concurrent frontier navigation goal')
+                return GoalResponse.REJECT
+            self._busy = True
+        return GoalResponse.ACCEPT
+
+    def _cancel_callback(self, _goal_handle):
+        return CancelResponse.ACCEPT
+
+    def _publish_status(self, outcome, original, projected=None, detail=''):
+        payload = {
+            'schema': 'muto_frontier_goal_adapter_v1',
+            'outcome': outcome,
+            'original_x': original.pose.position.x,
+            'original_y': original.pose.position.y,
+            'detail': detail,
+        }
+        if projected is not None:
+            payload.update({
+                'projected_x': projected.pose.position.x,
+                'projected_y': projected.pose.position.y,
+                'displacement_m': math.hypot(
+                    projected.pose.position.x - original.pose.position.x,
+                    projected.pose.position.y - original.pose.position.y,
+                ),
+            })
+        message = String()
+        message.data = json.dumps(payload, separators=(',', ':'), sort_keys=True)
+        self._status_publisher.publish(message)
+
+    def _wait_for_map(self, goal_handle):
+        deadline = time.monotonic() + self._map_wait_timeout
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                return None, 'canceled'
+            with self._state_lock:
+                grid = self._latest_map
+                receipt = self._latest_map_receipt
+            age = time.monotonic() - receipt
+            if grid is not None and age <= self._map_maximum_age:
+                return grid, ''
+            if time.monotonic() >= deadline:
+                if grid is None:
+                    return None, 'no raw occupancy map received'
+                return None, f'raw occupancy map is stale ({age:.2f} s)'
+            time.sleep(0.05)
+        return None, 'ROS shutdown'
+
+    def _wait_for_nav2(self, goal_handle):
+        deadline = time.monotonic() + self._nav2_server_timeout
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                return False
+            if self._nav2_client.server_is_ready():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self._nav2_client.wait_for_server(timeout_sec=0.05)
+            time.sleep(0.01)
+        return False
+
+    def _cancel_child_and_wait(self):
+        with self._state_lock:
+            child = self._active_child
+        if child is None:
+            return
+        result_future = child.get_result_async()
+        cancel_future = child.cancel_goal_async()
+        while rclpy.ok() and not cancel_future.done():
+            time.sleep(0.02)
+        while rclpy.ok() and not result_future.done():
+            time.sleep(0.02)
+
+    def _feedback_callback(self, parent_goal_handle):
+        def forward(message):
+            if parent_goal_handle.is_active:
+                parent_goal_handle.publish_feedback(message.feedback)
+        return forward
+
+    def _execute_callback(self, goal_handle):
+        original_pose = goal_handle.request.pose
+        self._original_goal_publisher.publish(original_pose)
+        try:
+            grid, map_error = self._wait_for_map(goal_handle)
+            if grid is None:
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                else:
+                    goal_handle.abort()
+                self._publish_status('rejected', original_pose, detail=map_error)
+                return _failure_result(map_error)
+
+            grid_frame = grid.header.frame_id or 'map'
+            goal_frame = original_pose.header.frame_id or grid_frame
+            if goal_frame != grid_frame:
+                detail = (
+                    f'goal frame {goal_frame!r} does not match raw map '
+                    f'frame {grid_frame!r}')
+                goal_handle.abort()
+                self._publish_status('rejected', original_pose, detail=detail)
+                return _failure_result(detail)
+
+            projected = project_goal_to_known_free(
+                grid,
+                original_pose.pose.position.x,
+                original_pose.pose.position.y,
+                self._effective_radius,
+                self._maximum_projection_distance,
+                self._free_space_max_occupancy,
+            )
+            if projected is None:
+                detail = (
+                    'no footprint-safe known-free endpoint within '
+                    f'{self._maximum_projection_distance:.2f} m')
+                goal_handle.abort()
+                self._publish_status('rejected', original_pose, detail=detail)
+                return _failure_result(detail)
+
+            nav_pose = PoseStamped()
+            nav_pose.header = copy.deepcopy(original_pose.header)
+            nav_pose.header.frame_id = grid_frame
+            nav_pose.pose = copy.deepcopy(original_pose.pose)
+            nav_pose.pose.position.x = projected.x
+            nav_pose.pose.position.y = projected.y
+            if self._orient_toward_frontier and projected.displaced:
+                yaw = math.atan2(
+                    original_pose.pose.position.y - projected.y,
+                    original_pose.pose.position.x - projected.x,
+                )
+                nav_pose.pose.orientation.x = 0.0
+                nav_pose.pose.orientation.y = 0.0
+                nav_pose.pose.orientation.z = math.sin(0.5 * yaw)
+                nav_pose.pose.orientation.w = math.cos(0.5 * yaw)
+
+            self._projected_goal_publisher.publish(nav_pose)
+            self._publish_status(
+                'projected' if projected.displaced else 'unchanged',
+                original_pose,
+                nav_pose,
+            )
+
+            if not self._wait_for_nav2(goal_handle):
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    return _failure_result('frontier goal canceled')
+                detail = 'NavigateToPose action server is unavailable'
+                goal_handle.abort()
+                self._publish_status('failed', original_pose, nav_pose, detail)
+                return _failure_result(detail)
+
+            child_goal = NavigateToPose.Goal()
+            child_goal.pose = nav_pose
+            child_goal.behavior_tree = goal_handle.request.behavior_tree
+            send_future = self._nav2_client.send_goal_async(
+                child_goal,
+                feedback_callback=self._feedback_callback(goal_handle),
+            )
+            while rclpy.ok() and not send_future.done():
+                time.sleep(0.02)
+            child_handle = send_future.result()
+            if child_handle is None or not child_handle.accepted:
+                detail = 'NavigateToPose rejected projected frontier goal'
+                goal_handle.abort()
+                self._publish_status('failed', original_pose, nav_pose, detail)
+                return _failure_result(detail)
+
+            with self._state_lock:
+                self._active_child = child_handle
+            result_future = child_handle.get_result_async()
+            cancel_requested = False
+            while rclpy.ok() and not result_future.done():
+                if goal_handle.is_cancel_requested and not cancel_requested:
+                    cancel_requested = True
+                    child_handle.cancel_goal_async()
+                time.sleep(0.02)
+
+            if not result_future.done():
+                detail = 'ROS shutdown before navigation result'
+                goal_handle.abort()
+                return _failure_result(detail)
+
+            wrapped = result_future.result()
+            result = _copy_navigation_result(wrapped.result)
+            if goal_handle.is_cancel_requested or wrapped.status == GoalStatus.STATUS_CANCELED:
+                goal_handle.canceled()
+                self._publish_status('canceled', original_pose, nav_pose)
+            elif wrapped.status == GoalStatus.STATUS_SUCCEEDED:
+                goal_handle.succeed()
+                self._publish_status('succeeded', original_pose, nav_pose)
+            else:
+                goal_handle.abort()
+                self._publish_status(
+                    'failed', original_pose, nav_pose,
+                    f'Nav2 terminal status {wrapped.status}')
+            return result
+        except Exception as exception:  # Fail this goal without killing the stack.
+            self.get_logger().error(
+                f'Frontier goal adapter failed: {type(exception).__name__}: '
+                f'{exception}')
+            self._cancel_child_and_wait()
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+            elif goal_handle.is_active:
+                goal_handle.abort()
+            self._publish_status(
+                'failed', original_pose,
+                detail=f'{type(exception).__name__}: {exception}')
+            return _failure_result(str(exception))
+        finally:
+            with self._state_lock:
+                self._active_child = None
+                self._busy = False
+
+    def destroy_node(self):
+        self._action_server.destroy()
+        self._nav2_client.destroy()
+        return super().destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = FrontierGoalAdapter()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

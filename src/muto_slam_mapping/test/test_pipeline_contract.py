@@ -232,6 +232,43 @@ def test_frontier_goal_stays_stable_while_nav2_is_driving():
     assert parameters['goal_preemption_enabled'] is False
     assert parameters['goal_skip_on_blocked_goal'] is True
     assert parameters['goal_preemption_complete_if_within_m'] == 0.25
+    assert parameters['frontier_suppression_enabled'] is True
+    assert parameters['frontier_suppression_attempt_threshold'] == 2
+    assert parameters['frontier_suppression_timeout_s'] == 90.0
+
+
+def test_frontier_navigation_uses_the_known_free_goal_adapter():
+    config = _load_yaml(
+        PACKAGE_ROOT / 'config' / 'frontier_exploration_params.yaml'
+    )
+    explorer = config['frontier_explorer']['ros__parameters']
+    adapter = config['frontier_goal_adapter']['ros__parameters']
+
+    assert explorer['navigate_to_pose_action_name'] == (
+        '/frontier/navigate_to_pose')
+    assert adapter['input_action'] == '/frontier/navigate_to_pose'
+    assert adapter['nav2_action'] == '/navigate_to_pose'
+    assert adapter['map_topic'] == '/map'
+    assert adapter['effective_robot_radius'] == 0.27
+    assert adapter['maximum_projection_distance'] >= 0.27
+    assert adapter['free_space_max_occupancy'] == 0
+
+    standalone_launch = (
+        PACKAGE_ROOT / 'launch' / 'frontier_exploration_launch.py'
+    ).read_text(encoding='utf-8')
+    command_launch = (
+        COMMAND_LAYER_ROOT / 'launch' / 'command_layer_launch.py'
+    ).read_text(encoding='utf-8')
+    for source in (standalone_launch, command_launch):
+        assert "executable='frontier_goal_adapter'" in source
+
+    for profile_name in ('nav2_bag.yaml', 'nav2_bag_full.yaml'):
+        profile = _load_yaml(NAV2_BAG_ROOT / 'config' / profile_name)
+        topics = profile['nav2_bag_recorder']['ros__parameters']['topics']
+        assert '/frontier_goal_adapter/original_goal' in topics
+        assert '/frontier_goal_adapter/projected_goal' in topics
+        assert '/frontier_goal_adapter/status' in topics
+        assert '/frontier/navigate_to_pose/_action/status' in topics
 
 
 def test_velocity_smoother_is_the_final_cmd_vel_limiter():

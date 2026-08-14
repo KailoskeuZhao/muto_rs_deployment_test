@@ -138,9 +138,11 @@ struct ScenarioResult
 ScenarioResult run_scenario(
   const nav_msgs::msg::OccupancyGrid & map_msg,
   const nav_msgs::msg::OccupancyGrid & costmap_msg,
-  const geometry_msgs::msg::Pose & robot_pose)
+  const geometry_msgs::msg::Pose & robot_pose,
+  bool optimization_enabled = true)
 {
-  const FrontierExplorerCoreParams params = muto_params();
+  FrontierExplorerCoreParams params = muto_params();
+  params.frontier_map_optimization_enabled = optimization_enabled;
   FrontierExplorerCore core(params, FrontierExplorerCoreCallbacks{});
   const OccupancyGrid2d raw_map(map_msg);
   const OccupancyGrid2d costmap(costmap_msg);
@@ -228,6 +230,49 @@ TEST(FakeMapScenarioTests, OpenKnownPatchProducesOneReachableBoundaryGoal)
   EXPECT_GE(distance_to_robot(goal, robot_pose), 0.50 - kResolution);
   const auto [goal_x, goal_y] = result.decision_map.worldToMap(goal.first, goal.second);
   EXPECT_EQ(result.decision_map.getCost(goal_x, goal_y), 0);
+}
+
+TEST(FakeMapScenarioTests, DecisionMapOptimizationCanMoveGoalIntoRawUnknown)
+{
+  auto map_msg = build_grid(100, 80, -1);
+  set_rect(map_msg, 25, 20, 74, 59, 0);
+  const auto costmap_msg = costmap_from_known_obstacles(map_msg);
+  const auto robot_pose = make_pose_for_cell(50, 40);
+  const OccupancyGrid2d raw_map(map_msg);
+
+  const auto optimized = run_scenario(
+    map_msg, costmap_msg, robot_pose, true);
+  ASSERT_EQ(optimized.frontiers.size(), 1U);
+  const auto optimized_goal = frontier_position(optimized.frontiers.front());
+  const auto [optimized_x, optimized_y] = raw_map.worldToMap(
+    optimized_goal.first, optimized_goal.second);
+  EXPECT_EQ(
+    raw_map.getCost(optimized_x, optimized_y),
+    static_cast<int>(OccupancyGrid2d::CostValues::NoInformation));
+
+  const auto raw = run_scenario(map_msg, costmap_msg, robot_pose, false);
+  ASSERT_EQ(raw.frontiers.size(), 1U);
+  const auto raw_goal = frontier_position(raw.frontiers.front());
+  const auto [raw_x, raw_y] = raw_map.worldToMap(raw_goal.first, raw_goal.second);
+  EXPECT_EQ(
+    raw_map.getCost(raw_x, raw_y),
+    static_cast<int>(OccupancyGrid2d::CostValues::FreeSpace));
+
+  bool touches_unknown = false;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      if (
+        raw_map.getCost(raw_x + dx, raw_y + dy) ==
+        static_cast<int>(OccupancyGrid2d::CostValues::NoInformation))
+      {
+        touches_unknown = true;
+      }
+    }
+  }
+  EXPECT_TRUE(touches_unknown);
 }
 
 TEST(FakeMapScenarioTests, ThreeExitCorridorFindsAllSeparatedOpenings)

@@ -475,6 +475,36 @@ failure is non-fatal: Nav2 preserves and follows the original NavFn path. This
 matters at a frontier because Humble's generic smoothing collision check treats
 unknown cost as blocked even though NavFn is intentionally configured with
 `allow_unknown: true`.
+
+Synthetic-map regression tests preserve the reason for that setting. With the
+optimized frontier decision map enabled, one-cell free-space dilation can place
+the selected endpoint in a cell that is still unknown in the raw SLAM map.
+Disabling unknown traversal therefore rejects some current frontier goals. Even
+with decision-map optimization disabled, the selected known-free endpoint is
+immediately adjacent to unknown space: at 0.04 m map resolution, the 0.26 m
+robot footprint still overlaps unknown cells and the smoother's full-footprint
+check rejects it. The behavior tree consequently treats smoothing as an
+optional quality improvement while retaining controller/local-costmap collision
+checking during execution.
+
+Frontier navigation now has a Muto-owned endpoint adapter between the explorer
+and Nav2. The upstream explorer still selects and reasons about the actual
+frontier target, but sends its `NavigateToPose` request to
+`/frontier/navigate_to_pose`. `frontier_goal_adapter` checks the raw `/map` and
+selects the nearest cell whose complete `0.27 m` effective circular footprint
+contains only known-free cells. It forwards that projected endpoint to Nav2's
+normal `/navigate_to_pose` action and faces the final pose toward the original
+frontier. If no such endpoint exists within `0.80 m`, the adapter rejects the
+goal instead of silently sending the robot into unknown or occupied space. The
+explorer can then apply its normal failure/suppression policy. Two failed
+attempts temporarily suppress that frontier region for `90 s`, preventing an
+immediate retry loop while still allowing a later map update to make it useful.
+
+This is intentionally scoped only to frontier exploration. Object approach and
+operator navigation continue to use `/navigate_to_pose` directly. The compact
+and full Nav2 bag profiles record the original goal, projected goal, adapter
+status, and adapter action status, so endpoint projection is visible during bag
+analysis.
 A controller/progress failure clears only the local costmap, waits `1 s` for
 fresh 5 Hz obstacle updates, and retries FollowPath once. If the complete
 navigation pipeline still fails, it performs one stationary `2 s` wait and

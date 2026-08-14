@@ -6,18 +6,20 @@
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="2" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="1" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="PlanAndSmoothRecovery">
             <Sequence name="PlanAndSmoothPath">
               <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
-              <SmoothPath
-                unsmoothed_path="{path}"
-                smoothed_path="{smoothed_path}"
-                smoother_id="savitzky_golay_smoother"
-                max_smoothing_duration="0.5"
-                check_for_collisions="true"/>
+              <ForceSuccess>
+                <SmoothPath
+                  unsmoothed_path="{path}"
+                  smoothed_path="{path}"
+                  smoother_id="savitzky_golay_smoother"
+                  max_smoothing_duration="0.5"
+                  check_for_collisions="true"/>
+              </ForceSuccess>
             </Sequence>
             <Sequence name="RefreshGlobalCostmap">
               <ClearEntireCostmap
@@ -28,7 +30,7 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
+          <FollowPath path="{path}" controller_id="FollowPath"/>
           <Sequence name="RefreshLocalCostmap">
             <ClearEntireCostmap
               name="ClearLocalCostmap-ControlFailure"
@@ -39,11 +41,8 @@
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
-        <!-- Collision-checked small turn only; never blind-back the hexapod. -->
-        <RoundRobin name="BoundedRecoveryActions">
-          <Spin spin_dist="0.52"/>
-          <Wait wait_duration="2"/>
-        </RoundRobin>
+        <!-- Return failure for caller-side goal reselection after one wait. -->
+        <Wait wait_duration="2"/>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

@@ -5,18 +5,26 @@
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="2" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="1" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="PlanAndSmoothRecovery">
             <Sequence name="PlanAndSmoothPath">
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-              <SmoothPath
-                unsmoothed_path="{path}"
-                smoothed_path="{smoothed_path}"
-                smoother_id="savitzky_golay_smoother"
-                max_smoothing_duration="0.5"
-                check_for_collisions="true"/>
+              <!--
+                Smoothing is optional. NavFn may plan through unknown frontier
+                cells, while Humble's generic footprint checker treats unknown
+                cost 255 as a collision. Preserve the original NavFn path in
+                {path}; overwrite it only when checked smoothing succeeds.
+              -->
+              <ForceSuccess>
+                <SmoothPath
+                  unsmoothed_path="{path}"
+                  smoothed_path="{path}"
+                  smoother_id="savitzky_golay_smoother"
+                  max_smoothing_duration="0.5"
+                  check_for_collisions="true"/>
+              </ForceSuccess>
             </Sequence>
             <Sequence name="RefreshGlobalCostmap">
               <ClearEntireCostmap
@@ -27,7 +35,7 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="FollowPath"/>
+          <FollowPath path="{path}" controller_id="FollowPath"/>
           <Sequence name="RefreshLocalCostmap">
             <ClearEntireCostmap
               name="ClearLocalCostmap-ControlFailure"
@@ -39,14 +47,11 @@
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <!--
-          After targeted refresh/retry has failed, change the sensor viewpoint
-          by only 30 degrees. Nav2 Spin collision-checks the complete footprint.
-          Never back up blindly in the cluttered deployment room.
+          After the targeted refresh/retry, return planning failure to the
+          frontier selector so it can suppress this candidate and choose
+          another. Never rotate or back up merely because planning failed.
         -->
-        <RoundRobin name="BoundedRecoveryActions">
-          <Spin spin_dist="0.52"/>
-          <Wait wait_duration="2"/>
-        </RoundRobin>
+        <Wait wait_duration="2"/>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

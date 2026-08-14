@@ -131,6 +131,10 @@ class ModelCommanderNode(Node):
         self._ownership_uncertain = False
         self._active_vlm_goal = None
         self._active_child_goal = None
+        # Registry refinement is non-motion work and may run alongside one
+        # owned search-motion child. Keep its handle separate so canceling or
+        # completing a semantic check can never overwrite motion ownership.
+        self._active_registry_goal = None
         self._active_child_token = None
         self._registry_signature = None
         self._registry_revision = 0
@@ -945,7 +949,11 @@ class ModelCommanderNode(Node):
     def cancel_outstanding_work(self):
         """Best-effort cancellation for model and command goals we own."""
         with self._state_lock:
-            handles = (self._active_vlm_goal, self._active_child_goal)
+            handles = (
+                self._active_vlm_goal,
+                self._active_registry_goal,
+                self._active_child_goal,
+            )
         for handle in handles:
             self._cancel_goal_best_effort(handle)
 
@@ -1239,10 +1247,11 @@ class ModelCommanderNode(Node):
             child_result_future=None, child_token=None):
         """Recheck image, registry, and owned-child state before dispatch."""
         self._assert_visual_observation_fresh(observation)
-        revision, _, _ = self._registry_state()
-        if revision != expected_world_revision:
-            raise StalePlan(
-                'confirmed-object set changed before model dispatch')
+        if expected_world_revision is not None:
+            revision, _, _ = self._registry_state()
+            if revision != expected_world_revision:
+                raise StalePlan(
+                    'confirmed-object set changed before model dispatch')
         if child_result_future is not None and child_result_future.done():
             raise ChildCompletedDuringInspection()
         if child_token is not None:
@@ -1287,9 +1296,10 @@ class ModelCommanderNode(Node):
 
     def _plan(
             self, objective, state, observation, expected_world_revision,
-            goal_handle, deadline):
+            goal_handle, deadline, allow_registry_updates=False):
         world_revision, _, _ = self._registry_state()
-        if world_revision != expected_world_revision:
+        if not allow_registry_updates and \
+                world_revision != expected_world_revision:
             raise StalePlan('registry changed before model inference')
         self._assert_visual_observation_fresh(observation)
         vlm_goal = GenerateVlm.Goal()
@@ -1316,7 +1326,9 @@ class ModelCommanderNode(Node):
                 'VLM action server',
                 pre_dispatch_callback=lambda: (
                     self._assert_visual_dispatch_context(
-                        observation, expected_world_revision)
+                        observation,
+                        None if allow_registry_updates else
+                        expected_world_revision)
                 ),
             )
         except (CommanderCanceled, MissionBudgetExhausted):
@@ -1344,7 +1356,8 @@ class ModelCommanderNode(Node):
             while not result_future.done():
                 self._check_parent_state(goal_handle, deadline)
                 current_revision, _, _ = self._registry_state()
-                if current_revision != world_revision:
+                if not allow_registry_updates and \
+                        current_revision != world_revision:
                     self._cancel_goal_and_wait(child_handle, result_future)
                     raise StalePlan(
                         'registry changed during model inference')
@@ -1392,9 +1405,9 @@ class ModelCommanderNode(Node):
         except ModelCommanderProtocolError as error:
             raise PlannerFailure(str(error)) from error
         current_revision, _, _ = self._registry_state()
-        if current_revision != world_revision:
+        if not allow_registry_updates and current_revision != world_revision:
             raise StalePlan('registry changed before planning completed')
-        return decision, world_revision
+        return decision, current_revision
 
     def _inspect_active_command(
             self, objective, state, observation, expected_world_revision,
@@ -1597,6 +1610,95 @@ class ModelCommanderNode(Node):
             raise CommanderFailure(
                 wrapped.result.message or 'registry object search failed')
         return list(wrapped.result.matches), wrapped.result.message
+
+    def _start_background_registry_probe(
+            self, objective, goal_handle, deadline, planning_steps,
+            commands_dispatched, current_command):
+        """Start one non-motion registry check without replacing motion state."""
+        child_goal = FindObject.Goal()
+        child_goal.prompt = objective
+        self._publish_feedback(
+            goal_handle,
+            LookForObject.Feedback.PHASE_EXECUTING,
+            f'{current_command} is active; registry verification runs in '
+            'parallel',
+            current_command,
+            planning_steps,
+            commands_dispatched,
+        )
+        child_handle = self._send_goal(
+            self._find_client,
+            child_goal,
+            goal_handle,
+            deadline,
+            'background FindObject action server',
+        )
+        with self._state_lock:
+            self._active_registry_goal = child_handle
+        try:
+            result_future = child_handle.get_result_async()
+        except Exception as error:
+            self._cancel_goal_best_effort(child_handle)
+            with self._state_lock:
+                if self._active_registry_goal is child_handle:
+                    self._active_registry_goal = None
+            raise CommanderFailure(
+                'could not monitor background registry verification') from \
+                error
+        revision, _, _ = self._registry_state()
+        return {
+            'handle': child_handle,
+            'future': result_future,
+            'start_revision': revision,
+            'commands_dispatched': commands_dispatched,
+        }
+
+    def _take_background_registry_probe(self, probe):
+        """Consume one completed background registry result without blocking."""
+        result_future = probe['future']
+        if not result_future.done():
+            return None
+        child_handle = probe['handle']
+        try:
+            wrapped = result_future.result()
+        except Exception as error:
+            raise CommanderFailure(
+                'background registry verification failed') from error
+        finally:
+            with self._state_lock:
+                if self._active_registry_goal is child_handle:
+                    self._active_registry_goal = None
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise CommanderFailure(
+                'background registry verification did not succeed')
+        if not wrapped.result.success:
+            raise CommanderFailure(
+                wrapped.result.message or
+                'background registry verification failed')
+        return list(wrapped.result.matches), wrapped.result.message
+
+    def _cancel_background_registry_probe(self, probe):
+        """Boundedly cancel a non-motion registry probe owned by this mission."""
+        if probe is None:
+            return
+        child_handle = probe['handle']
+        result_future = probe['future']
+        try:
+            if not result_future.done():
+                self._cancel_goal_and_wait(child_handle, result_future)
+        except OwnedGoalStateUnknown as error:
+            # The goal cannot move the robot, but an unconfirmed semantic
+            # worker may still own the single VLM socket. Retain its handle
+            # and reject another mission instead of silently overlapping a
+            # second registry/model request with unknown lifecycle state.
+            self._mark_ownership_uncertain(
+                'background registry verification did not stop cleanly; '
+                'model commander is latched closed until restart: '
+                f'{error}')
+            raise
+        with self._state_lock:
+            if self._active_registry_goal is child_handle:
+                self._active_registry_goal = None
 
     def _run_approach_object(
             self, object_id, expected_revision, goal_handle, deadline,
@@ -2145,14 +2247,12 @@ class ModelCommanderNode(Node):
             self, primitive_name, exploration_seconds, rotation_radians,
             expected_revision, goal_handle, deadline,
             planning_steps, commands_dispatched,
-            inspection_callback=None):
+            inspection_callback=None, objective='', mission_id='',
+            reserve_registry_dispatch=None):
         current_revision, _, _ = self._registry_state()
-        if current_revision != expected_revision:
-            return {
-                'outcome': 'registry_changed',
-                'message': 'registry changed before command dispatch',
-                'completed_cycles': 0,
-            }
+        # Search motion is allowed to proceed across registry updates. Exact
+        # object approach and terminal mission decisions remain revision-gated.
+        expected_revision = current_revision
         if primitive_name == 'rotate':
             return self._run_direct_rotate(
                 rotation_radians,
@@ -2258,6 +2358,11 @@ class ModelCommanderNode(Node):
                 f'could not monitor the accepted {primitive_name} goal'
             ) from error
         child_terminal_confirmed = False
+        registry_probe = None
+        registry_verified_revision = -1
+        registry_probe_failures = 0
+        next_registry_probe_time = time.monotonic()
+        effective_commands_dispatched = commands_dispatched
 
         def stop_child_or_latch():
             nonlocal child_terminal_confirmed
@@ -2275,6 +2380,105 @@ class ModelCommanderNode(Node):
                 raise
             child_terminal_confirmed = True
 
+        def start_registry_probe_if_due():
+            nonlocal registry_probe
+            nonlocal next_registry_probe_time
+            nonlocal effective_commands_dispatched
+            revision, _, _ = self._registry_state()
+            if registry_probe is not None or \
+                    revision == registry_verified_revision or \
+                    time.monotonic() < next_registry_probe_time:
+                return
+            if reserve_registry_dispatch is None or not objective:
+                return
+            effective_commands_dispatched = reserve_registry_dispatch()
+            registry_probe = self._start_background_registry_probe(
+                objective,
+                goal_handle,
+                deadline,
+                planning_steps,
+                effective_commands_dispatched,
+                primitive_name,
+            )
+            registry_probe['start_revision'] = revision
+            if mission_id:
+                self._publish_trace_event(
+                    'background_registry_request', mission_id,
+                    planning_step=planning_steps,
+                    command=primitive_name,
+                    world_revision=revision,
+                    commands_dispatched=effective_commands_dispatched,
+                )
+
+        def poll_registry_probe():
+            nonlocal registry_probe
+            nonlocal registry_verified_revision
+            nonlocal registry_probe_failures
+            nonlocal next_registry_probe_time
+            if registry_probe is None or \
+                    not registry_probe['future'].done():
+                return None
+            completed_probe = registry_probe
+            registry_probe = None
+            try:
+                probe_result = self._take_background_registry_probe(
+                    completed_probe)
+            except CommanderFailure as error:
+                registry_probe_failures += 1
+                next_registry_probe_time = (
+                    time.monotonic() + min(
+                        self.command_retry_max_delay,
+                        self.command_retry_initial_delay *
+                        (2 ** (registry_probe_failures - 1)),
+                    )
+                )
+                if mission_id:
+                    self._publish_trace_event(
+                        'background_registry_failure', mission_id,
+                        planning_step=planning_steps,
+                        command=primitive_name,
+                        failure_count=registry_probe_failures,
+                        message=str(error)[
+                            :self.max_state_message_characters],
+                    )
+                return None
+            matches_found, message = probe_result
+            registry_probe_failures = 0
+            current_revision, _, _ = self._registry_state()
+            start_revision = completed_probe['start_revision']
+            if current_revision == start_revision:
+                registry_verified_revision = current_revision
+                with monitor_state_lock:
+                    monitor_state['expected_world_revision'] = (
+                        current_revision)
+            else:
+                # Intermediate revisions are deliberately coalesced. Start one
+                # new check for the latest snapshot instead of replaying every
+                # registry update.
+                registry_verified_revision = start_revision
+                next_registry_probe_time = time.monotonic()
+            if mission_id:
+                self._publish_trace_event(
+                    'background_registry_result', mission_id,
+                    planning_step=planning_steps,
+                    command=primitive_name,
+                    checked_world_revision=start_revision,
+                    current_world_revision=current_revision,
+                    outcome='match_found' if matches_found else 'no_match',
+                    message=message[:self.max_state_message_characters],
+                    matched_object_ids=[
+                        match.object_id for match in matches_found
+                    ],
+                )
+            if matches_found:
+                return {
+                    'matches': matches_found,
+                    'message': message,
+                    'checked_world_revision': start_revision,
+                    'current_world_revision': current_revision,
+                }
+            return None
+
         try:
             next_inspection_time = (
                 time.monotonic() + self.active_inspection_period
@@ -2282,24 +2486,49 @@ class ModelCommanderNode(Node):
             while not result_future.done():
                 self._check_parent_state(goal_handle, deadline)
                 update_spatial_progress()
-                revision, _, _ = self._registry_state()
-                if revision != expected_revision:
+                try:
+                    start_registry_probe_if_due()
+                except (CommanderCanceled, MissionBudgetExhausted):
+                    raise
+                except CommanderFailure as error:
+                    registry_probe_failures += 1
+                    next_registry_probe_time = (
+                        time.monotonic() + self.command_retry_initial_delay)
+                    if mission_id:
+                        self._publish_trace_event(
+                            'background_registry_failure', mission_id,
+                            planning_step=planning_steps,
+                            command=primitive_name,
+                            failure_count=registry_probe_failures,
+                            message=str(error)[
+                                :self.max_state_message_characters],
+                        )
+                registry_match = poll_registry_probe()
+                if registry_match is not None:
                     self._publish_feedback(
                         goal_handle,
                         LookForObject.Feedback.PHASE_REPLANNING,
-                        'registry changed; pausing the current search step',
+                        'background registry verification found a candidate; '
+                        'stopping search motion for exact confirmation',
                         primitive_name,
                         planning_steps,
-                        commands_dispatched,
+                        effective_commands_dispatched,
                     )
                     stop_child_or_latch()
                     return {
-                        'outcome': 'registry_changed',
-                        'message': 'new confirmed-object set observed',
+                        'outcome': 'registry_match_pending',
+                        'message': registry_match['message'],
                         'completed_cycles': 0,
+                        'candidate_object_ids': [
+                            match.object_id
+                            for match in registry_match['matches']
+                        ],
                     }
                 if inspection_callback is not None and \
                         self.active_visual_monitoring and \
+                        registry_probe is None and \
+                        self._registry_state()[0] == \
+                        registry_verified_revision and \
                         time.monotonic() >= next_inspection_time:
                     with monitor_state_lock:
                         active_state = dict(monitor_state)
@@ -2345,6 +2574,18 @@ class ModelCommanderNode(Node):
                             'target_evidence': inspection.target_evidence,
                         }
                 time.sleep(self.monitor_period)
+            registry_match = poll_registry_probe()
+            if registry_match is not None:
+                child_terminal_confirmed = True
+                return {
+                    'outcome': 'registry_match_pending',
+                    'message': registry_match['message'],
+                    'completed_cycles': 0,
+                    'candidate_object_ids': [
+                        match.object_id
+                        for match in registry_match['matches']
+                    ],
+                }
             self._check_parent_state(goal_handle, deadline)
             update_spatial_progress()
             child_terminal_confirmed = True
@@ -2363,6 +2604,7 @@ class ModelCommanderNode(Node):
             raise CommanderFailure(
                 f'{primitive_name} result failed') from error
         finally:
+            self._cancel_background_registry_probe(registry_probe)
             if child_terminal_confirmed:
                 with self._state_lock:
                     if self._active_child_goal is child_handle:
@@ -2698,6 +2940,14 @@ class ModelCommanderNode(Node):
         def dispatch_budget_available():
             return commands_dispatched < self.maximum_command_dispatches
 
+        def reserve_background_registry_dispatch():
+            nonlocal commands_dispatched
+            if not dispatch_budget_available():
+                raise MissionBudgetExhausted(
+                    'command-dispatch budget exhausted')
+            commands_dispatched += 1
+            return commands_dispatched
+
         def check_registry():
             nonlocal commands_dispatched
             nonlocal registry_checked_revision
@@ -2796,11 +3046,16 @@ class ModelCommanderNode(Node):
                     )
                     confirmed_match_revision = -1
                     return []
-                registry_checked_revision = start_revision
-                last_outcome = 'registry_changed_during_check'
+                # Do not wait for a globally quiet registry. Perception may
+                # continue confirming unrelated objects indefinitely. This
+                # result covers the snapshot consumed by FindObject; coalesce
+                # newer revisions and let the background verifier catch up
+                # while the next bounded search motion runs.
+                registry_checked_revision = revision
+                last_outcome = 'registry_update_coalesced'
                 last_message = (
-                    'registry changed during semantic lookup; checking the '
-                    'new snapshot before replanning'
+                    'registry changed during semantic lookup; newer updates '
+                    'were coalesced for background verification'
                 )
                 self._publish_trace_event(
                     'command_result', mission_id,
@@ -2811,6 +3066,8 @@ class ModelCommanderNode(Node):
                     world_revision=revision,
                     matched_object_ids=[],
                 )
+                confirmed_match_revision = -1
+                return []
 
         def refine_registry_selection():
             nonlocal commands_dispatched
@@ -3263,7 +3520,6 @@ class ModelCommanderNode(Node):
                         last_visual_sequence,
                         goal_handle,
                         deadline,
-                        expected_world_revision=capture_revision,
                     )
                     last_visual_sequence = observation.sequence
                     state = self._planning_state(
@@ -3323,6 +3579,7 @@ class ModelCommanderNode(Node):
                             capture_revision,
                             goal_handle,
                             deadline,
+                            allow_registry_updates=True,
                         )
                     except (PlannerFailure, StalePlan) as error:
                         self._publish_trace_event(
@@ -3402,20 +3659,19 @@ class ModelCommanderNode(Node):
                 consecutive_planner_failures = 0
                 planning_steps += 1
                 current_revision, _, _ = self._registry_state()
-                if decision.decision != 'verify_registry' and \
-                        current_revision != decision_revision:
-                    last_command = 'planner'
-                    last_outcome = 'stale_world_revision'
-                    last_message = (
-                        'monitored state changed after planning; '
-                        'discarded the stale decision'
+                if current_revision != decision_revision:
+                    self._publish_trace_event(
+                        'registry_update_coalesced', mission_id,
+                        planning_step=planning_steps,
+                        decision=decision.decision,
+                        decision_world_revision=decision_revision,
+                        current_world_revision=current_revision,
+                        message=(
+                            'registry changed after planning; bounded search '
+                            'motion may continue while verification catches up'
+                        ),
                     )
-                    matches = check_registry()
-                    if matches:
-                        result = finish_if_satisfied(last_message)
-                        if result is not None:
-                            return result
-                    continue
+                    decision_revision = current_revision
                 last_visual_observation = decision.visual_observation
                 last_target_evidence = decision.target_evidence
                 progress_key = (
@@ -3882,6 +4138,13 @@ class ModelCommanderNode(Node):
                                     if decision.decision ==
                                     'explore_frontier' else None
                                 ),
+                                objective=objective,
+                                mission_id=mission_id,
+                                reserve_registry_dispatch=(
+                                    reserve_background_registry_dispatch
+                                    if decision.decision ==
+                                    'explore_frontier' else None
+                                ),
                             )
                         elif decision.decision == 'observe':
                             program = self._run_observe(
@@ -4091,6 +4354,7 @@ class ModelCommanderNode(Node):
                 ownership_uncertain = self._ownership_uncertain
                 if not ownership_uncertain:
                     self._active_vlm_goal = None
+                    self._active_registry_goal = None
                     self._active_child_goal = None
                     self._active_child_token = None
                     self._busy = False

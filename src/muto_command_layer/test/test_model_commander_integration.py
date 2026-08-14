@@ -860,23 +860,25 @@ def test_transient_registry_search_failure_retries_without_motion(
     assert backend.program_cycles == []
 
 
-def test_stale_find_match_is_discarded_when_object_set_changes(
+def test_registry_churn_is_coalesced_and_search_motion_still_starts(
         running_commander):
     backend, client = running_commander
     release_find = threading.Event()
     backend.make_match_available()
     backend.find_release_event = release_find
-    backend.queue_decision(
-        'wait', reason='wait after verifying the new inventory',
-        wait_seconds=10.0)
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
 
     goal_handle = send_mission(client)
     wait_until(backend.find_started.is_set)
     backend.clear_match()
     release_find.set()
 
+    wait_until(lambda: backend.program_cycles == [1])
     wait_until(lambda: len(backend.find_prompts) >= 2)
-    wait_until(lambda: backend.vlm_requests >= 1)
+    wait_until(lambda: any(
+        event.get('event') == 'background_registry_request'
+        for event in backend.trace_events
+    ))
     wait_future(goal_handle.cancel_goal_async())
     wrapped = wait_future(goal_handle.get_result_async())
 
@@ -898,7 +900,8 @@ def test_registry_change_cancels_bounded_step_and_returns_match(
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.found
     assert backend.program_cancellations == 1
-    assert backend.find_prompts == ['the red mug', 'the red mug']
+    assert len(backend.find_prompts) >= 2
+    assert set(backend.find_prompts) == {'the red mug'}
 
 
 def test_commander_schedules_rotate_observe_and_checkpoint_independently(

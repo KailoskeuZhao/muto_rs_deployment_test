@@ -612,7 +612,11 @@ VLM inspects frame + state and selects one bounded next primitive
           v
 monitor the child result and confirmed-object set
           |
-          +-- registry changed --> cancel stale work, recheck, replan
+          +-- frontier active ---> run one separate /find_object check
+          |                         coalesce newer registry revisions
+          |                           | no match --> keep moving
+          |                           | match ----> stop, confirm, replan
+          +-- strict action changed -> stop stale approach/rotation
           +-- child completed ---> recheck, then replan
           +-- 20 s elapsed ------> VLM inspects a fresh frame while the
                                     bounded child remains active
@@ -654,10 +658,16 @@ remains unrestricted. `possible`
   or `likely` target evidence
   forces another registry check before any further motion or no-match finish.
   Visual evidence never sets `found`; only `/find_object` can confirm a registry
-  match. Therefore a target that never enters the YOLO/SAM registry cannot
+  match. During `explore_frontier`, motion and registry verification use
+  separate ROS action handles and are polled concurrently. Only one of each may
+  be active; intermediate registry revisions are coalesced instead of stopping
+  the robot for every newly confirmed unrelated object. A background match is
+  never accepted directly: motion is first confirmed stopped and a normal
+  foreground `/find_object` check confirms the latest registry snapshot.
+  Therefore a target that never enters the YOLO/SAM registry cannot
   complete this mission from VLM pixels alone. The model cannot provide ROS
   names, poses, parameters, or code. Only one commander mission and one owned
-  child command run at a time.
+  motion child run at a time.
 
 While a motion primitive or a model-directed wait remains active, the VLM also
 inspects a fresh forward-camera snapshot after each
@@ -809,7 +819,8 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   `128` child-command dispatches.
 - `max_exploration_cycles`, `max_wait_seconds`, planner retry limits, command
   failure limits, and repeated-no-progress limits: local bounds on every model
-  decision and recovery path.
+  decision and recovery path. Background registry checks consume the same
+  command-dispatch budget; they are not an unbounded side channel.
 - `visual_observation_topic`, `visual_observation_timeout`, and
   `visual_observation_max_age`: camera source and freshness requirements for
   every model planning step; defaults are `/camera/color/image_raw`, `5.0`, and

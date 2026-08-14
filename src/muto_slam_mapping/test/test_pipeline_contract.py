@@ -175,7 +175,7 @@ def test_navfn_clearance_field_covers_the_effective_robot_footprint():
     assert planner['allow_unknown'] is True
 
 
-def test_navigation_recovery_is_bounded_and_failure_specific():
+def test_navigation_recovery_uses_raw_path_fallback_without_blind_motion():
     config = _load_yaml(PACKAGE_ROOT / 'config' / 'nav2_params.yaml')
     plugins = config['bt_navigator']['ros__parameters']['plugin_lib_names']
     assert 'nav2_clear_costmap_service_bt_node' in plugins
@@ -190,7 +190,12 @@ def test_navigation_recovery_is_bounded_and_failure_specific():
         assert '<Wait wait_duration="2"/>' in text
         assert '<Wait wait_duration="1"/>' in text
         assert 'wait_duration="0.' not in text
-        assert '<Spin spin_dist="0.52"/>' in text
+        assert '<RecoveryNode number_of_retries="1" name="NavigateRecovery">' in text
+        assert '<ForceSuccess>' in text
+        assert 'unsmoothed_path="{path}"' in text
+        assert 'smoothed_path="{path}"' in text
+        assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in text
+        assert '<Spin ' not in text
         assert '<BackUp ' not in text
 
 

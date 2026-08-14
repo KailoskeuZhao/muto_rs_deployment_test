@@ -468,17 +468,21 @@ bag showed the consequence of that mismatch: 58,256 unknown SLAM cells became
 now remains unknown while mapped obstacle cells retain inflation and
 full-footprint collision checks.
 
-Recovery is bounded and failure-specific. A planning or smoothing failure
-clears only the global costmap, waits `2 s` for its 1 Hz static/sensor layers
-to repopulate, and retries the full compute-and-collision-check sequence once.
+Recovery is bounded and failure-specific. A planning failure clears only the
+global costmap, waits `2 s` for its 1 Hz static/sensor layers to repopulate, and
+retries once. Savitzky-Golay smoothing remains collision checked, but its
+failure is non-fatal: Nav2 preserves and follows the original NavFn path. This
+matters at a frontier because Humble's generic smoothing collision check treats
+unknown cost as blocked even though NavFn is intentionally configured with
+`allow_unknown: true`.
 A controller/progress failure clears only the local costmap, waits `1 s` for
 fresh 5 Hz obstacle updates, and retries FollowPath once. If the complete
-navigation pipeline still fails, Nav2 may make one collision-checked `0.52 rad`
-sensor-view turn and one stationary `2 s` retry. Humble's Wait BT input is
-integer seconds, so these delays deliberately avoid sub-second literals. It
-never performs blind
-backup, never disables footprint collision checking, and returns failure after
-the bounded attempts so the owning command layer can replan at mission level.
+navigation pipeline still fails, it performs one stationary `2 s` wait and
+returns failure to the frontier selector. It does not spin or back up merely
+because a path could not be planned; the frontier layer can suppress that goal
+and select another. Humble's Wait BT input is integer seconds, so these delays
+deliberately avoid sub-second literals. Footprint collision checking remains
+enabled throughout.
 
 ## Main Runtime Contract
 

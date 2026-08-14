@@ -350,11 +350,15 @@ ros2 action send_goal /look_for_object \
 ```
 
 The node monitors child completion and the transient-local object-registry
-snapshot. A changed confirmed-object identity set cancels an in-flight model
-decision, wait, or exploration program, then forces a fresh `/find_object` check
-before replanning. Position, confidence, and repeat-observation updates for the
-same identity deliberately do not churn this revision. This prevents a decision
-made against an older object inventory from being executed.
+snapshot. Before motion and for target-specific approach, the registry revision
+is a strict precondition. During bounded `explore_frontier`, however, registry
+verification uses a separate action handle and runs concurrently with the owned
+motion child. At most one semantic check is in flight; newer identity revisions
+are coalesced. A stable no-match lets exploration continue. A candidate match
+causes a confirmed motion stop followed by an ordinary foreground
+`/find_object` check against the latest snapshot. Position, confidence, and
+repeat-observation updates for the same identity deliberately do not churn the
+identity revision.
 
 The VLM also inspects a fresh forward-camera frame after a 20-second cooldown by
 default while an exploration primitive or a model-directed wait remains active.
@@ -625,10 +629,11 @@ Topic and action names shown above are defaults. The endpoints routed through
 | Stored candidate JPEGs | Metadata search works; ambiguous visual refinement normally aborts. |
 
 Each high-level action accepts only one active goal at a time and uses bounded
-dependency waits. The model commander owns at most one child and invokes
-`/find_object`, model planning, and one bounded primitive sequentially. The VLM
-socket itself remains single-request, so unrelated direct `/vlm/generate`
-clients can still cause bounded deferral or failure. There is not yet a global
+dependency waits. The model commander owns at most one motion child and one
+separate registry-verification child. It never overlaps registry VLM inference
+with active visual-monitor inference because the VLM socket remains
+single-request. Background checks consume the normal dispatch budget and use
+bounded retry/backoff. There is not yet a global
 motion lease across every ROS client: direct Nav2, frontier, or command-action
 clients can compete with a commander-owned motion. Operators should send motion
 through one high-level owner at a time. The natural-language router serializes

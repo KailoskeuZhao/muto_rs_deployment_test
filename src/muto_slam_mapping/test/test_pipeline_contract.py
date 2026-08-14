@@ -233,7 +233,11 @@ def test_frontier_goal_stays_stable_while_nav2_is_driving():
     assert parameters['goal_skip_on_blocked_goal'] is True
     assert parameters['goal_preemption_complete_if_within_m'] == 0.25
     assert parameters['frontier_suppression_enabled'] is True
-    assert parameters['frontier_suppression_attempt_threshold'] == 2
+    assert parameters['frontier_suppression_attempt_threshold'] == 1
+    assert parameters['frontier_suppression_no_progress_timeout_s'] < 10.0
+    assert parameters['frontier_suppression_startup_grace_period_s'] == 0.0
+    assert parameters['post_goal_settle_enabled'] is False
+    assert parameters['frontier_suppression_base_size_m'] == 0.60
     assert parameters['frontier_suppression_timeout_s'] == 90.0
 
 
@@ -250,7 +254,11 @@ def test_frontier_navigation_uses_the_known_free_goal_adapter():
     assert adapter['nav2_action'] == '/navigate_to_pose'
     assert adapter['map_topic'] == '/map'
     assert adapter['effective_robot_radius'] == 0.27
-    assert adapter['maximum_projection_distance'] >= 0.27
+    assert adapter['maximum_projection_distance'] == 0.0
+    assert adapter['robot_base_frame'] == 'base_frame'
+    assert adapter['robot_pose_timeout'] > 0.0
+    assert adapter['robot_seed_search_distance'] >= 0.27
+    assert adapter['minimum_staged_advance_distance'] == 0.20
     assert adapter['free_space_max_occupancy'] == 0
 
     standalone_launch = (

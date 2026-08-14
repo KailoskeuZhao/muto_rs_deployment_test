@@ -410,9 +410,8 @@ class ModelCommanderNode(Node):
             'last_requested_path_length_m': round(requested_distance, 4),
         }
 
-    @staticmethod
     def _frontier_search_summary(
-            primitive_history, frontier_exhausted,
+            self, primitive_history, frontier_exhausted,
             completed_exploration_seconds,
             completed_exploration_distance_m):
         attempts = [
@@ -429,15 +428,30 @@ class ModelCommanderNode(Node):
             consecutive_no_progress += 1
         completed_count = sum(
             outcome == 'completed' for outcome in outcomes)
+        attempted_seconds = sum(float(
+            entry.get('requested_exploration_seconds', 0.0) or 0.0)
+            for entry in attempts)
+        attempted_travel_m = sum(float(
+            entry.get('observed_exploration_distance_m', 0.0) or 0.0)
+            for entry in attempts)
+        measured_speed_mps = (
+            attempted_travel_m / attempted_seconds
+            if attempted_seconds > 0.0 else 0.0
+        )
         if frontier_exhausted:
             utility = 'exhausted'
             advice = 'prefer inspection of mapped space over more frontier travel'
-        elif consecutive_no_progress >= 2:
-            utility = 'stalled'
-            advice = 'prefer a different information-gathering primitive'
         elif not attempts:
             utility = 'untried'
-            advice = 'frontier exploration is the primary map-expansion option'
+            advice = (
+                'frontier exploration is the primary map-expansion option')
+        elif measured_speed_mps < \
+                self.minimum_useful_exploration_speed_mps:
+            utility = 'slow'
+            advice = (
+                'prefer another bounded frontier attempt; the deterministic '
+                'frontier layer now skips local impasses and selects a '
+                'different safe candidate')
         elif completed_exploration_distance_m > 0.0:
             utility = 'productive'
             advice = 'frontier travel remains useful while unknown space remains'
@@ -447,14 +461,23 @@ class ModelCommanderNode(Node):
         return {
             'utility': utility,
             'advice': advice,
+            'exploration_priority': (
+                'low' if frontier_exhausted else
+                'high' if utility in ('untried', 'slow') else 'normal'
+            ),
             'exhausted': bool(frontier_exhausted),
             'attempts': len(attempts),
             'completed_steps': completed_count,
             'no_progress_steps': no_progress_count,
             'consecutive_no_progress_steps': consecutive_no_progress,
             'completed_seconds': round(completed_exploration_seconds, 3),
+            'attempted_seconds': round(attempted_seconds, 3),
             'measured_travel_m': round(
                 completed_exploration_distance_m, 4),
+            'attempted_travel_m': round(attempted_travel_m, 4),
+            'measured_speed_mps': round(measured_speed_mps, 4),
+            'minimum_useful_speed_mps': round(
+                self.minimum_useful_exploration_speed_mps, 4),
             'last_outcome': outcomes[-1] if outcomes else None,
         }
 
@@ -2070,18 +2093,30 @@ class ModelCommanderNode(Node):
             raise StalePlan(
                 'confirmed-object set changed before command dispatch')
 
+    def _coalesced_registry_fields(self, start_revision):
+        """Describe registry updates accumulated by one bounded primitive."""
+        end_revision, _, _ = self._registry_state()
+        return {
+            'registry_revision_at_start': int(start_revision),
+            'registry_revision_at_end': int(end_revision),
+            'registry_updates_coalesced': max(
+                0, int(end_revision) - int(start_revision)),
+        }
+
     def _run_direct_rotate(
             self, rotation_radians, expected_revision, goal_handle, deadline,
             planning_steps, commands_dispatched):
         target_radians = abs(float(rotation_radians))
         if target_radians <= self.rotate_goal_tolerance:
-            return {
+            result = {
                 'outcome': 'completed',
                 'message': 'requested rotation is already within tolerance',
                 'completed_cycles': 1,
                 'requested_rotation_radians': round(float(rotation_radians), 6),
                 'observed_rotation_radians': 0.0,
             }
+            result.update(self._coalesced_registry_fields(expected_revision))
+            return result
 
         current_revision, _, _ = self._registry_state()
         if current_revision != expected_revision:
@@ -2183,18 +2218,6 @@ class ModelCommanderNode(Node):
         try:
             while not result_future.done():
                 self._check_parent_state(goal_handle, deadline)
-                revision, _, _ = self._registry_state()
-                if revision != expected_revision:
-                    self._cancel_goal_and_wait(child_handle, result_future)
-                    terminal_confirmed = True
-                    return {
-                        'outcome': 'registry_changed',
-                        'message': 'registry changed during direct rotation',
-                        'completed_cycles': 0,
-                        'requested_rotation_radians': round(
-                            float(rotation_radians), 6),
-                        'observed_rotation_radians': round(max_observed, 6),
-                    }
                 current_pose = self._robot_pose_snapshot()
                 if current_pose is not None and \
                         current_pose.frame_id == start_pose.frame_id:
@@ -2234,7 +2257,7 @@ class ModelCommanderNode(Node):
             raise CommanderFailure(
                 'Nav2 rotation reported success without sufficient measured '
                 f'yaw ({max_observed:.3f} of {target_radians:.3f} rad)')
-        return {
+        result = {
             'outcome': 'completed',
             'message': 'collision-checked rotation completed from odometry',
             'completed_cycles': 1,
@@ -2242,6 +2265,12 @@ class ModelCommanderNode(Node):
                 float(rotation_radians), 6),
             'observed_rotation_radians': round(max_observed, 6),
         }
+        result.update(self._coalesced_registry_fields(expected_revision))
+        if result['registry_updates_coalesced']:
+            result['message'] += (
+                '; accumulated registry updates will be verified at the '
+                'primitive boundary')
+        return result
 
     def _run_primitive(
             self, primitive_name, exploration_seconds, rotation_radians,
@@ -2642,6 +2671,13 @@ class ModelCommanderNode(Node):
     def _run_observe(
             self, observation_seconds, expected_revision, goal_handle,
             deadline, planning_steps, commands_dispatched):
+        revision, _, _ = self._registry_state()
+        if revision != expected_revision:
+            return {
+                'outcome': 'registry_changed',
+                'message': 'registry changed before observation started',
+                'detection_frames': 0,
+            }
         request = None
         worker_stopped = True
         try:
@@ -2661,10 +2697,6 @@ class ModelCommanderNode(Node):
             )
             while True:
                 self._check_parent_state(goal_handle, deadline)
-                revision, _, _ = self._registry_state()
-                if revision != expected_revision:
-                    outcome = 'registry_changed'
-                    break
                 detection_frames, _, _, worker_error = request.snapshot()
                 if worker_error is not None:
                     raise CommanderFailure(
@@ -2680,6 +2712,7 @@ class ModelCommanderNode(Node):
                         commands_dispatched,
                         'stationary detector observation is active',
                         command='observe',
+                        coalesce_registry_updates=True,
                     )
                     break
                 if time.monotonic() >= heartbeat_ready_deadline:
@@ -2713,11 +2746,17 @@ class ModelCommanderNode(Node):
                 'stationary observation received only '
                 f'{detection_frames} detector frames; '
                 f'{self.observation_min_detection_frames} required')
-        return {
+        result = {
             'outcome': 'completed',
             'message': 'stationary detector observation completed',
             'detection_frames': detection_frames,
         }
+        result.update(self._coalesced_registry_fields(expected_revision))
+        if result['registry_updates_coalesced']:
+            result['message'] += (
+                '; accumulated registry updates will be verified at the '
+                'primitive boundary')
+        return result
 
     def _run_checkpoint_registry(
             self, expected_revision, goal_handle, deadline):
@@ -2751,7 +2790,8 @@ class ModelCommanderNode(Node):
     def _wait_while_monitoring(
             self, wait_seconds, start_revision, goal_handle, deadline,
             planning_steps, commands_dispatched, status,
-            inspection_callback=None, command='wait'):
+            inspection_callback=None, command='wait',
+            coalesce_registry_updates=False):
         wait_deadline = min(deadline, time.monotonic() + wait_seconds)
         next_inspection_time = time.monotonic() + self.active_inspection_period
         self._publish_feedback(
@@ -2765,7 +2805,7 @@ class ModelCommanderNode(Node):
         while time.monotonic() < wait_deadline:
             self._check_parent_state(goal_handle, deadline)
             revision, _, _ = self._registry_state()
-            if revision != start_revision:
+            if not coalesce_registry_updates and revision != start_revision:
                 return 'registry_changed'
             if inspection_callback is not None and \
                     self.active_visual_monitoring and \
@@ -4222,6 +4262,12 @@ class ModelCommanderNode(Node):
                         requested_observation_seconds=round(
                             decision.observation_seconds, 3)
                         if decision.decision == 'observe' else None,
+                        registry_revision_at_start=program.get(
+                            'registry_revision_at_start'),
+                        registry_revision_at_end=program.get(
+                            'registry_revision_at_end'),
+                        registry_updates_coalesced=program.get(
+                            'registry_updates_coalesced'),
                     )
                     primitive_history.append(memory_entry)
                     self._publish_trace_event(
@@ -4241,6 +4287,12 @@ class ModelCommanderNode(Node):
                             'observed_rotation_radians'),
                         observed_exploration_distance_m=program.get(
                             'observed_exploration_distance_m'),
+                        registry_revision_at_start=program.get(
+                            'registry_revision_at_start'),
+                        registry_revision_at_end=program.get(
+                            'registry_revision_at_end'),
+                        registry_updates_coalesced=program.get(
+                            'registry_updates_coalesced'),
                         started_pose=memory_entry['started_pose'],
                         ended_pose=memory_entry['ended_pose'],
                         delta_pose=memory_entry['delta_pose'],

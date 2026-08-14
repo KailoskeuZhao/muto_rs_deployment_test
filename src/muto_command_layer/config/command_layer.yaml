@@ -211,6 +211,10 @@ model_commander:
     # verified travel plus the other evidence below. These may occur in any
     # order.
     minimum_explore_progress_distance_m: 0.10
+    # Below this measured travel/requested-time rate, keep visual reasoning but
+    # bias the next plan toward another frontier rather than observation-only
+    # loops. Local frontier failover selects a different safe candidate.
+    minimum_useful_exploration_speed_mps: 0.03
     # Cancel an observation-POI Nav2 goal if odometry makes less than 0.05 m
     # progress for 12 s. Two consecutive stalls end the mission rather than
     # repeatedly selecting new POIs while the robot is physically trapped.

@@ -90,6 +90,53 @@ def test_goal_is_rejected_when_no_footprint_safe_cell_exists_nearby():
     assert result is None
 
 
+def test_sparse_free_scan_chain_is_not_a_robot_sized_endpoint():
+    message = _grid(width=120, height=120)
+    # This resembles the recorded failure: point-free cells make a diagonal
+    # chain through unknown space, but no 0.27 m circular footprint fits.
+    for cell in range(35, 76, 2):
+        message.data[cell * message.info.width + cell] = 0
+    target_x, target_y = _cell_center(message, 75, 75)
+
+    result = adapter.project_goal_to_known_free(
+        message, target_x, target_y, 0.27, 0.80)
+
+    assert message.data[75 * message.info.width + 75] == 0
+    assert result is None
+
+
+def test_unsafe_distant_frontier_becomes_reachable_staged_advance():
+    message = _grid(width=120, height=100)
+    _set_rect(message, 10, 20, 55, 80, 0)
+    # A disconnected free island is closer to the requested target, but the
+    # robot cannot reach it through footprint-safe known-free space.
+    _set_rect(message, 88, 35, 108, 65, 0)
+    robot_x, robot_y = _cell_center(message, 30, 50)
+    target_x, target_y = _cell_center(message, 98, 50)
+
+    capped = adapter.project_goal_to_reachable_known_free(
+        message, target_x, target_y, robot_x, robot_y,
+        0.27, 0.75, 0.80)
+    staged = adapter.project_goal_to_reachable_known_free(
+        message, target_x, target_y, robot_x, robot_y,
+        0.27, 0.75, 0.0)
+
+    assert capped is None
+    assert staged is not None
+    assert staged.displaced
+    assert staged.displacement > 0.80
+    assert staged.x < target_x
+    staged_cell = adapter._world_to_map_continuous(
+        message, staged.x, staged.y)
+    assert adapter._footprint_is_known_free(
+        message,
+        int(math.floor(staged_cell[0])),
+        int(math.floor(staged_cell[1])),
+        0.27,
+        0,
+    )
+
+
 def test_projection_respects_a_rotated_map_origin():
     message = _grid(fill=0)
     message.info.origin.position.x = 2.0

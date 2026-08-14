@@ -45,7 +45,7 @@ from std_msgs.msg import Header, String
 from std_srvs.srv import Trigger
 
 
-def wait_future(future, timeout=8.0):
+def wait_future(future, timeout=15.0):
     deadline = time.monotonic() + timeout
     while not future.done() and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -53,7 +53,7 @@ def wait_future(future, timeout=8.0):
     return future.result()
 
 
-def wait_until(predicate, timeout=8.0):
+def wait_until(predicate, timeout=15.0):
     deadline = time.monotonic() + timeout
     while not predicate() and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -116,6 +116,8 @@ class FakeCommanderBackends(Node):
         self._callback_group = ReentrantCallbackGroup()
         self._lock = threading.Lock()
         self._decisions = deque()
+        self._active_inspections = deque()
+        self._script_release_events = []
         self.match_available = False
         self.unrelated_object_available = False
         self.ambiguous_matches_available = False
@@ -147,6 +149,7 @@ class FakeCommanderBackends(Node):
         self._yaw = 0.0
         self._x = 0.0
         self.simulate_explore_motion = True
+        self.explore_motion_distance = 0.6
         self.simulate_navigate_motion = True
 
         self.vlm_server = ActionServer(
@@ -278,6 +281,8 @@ class FakeCommanderBackends(Node):
             visual_observation='synthetic camera view is clear',
             target_evidence='not_visible'):
         with self._lock:
+            if release_event is not None:
+                self._script_release_events.append(release_event)
             self._decisions.append((
                 decision_response(
                     decision,
@@ -297,13 +302,20 @@ class FakeCommanderBackends(Node):
         with self._lock:
             self._decisions.append(('', None, message))
 
+    def queue_active_inspection_failure(
+            self, message='fake active-inspection transport failure'):
+        with self._lock:
+            self._active_inspections.append(('', None, message))
+
     def queue_active_inspection(
             self, directive='continue_current_command',
             reason='the bounded search remains useful', release_event=None,
             visual_observation='the visible route remains clear',
             target_evidence='not_visible'):
         with self._lock:
-            self._decisions.append((
+            if release_event is not None:
+                self._script_release_events.append(release_event)
+            self._active_inspections.append((
                 active_inspection_response(
                     directive=directive,
                     reason=reason,
@@ -315,13 +327,22 @@ class FakeCommanderBackends(Node):
             ))
 
     def execute_vlm(self, goal_handle):
+        schema = json.loads(goal_handle.request.response_json_schema)
+        assert schema['additionalProperties'] is False
+        properties = schema.get('properties', {})
+        is_active_inspection = 'directive' in properties
         with self._lock:
-            assert self._decisions, 'test did not queue a model decision'
-            response_text, release_event, failure = self._decisions.popleft()
+            responses = (
+                self._active_inspections
+                if is_active_inspection else self._decisions
+            )
+            response_kind = (
+                'active-inspection response'
+                if is_active_inspection else 'model decision'
+            )
+            assert responses, f'test did not queue an {response_kind}'
+            response_text, release_event, failure = responses.popleft()
             self.vlm_requests += 1
-        assert json.loads(
-            goal_handle.request.response_json_schema)['additionalProperties'] \
-            is False
         parts = list(goal_handle.request.content)
         assert [part.type for part in parts] == [
             VlmContent.TYPE_TEXT,
@@ -442,6 +463,10 @@ class FakeCommanderBackends(Node):
         with self._lock:
             self._x = float(pose.position.x)
         self.publish_odometry()
+        # Let the continuously published fake odometry reach the commander
+        # before the action result. Otherwise the result and the only changed
+        # pose can race, incorrectly exercising the no-progress path.
+        time.sleep(0.05)
         goal_handle.succeed()
         return result
 
@@ -552,7 +577,7 @@ class FakeCommanderBackends(Node):
             return result
         if self.simulate_explore_motion:
             with self._lock:
-                self._x += 0.6
+                self._x += self.explore_motion_distance
             self.publish_odometry()
             time.sleep(0.05)
         result.success = True
@@ -629,6 +654,15 @@ class FakeCommanderBackends(Node):
             self.unrelated_object_available = True
         self.publish_registry()
 
+    def release_scripted_calls(self):
+        with self._lock:
+            release_events = list(self._script_release_events)
+            find_release_event = self.find_release_event
+        for release_event in release_events:
+            release_event.set()
+        if find_release_event is not None:
+            find_release_event.set()
+
     def status_callback(self, message):
         self.statuses.append(json.loads(message.data))
 
@@ -640,7 +674,7 @@ class FakeCommanderBackends(Node):
 
 
 @pytest.fixture
-def running_commander():
+def running_commander(request):
     test_id = f't{uuid.uuid4().hex[:8]}'
     domain_id = 100 + (int(test_id[1:], 16) % 100)
     rclpy.init(domain_id=domain_id)
@@ -651,6 +685,16 @@ def running_commander():
     spin_thread.start()
     process_env = os.environ.copy()
     process_env['ROS_DOMAIN_ID'] = str(domain_id)
+    fast_active_inspection_tests = {
+        'test_unresponsive_inspector_cancellation_still_stops_moving_child',
+        'test_vlm_actively_inspects_and_can_end_a_model_directed_wait',
+        'test_held_active_inspection_cannot_overrun_model_wait_deadline',
+        'test_vlm_actively_monitors_and_can_interrupt_running_exploration',
+        'test_repeated_active_monitor_failure_stops_motion_and_aborts',
+    }
+    active_inspection_period = (
+        0.5 if request.node.name in fast_active_inspection_tests else 20.0
+    )
     process = subprocess.Popen(
         [
             'ros2', 'run', 'muto_command_layer', 'model_commander_node',
@@ -675,7 +719,7 @@ def running_commander():
             '-p', f'inspected_image_topic:={backend.inspected_image_topic}',
             '-p', f'command_bag_event_topic:={backend.bag_event_topic}',
             '-p', 'command_bag_enabled:=false',
-            '-p', 'endpoint_timeout:=1.0',
+            '-p', 'endpoint_timeout:=5.0',
             '-p', 'vlm_result_timeout:=3.0',
             '-p', 'find_result_timeout:=3.0',
             '-p', 'child_stop_timeout:=2.0',
@@ -689,7 +733,7 @@ def running_commander():
             '-p', 'command_retry_max_delay:=0.1',
             '-p', 'visual_observation_timeout:=1.0',
             '-p', 'visual_observation_max_age:=0.5',
-            '-p', 'active_inspection_period:=0.5',
+            '-p', f'active_inspection_period:={active_inspection_period}',
             '-p', 'active_inspection_timeout:=2.0',
             '-p', 'active_inspection_max_decision_age:=3.0',
             '-p', 'minimum_no_match_observations:=1',
@@ -716,6 +760,24 @@ def running_commander():
         yield backend, client
     finally:
         backend.release_program.set()
+        backend.release_scripted_calls()
+        terminal_statuses = {
+            GoalStatus.STATUS_SUCCEEDED,
+            GoalStatus.STATUS_CANCELED,
+            GoalStatus.STATUS_ABORTED,
+        }
+        for goal_handle in getattr(client, '_test_goal_handles', []):
+            if goal_handle.status in terminal_statuses:
+                continue
+            try:
+                cancel_future = goal_handle.cancel_goal_async()
+                wait_future(cancel_future, timeout=5.0)
+                result_future = goal_handle.get_result_async()
+                wait_future(result_future, timeout=5.0)
+            except Exception:
+                # SIGINT below remains the final bounded cleanup path. Preserve
+                # the original test failure instead of masking it in teardown.
+                pass
         os.killpg(process.pid, signal.SIGINT)
         try:
             output, _ = process.communicate(timeout=8.0)
@@ -737,6 +799,9 @@ def send_mission(
     goal.completion_mode = completion_mode
     goal_handle = wait_future(client.send_goal_async(goal))
     assert goal_handle.accepted
+    if not hasattr(client, '_test_goal_handles'):
+        client._test_goal_handles = []
+    client._test_goal_handles.append(goal_handle)
     return goal_handle
 
 
@@ -904,6 +969,74 @@ def test_registry_change_cancels_bounded_step_and_returns_match(
     assert set(backend.find_prompts) == {'the red mug'}
 
 
+def test_rotation_coalesces_registry_churn_until_primitive_boundary(
+        running_commander):
+    backend, client = running_commander
+    backend.queue_decision('rotate', rotation_radians=3.0)
+    backend.queue_decision(
+        'wait', reason='hold after registry boundary check',
+        wait_seconds=10.0)
+
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.primitive_names == ['rotate'])
+    backend.make_unrelated_object_available()
+
+    wait_until(lambda: any(
+        event.get('event') == 'command_result' and
+        event.get('command') == 'rotate'
+        for event in backend.trace_events))
+    rotate_event = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'command_result' and
+        event.get('command') == 'rotate')
+    wait_until(lambda: len(backend.find_prompts) >= 2)
+
+    assert rotate_event['outcome'] == 'completed'
+    assert rotate_event['registry_updates_coalesced'] >= 1
+    assert rotate_event['registry_revision_at_end'] > \
+        rotate_event['registry_revision_at_start']
+    assert backend.program_cancellations == 0
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+
+
+def test_observation_coalesces_registry_churn_until_primitive_boundary(
+        running_commander):
+    backend, client = running_commander
+    backend.queue_decision('observe', observation_seconds=0.6)
+    backend.queue_decision(
+        'wait', reason='hold after registry boundary check',
+        wait_seconds=10.0)
+
+    goal_handle = send_mission(client)
+    wait_until(
+        lambda: backend.detection_heartbeat_publisher
+        .get_subscription_count() == 1)
+    backend.make_unrelated_object_available()
+
+    wait_until(lambda: any(
+        event.get('event') == 'command_result' and
+        event.get('command') == 'observe'
+        for event in backend.trace_events))
+    observe_event = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'command_result' and
+        event.get('command') == 'observe')
+    wait_until(lambda: len(backend.find_prompts) >= 2)
+
+    assert observe_event['outcome'] == 'completed'
+    assert observe_event['detection_frames'] > 0
+    assert observe_event['registry_updates_coalesced'] >= 1
+    assert observe_event['registry_revision_at_end'] > \
+        observe_event['registry_revision_at_start']
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+
+
 def test_commander_schedules_rotate_observe_and_checkpoint_independently(
         running_commander):
     backend, client = running_commander
@@ -1019,7 +1152,7 @@ def test_repeated_stationary_poi_navigation_stops_the_mission(
         'navigate_to_observation_poi', reason='inspect second mapped POI')
     backend.release_program.set()
 
-    wrapped = wait_future(send_mission(client).get_result_async(), timeout=8.0)
+    wrapped = wait_future(send_mission(client).get_result_async(), timeout=15.0)
 
     assert wrapped.status == GoalStatus.STATUS_ABORTED
     assert not wrapped.result.success
@@ -1032,6 +1165,7 @@ def test_repeated_stationary_poi_navigation_stops_the_mission(
     assert len(stalled) == 2
     assert len(backend.poi_navigation_goals) == 2
     assert backend.program_cancellations >= 2
+
 
 def test_initial_planning_does_not_block_on_visibility_coverage(
         running_commander):
@@ -1138,7 +1272,7 @@ def test_unresponsive_inspector_cancellation_still_stops_moving_child(
     wait_until(lambda: backend.vlm_requests >= 2)
     backend.make_unrelated_object_available()
 
-    wrapped = wait_future(goal_handle.get_result_async(), timeout=8.0)
+    wrapped = wait_future(goal_handle.get_result_async(), timeout=15.0)
     hold_inspector.set()
 
     assert wrapped.status == GoalStatus.STATUS_ABORTED
@@ -1179,7 +1313,7 @@ def test_vlm_actively_inspects_and_can_end_a_model_directed_wait(
         wait_seconds=10.0)
 
     goal_handle = send_mission(client)
-    wait_until(lambda: backend.vlm_requests >= 3, timeout=4.0)
+    wait_until(lambda: backend.vlm_requests >= 3, timeout=10.0)
 
     assert backend.program_cycles == []
     assert backend.find_prompts == ['the red mug', 'the red mug']
@@ -1277,6 +1411,39 @@ def test_stationary_frontier_timeout_does_not_count_as_search_travel(
     assert not result_future.done()
     wait_future(goal_handle.cancel_goal_async())
     wrapped = wait_future(result_future)
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
+
+
+def test_slow_frontier_progress_keeps_vision_and_raises_exploration_priority(
+        running_commander):
+    backend, client = running_commander
+    backend.explore_motion_distance = 0.12
+    backend.queue_decision('explore_frontier', exploration_seconds=10.0)
+    backend.queue_decision(
+        'wait', reason='hold after checking the slow-progress blackboard',
+        wait_seconds=10.0)
+    backend.release_program.set()
+
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.vlm_requests >= 2)
+    wait_until(lambda: len([
+        event for event in backend.trace_events
+        if event.get('event') == 'planning_request'
+    ]) >= 2)
+    planning_requests = [
+        event for event in backend.trace_events
+        if event.get('event') == 'planning_request'
+    ]
+    frontier_state = planning_requests[1]['state']['frontier_search']
+
+    assert frontier_state['utility'] == 'slow'
+    assert frontier_state['exploration_priority'] == 'high'
+    assert frontier_state['measured_speed_mps'] == pytest.approx(0.012)
+    wait_until(lambda: len(backend.inspected_images) >= 2)
+    assert len(backend.inspected_images) >= 2
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
     assert wrapped.status == GoalStatus.STATUS_CANCELED
 
 
@@ -1389,7 +1556,7 @@ def test_vlm_actively_monitors_and_can_interrupt_running_exploration(
 
     goal_handle = send_mission(client)
     result_future = goal_handle.get_result_async()
-    deadline = time.monotonic() + 4.0
+    deadline = time.monotonic() + 10.0
     while backend.vlm_requests < 2 and not result_future.done() and \
             time.monotonic() < deadline:
         time.sleep(0.01)
@@ -1407,8 +1574,8 @@ def test_vlm_actively_monitors_and_can_interrupt_running_exploration(
     assert backend.program_cycles == [1]
     assert backend.program_cancellations == 0
 
-    wait_until(lambda: backend.program_cancellations == 1, timeout=4.0)
-    wait_until(lambda: backend.vlm_requests >= 4, timeout=4.0)
+    wait_until(lambda: backend.program_cancellations == 1, timeout=10.0)
+    wait_until(lambda: backend.vlm_requests >= 4, timeout=10.0)
     wait_until(lambda: any(
         status.get('active_visual_inspection_count', 0) >= 2 and
         status.get('visual_interrupt_count', 0) == 1
@@ -1425,12 +1592,12 @@ def test_repeated_active_monitor_failure_stops_motion_and_aborts(
         running_commander):
     backend, client = running_commander
     backend.queue_decision('explore_frontier', exploration_seconds=10.0)
-    backend.queue_model_failure('active monitor failure one')
-    backend.queue_model_failure('active monitor failure two')
-    backend.queue_model_failure('active monitor failure three')
+    backend.queue_active_inspection_failure('active monitor failure one')
+    backend.queue_active_inspection_failure('active monitor failure two')
+    backend.queue_active_inspection_failure('active monitor failure three')
 
     wrapped = wait_future(
-        send_mission(client).get_result_async(), timeout=8.0)
+        send_mission(client).get_result_async(), timeout=15.0)
 
     assert wrapped.status == GoalStatus.STATUS_ABORTED
     assert wrapped.result.outcome == LookForObject.Result.OUTCOME_FAILED

@@ -487,18 +487,43 @@ check rejects it. The behavior tree consequently treats smoothing as an
 optional quality improvement while retaining controller/local-costmap collision
 checking during execution.
 
+The explorer's reachability search is point-based rather than footprint-based.
+Its map BFS admits a cell when any cell in its 8-connected neighborhood is free,
+and its final blocked-goal check samples only the endpoint cost. Sparse diagonal
+free cells from a scan can therefore form a reachable-looking one-cell halo
+through unknown space even though no continuous robot-sized known-free corridor
+exists. Decision-map filtering and one-cell free dilation can widen that effect;
+turning optimization off does not remove the underlying point-versus-footprint
+distinction. The Muto endpoint adapter is the final full-footprint guard.
+
 Frontier navigation now has a Muto-owned endpoint adapter between the explorer
 and Nav2. The upstream explorer still selects and reasons about the actual
 frontier target, but sends its `NavigateToPose` request to
 `/frontier/navigate_to_pose`. `frontier_goal_adapter` checks the raw `/map` and
-selects the nearest cell whose complete `0.27 m` effective circular footprint
-contains only known-free cells. It forwards that projected endpoint to Nav2's
-normal `/navigate_to_pose` action and faces the final pose toward the original
-frontier. If no such endpoint exists within `0.80 m`, the adapter rejects the
-goal instead of silently sending the robot into unknown or occupied space. The
-explorer can then apply its normal failure/suppression policy. Two failed
-attempts temporarily suppress that frontier region for `90 s`, preventing an
-immediate retry loop while still allowing a later map update to make it useful.
+uses `map <- base_frame` to find the robot's current connected known-free
+component. It selects the frontier-nearest cell in that component whose complete
+`0.27 m` effective circular footprint is known free, forwards that staged
+endpoint to Nav2, and faces the final pose toward the original frontier. The old
+arbitrary `0.80 m` projection cutoff is disabled by the default
+`maximum_projection_distance: 0.0`: a distant unsafe frontier can therefore
+produce a useful safe advance, allow the map to grow, and be reconsidered on
+the next frontier cycle. The adapter rejects only when it cannot find any
+footprint-safe cell connected to a safe seed near the robot, when the required
+TF/map is unavailable, or when an optional nonzero projection cap explicitly
+forbids every reachable candidate. It also rejects a displaced endpoint that
+would advance less than `0.20 m`; this prevents Nav2's goal tolerance from
+turning a local impasse into a false successful frontier visit.
+
+Frontier suppression is active immediately for commander-owned bounded steps.
+One confirmed planner/controller failure, adapter no-progress rejection, or
+eight seconds without meaningful navigation progress temporarily suppresses
+that robot-width frontier region for `90 s`. There is no post-failure settle
+delay: the explorer immediately filters the bad region, selects another
+frontier, and sends the replacement goal inside the same primitive. The former
+`15 s` suppression startup grace was longer than a normal `10-15 s` primitive
+and restarted with every primitive, so it effectively disabled this escape
+path. If no other footprint-safe frontier exists, the primitive reports that
+fact rather than inventing unsafe motion.
 
 This is intentionally scoped only to frontier exploration. Object approach and
 operator navigation continue to use `/navigate_to_pose` directly. The compact

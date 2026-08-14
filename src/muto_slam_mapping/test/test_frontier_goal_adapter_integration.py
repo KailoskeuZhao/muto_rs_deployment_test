@@ -10,7 +10,7 @@ import time
 import uuid
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TransformStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 import pytest
@@ -21,6 +21,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
 
 def _wait_future(future, timeout=5.0):
@@ -48,6 +49,7 @@ class FakeNav2(Node):
         self.original_topic = f'{prefix}/original_goal'
         self.projected_topic = f'{prefix}/projected_goal'
         self.status_topic = f'{prefix}/status'
+        self.base_frame = f'{test_id}_base_frame'
         self.received_goals = []
         self.status_messages = []
         self.projected_messages = []
@@ -81,6 +83,15 @@ class FakeNav2(Node):
         self.create_subscription(
             Twist, '/cmd_vel',
             lambda message: self.cmd_vel_messages.append(message), 10)
+        self.static_tf_broadcaster = StaticTransformBroadcaster(self)
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = 'map'
+        transform.child_frame_id = self.base_frame
+        transform.transform.translation.x = (50 + 0.5) * 0.04
+        transform.transform.translation.y = (40 + 0.5) * 0.04
+        transform.transform.rotation.w = 1.0
+        self.static_tf_broadcaster.sendTransform(transform)
 
     @staticmethod
     def _pose_message():
@@ -115,6 +126,21 @@ class FakeNav2(Node):
                 message.data[cell_y * 100 + cell_x] = 0
         self.map_publisher.publish(message)
 
+    def publish_shallow_impasse(self):
+        message = OccupancyGrid()
+        message.header.frame_id = 'map'
+        message.info.width = 100
+        message.info.height = 80
+        message.info.resolution = 0.04
+        message.info.origin.orientation.w = 1.0
+        message.data = [-1] * (100 * 80)
+        # The robot is at (50, 40). After applying its 0.27 m footprint, this
+        # patch offers only a few centimetres of forward staging room.
+        for cell_y in range(33, 49):
+            for cell_x in range(25, 75):
+                message.data[cell_y * 100 + cell_x] = 0
+        self.map_publisher.publish(message)
+
 
 @pytest.fixture
 def running_adapter():
@@ -141,8 +167,9 @@ def running_adapter():
             '-p', f'original_goal_topic:={backend.original_topic}',
             '-p', f'projected_goal_topic:={backend.projected_topic}',
             '-p', f'status_topic:={backend.status_topic}',
+            '-p', f'robot_base_frame:={backend.base_frame}',
             '-p', 'effective_robot_radius:=0.27',
-            '-p', 'maximum_projection_distance:=0.80',
+            '-p', 'maximum_projection_distance:=0.0',
             '-p', 'map_wait_timeout:=1.0',
             '-p', 'nav2_server_timeout:=1.0',
         ],
@@ -199,6 +226,54 @@ def test_unknown_frontier_endpoint_is_projected_before_nav2(running_adapter):
                for item in backend.status_messages)
     assert any('"outcome":"succeeded"' in item
                for item in backend.status_messages)
+    assert backend.cmd_vel_messages == []
+
+
+def test_distant_unsafe_frontier_is_forwarded_as_staged_advance(
+        running_adapter):
+    backend, client = running_adapter
+    goal = NavigateToPose.Goal()
+    goal.pose.header.frame_id = 'map'
+    goal.pose.pose.position.x = (50 + 0.5) * 0.04
+    goal.pose.pose.position.y = (78 + 0.5) * 0.04
+    goal.pose.pose.orientation.w = 1.0
+
+    goal_handle = _wait_future(client.send_goal_async(goal))
+    assert goal_handle.accepted
+    wrapped = _wait_future(goal_handle.get_result_async())
+
+    assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
+    assert len(backend.received_goals) == 1
+    forwarded = backend.received_goals[0].pose
+    displacement = math.hypot(
+        forwarded.pose.position.x - goal.pose.pose.position.x,
+        forwarded.pose.position.y - goal.pose.pose.position.y,
+    )
+    assert displacement > 0.80
+    assert forwarded.pose.position.y < goal.pose.pose.position.y
+    assert backend.cmd_vel_messages == []
+
+
+def test_local_impasse_is_rejected_instead_of_reporting_false_progress(
+        running_adapter):
+    backend, client = running_adapter
+    backend.publish_shallow_impasse()
+    time.sleep(0.15)
+    goal = NavigateToPose.Goal()
+    goal.pose.header.frame_id = 'map'
+    goal.pose.pose.position.x = (50 + 0.5) * 0.04
+    goal.pose.pose.position.y = (60 + 0.5) * 0.04
+    goal.pose.pose.orientation.w = 1.0
+
+    goal_handle = _wait_future(client.send_goal_async(goal))
+    assert goal_handle.accepted
+    wrapped = _wait_future(goal_handle.get_result_async())
+
+    assert wrapped.status == GoalStatus.STATUS_ABORTED
+    assert backend.received_goals == []
+    _wait_until(lambda: any(
+        '"outcome":"rejected_no_progress"' in item
+        for item in backend.status_messages))
     assert backend.cmd_vel_messages == []
 
 

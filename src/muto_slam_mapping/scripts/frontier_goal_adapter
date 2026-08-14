@@ -2,6 +2,7 @@
 
 """Project frontier goals into raw known-free space before forwarding to Nav2."""
 
+from collections import deque
 import copy
 from dataclasses import dataclass
 import json
@@ -17,10 +18,13 @@ from nav_msgs.msg import OccupancyGrid
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from std_msgs.msg import String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 @dataclass(frozen=True)
@@ -177,6 +181,116 @@ def project_goal_to_known_free(
     return best
 
 
+def project_goal_to_reachable_known_free(
+    grid: OccupancyGrid,
+    target_x: float,
+    target_y: float,
+    robot_x: float,
+    robot_y: float,
+    effective_radius: float,
+    robot_seed_search_distance: float,
+    maximum_projection_distance: float = 0.0,
+    free_space_max_occupancy: int = 0,
+) -> Optional[ProjectedGoal]:
+    """Choose the target-nearest robot-reachable footprint-safe map cell.
+
+    A zero maximum projection distance intentionally means unbounded staging
+    within the robot's connected known-free component. This lets an unsafe
+    distant frontier become a safe intermediate advance instead of aborting
+    exploration because an arbitrary local projection radius was exceeded.
+    """
+    resolution = float(grid.info.resolution)
+    robot_map = _world_to_map_continuous(grid, robot_x, robot_y)
+    if robot_map is None or robot_seed_search_distance < 0.0 or \
+            maximum_projection_distance < 0.0:
+        return None
+    if len(grid.data) != int(grid.info.width) * int(grid.info.height):
+        return None
+
+    width = int(grid.info.width)
+    height = int(grid.info.height)
+    robot_cell_x = int(math.floor(robot_map[0]))
+    robot_cell_y = int(math.floor(robot_map[1]))
+    safety_cache = {}
+
+    def cell_is_safe(cell_x, cell_y):
+        key = (cell_x, cell_y)
+        if key not in safety_cache:
+            safety_cache[key] = _footprint_is_known_free(
+                grid,
+                cell_x,
+                cell_y,
+                effective_radius,
+                free_space_max_occupancy,
+            )
+        return safety_cache[key]
+
+    seed_reach = int(math.ceil(robot_seed_search_distance / resolution)) + 1
+    seed = None
+    seed_score = None
+    for cell_y in range(robot_cell_y - seed_reach, robot_cell_y + seed_reach + 1):
+        for cell_x in range(robot_cell_x - seed_reach, robot_cell_x + seed_reach + 1):
+            if cell_x < 0 or cell_y < 0 or cell_x >= width or cell_y >= height:
+                continue
+            world_x, world_y = _map_to_world(grid, cell_x, cell_y)
+            distance = math.hypot(world_x - robot_x, world_y - robot_y)
+            if distance > robot_seed_search_distance + 1.0e-9:
+                continue
+            if not cell_is_safe(cell_x, cell_y):
+                continue
+            score = (distance, cell_y, cell_x)
+            if seed_score is None or score < seed_score:
+                seed_score = score
+                seed = (cell_x, cell_y)
+    if seed is None:
+        return None
+
+    queue = deque([seed])
+    visited = {seed}
+    best = None
+    best_score = None
+    neighbor_offsets = (
+        (-1, -1), (0, -1), (1, -1),
+        (-1, 0),             (1, 0),
+        (-1, 1),  (0, 1),   (1, 1),
+    )
+    while queue:
+        cell_x, cell_y = queue.popleft()
+        world_x, world_y = _map_to_world(grid, cell_x, cell_y)
+        displacement = math.hypot(world_x - target_x, world_y - target_y)
+        if maximum_projection_distance <= 0.0 or \
+                displacement <= maximum_projection_distance + 1.0e-9:
+            score = (displacement, cell_y, cell_x)
+            if best_score is None or score < best_score:
+                best_score = score
+                best = ProjectedGoal(
+                    x=world_x,
+                    y=world_y,
+                    displaced=displacement > 0.5 * resolution,
+                    displacement=displacement,
+                )
+
+        for offset_x, offset_y in neighbor_offsets:
+            neighbor = (cell_x + offset_x, cell_y + offset_y)
+            if neighbor in visited:
+                continue
+            neighbor_x, neighbor_y = neighbor
+            if neighbor_x < 0 or neighbor_y < 0 or \
+                    neighbor_x >= width or neighbor_y >= height:
+                continue
+            if not cell_is_safe(neighbor_x, neighbor_y):
+                continue
+            if offset_x != 0 and offset_y != 0:
+                # Prevent an artificial diagonal connection through two
+                # footprint-unsafe cardinal cells.
+                if not cell_is_safe(cell_x + offset_x, cell_y) or \
+                        not cell_is_safe(cell_x, cell_y + offset_y):
+                    continue
+            visited.add(neighbor)
+            queue.append(neighbor)
+    return best
+
+
 def _copy_navigation_result(source):
     result = NavigateToPose.Result()
     for field_name in ('error_code', 'error_msg'):
@@ -202,7 +316,11 @@ class FrontierGoalAdapter(Node):
         self.declare_parameter('nav2_action', '/navigate_to_pose')
         self.declare_parameter('map_topic', '/map')
         self.declare_parameter('effective_robot_radius', 0.27)
-        self.declare_parameter('maximum_projection_distance', 0.80)
+        self.declare_parameter('maximum_projection_distance', 0.0)
+        self.declare_parameter('robot_base_frame', 'base_frame')
+        self.declare_parameter('robot_pose_timeout', 1.0)
+        self.declare_parameter('robot_seed_search_distance', 0.75)
+        self.declare_parameter('minimum_staged_advance_distance', 0.20)
         self.declare_parameter('free_space_max_occupancy', 0)
         self.declare_parameter('map_wait_timeout', 5.0)
         self.declare_parameter('map_maximum_age', 10.0)
@@ -222,6 +340,14 @@ class FrontierGoalAdapter(Node):
             self.get_parameter('effective_robot_radius').value)
         self._maximum_projection_distance = float(
             self.get_parameter('maximum_projection_distance').value)
+        self._robot_base_frame = str(
+            self.get_parameter('robot_base_frame').value)
+        self._robot_pose_timeout = float(
+            self.get_parameter('robot_pose_timeout').value)
+        self._robot_seed_search_distance = float(
+            self.get_parameter('robot_seed_search_distance').value)
+        self._minimum_staged_advance_distance = float(
+            self.get_parameter('minimum_staged_advance_distance').value)
         self._free_space_max_occupancy = int(
             self.get_parameter('free_space_max_occupancy').value)
         self._map_wait_timeout = float(
@@ -235,15 +361,20 @@ class FrontierGoalAdapter(Node):
 
         if self._effective_radius <= 0.0:
             raise ValueError('effective_robot_radius must be positive')
-        if self._maximum_projection_distance < self._effective_radius:
-            raise ValueError(
-                'maximum_projection_distance must cover effective_robot_radius')
+        if self._maximum_projection_distance < 0.0:
+            raise ValueError('maximum_projection_distance must be non-negative')
+        if not self._robot_base_frame:
+            raise ValueError('robot_base_frame must not be empty')
         if not 0 <= self._free_space_max_occupancy <= 100:
             raise ValueError('free_space_max_occupancy must be in [0, 100]')
         for name, value in (
             ('map_wait_timeout', self._map_wait_timeout),
             ('map_maximum_age', self._map_maximum_age),
             ('nav2_server_timeout', self._nav2_server_timeout),
+            ('robot_pose_timeout', self._robot_pose_timeout),
+            ('robot_seed_search_distance', self._robot_seed_search_distance),
+            ('minimum_staged_advance_distance',
+             self._minimum_staged_advance_distance),
         ):
             if value <= 0.0:
                 raise ValueError(f'{name} must be positive')
@@ -260,6 +391,9 @@ class FrontierGoalAdapter(Node):
         self._latest_map_receipt = 0.0
         self._busy = False
         self._active_child = None
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(
+            self._tf_buffer, self, spin_thread=False)
 
         self._map_subscription = self.create_subscription(
             OccupancyGrid,
@@ -300,7 +434,8 @@ class FrontierGoalAdapter(Node):
         )
         self.get_logger().info(
             f'Frontier goal adapter ready: {self._input_action} -> '
-            f'{self._nav2_action}, radius={self._effective_radius:.3f} m')
+            f'{self._nav2_action}, radius={self._effective_radius:.3f} m, '
+            'reachable staged projection enabled')
 
     def _map_callback(self, message):
         with self._state_lock:
@@ -371,6 +506,30 @@ class FrontierGoalAdapter(Node):
             time.sleep(0.01)
         return False
 
+    def _wait_for_robot_position(self, goal_handle, map_frame):
+        deadline = time.monotonic() + self._robot_pose_timeout
+        detail = ''
+        while rclpy.ok():
+            if goal_handle.is_cancel_requested:
+                return None, 'canceled'
+            try:
+                transform = self._tf_buffer.lookup_transform(
+                    map_frame,
+                    self._robot_base_frame,
+                    Time(),
+                    timeout=Duration(seconds=0.05),
+                )
+                translation = transform.transform.translation
+                return (float(translation.x), float(translation.y)), ''
+            except TransformException as error:
+                detail = str(error)
+            if time.monotonic() >= deadline:
+                return None, (
+                    f'robot transform {map_frame} <- '
+                    f'{self._robot_base_frame} unavailable: {detail}')
+            time.sleep(0.02)
+        return None, 'ROS shutdown'
+
     def _cancel_child_and_wait(self):
         with self._state_lock:
             child = self._active_child
@@ -412,20 +571,50 @@ class FrontierGoalAdapter(Node):
                 self._publish_status('rejected', original_pose, detail=detail)
                 return _failure_result(detail)
 
-            projected = project_goal_to_known_free(
+            robot_position, robot_error = self._wait_for_robot_position(
+                goal_handle, grid_frame)
+            if robot_position is None:
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                else:
+                    goal_handle.abort()
+                self._publish_status(
+                    'rejected', original_pose, detail=robot_error)
+                return _failure_result(robot_error)
+
+            projected = project_goal_to_reachable_known_free(
                 grid,
                 original_pose.pose.position.x,
                 original_pose.pose.position.y,
+                robot_position[0],
+                robot_position[1],
                 self._effective_radius,
+                self._robot_seed_search_distance,
                 self._maximum_projection_distance,
                 self._free_space_max_occupancy,
             )
             if projected is None:
                 detail = (
-                    'no footprint-safe known-free endpoint within '
-                    f'{self._maximum_projection_distance:.2f} m')
+                    'no footprint-safe endpoint is reachable from the robot '
+                    'in the current known-free map')
                 goal_handle.abort()
                 self._publish_status('rejected', original_pose, detail=detail)
+                return _failure_result(detail)
+
+            staged_advance = math.hypot(
+                projected.x - robot_position[0],
+                projected.y - robot_position[1],
+            )
+            if projected.displaced and staged_advance < \
+                    self._minimum_staged_advance_distance:
+                detail = (
+                    'frontier projects into a local impasse: the nearest '
+                    f'reachable staged endpoint advances only '
+                    f'{staged_advance:.3f} m, below the required '
+                    f'{self._minimum_staged_advance_distance:.3f} m')
+                goal_handle.abort()
+                self._publish_status(
+                    'rejected_no_progress', original_pose, detail=detail)
                 return _failure_result(detail)
 
             nav_pose = PoseStamped()

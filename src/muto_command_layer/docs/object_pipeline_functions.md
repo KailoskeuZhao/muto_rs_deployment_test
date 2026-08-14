@@ -326,7 +326,13 @@ returned exactly one confirmed ID.
 
 `explore_frontier` runs frontier travel for a bounded interval and stops without
 rotating. Its elapsed time counts as search evidence only when odometry confirms
-spatial displacement; a stationary timeout is reported as no progress.
+spatial displacement; a stationary timeout is reported as no progress. The
+blackboard also reports measured frontier travel divided by requested frontier
+time. Below the configured `0.03 m/s` useful-rate threshold, the next VLM prompt
+biases toward another bounded frontier attempt because local deterministic
+failover can select a different safe endpoint. This bias does not remove the
+camera input: every planning boundary still supplies a fresh JPEG, and possible
+or likely target evidence prompts registry verification before more travel.
 `navigate_to_observation_poi` re-queries the read-only visibility coverage
 service and navigates to its current top-ranked observation POI; it does not
 rotate, observe, or checkpoint by itself.
@@ -359,6 +365,14 @@ causes a confirmed motion stop followed by an ordinary foreground
 `/find_object` check against the latest snapshot. Position, confidence, and
 repeat-observation updates for the same identity deliberately do not churn the
 identity revision.
+
+After an accepted bounded `rotate` or stationary `observe` begins, identity
+updates are also coalesced instead of canceling that primitive. Its result
+records the registry revision at start and finish plus the number of accumulated
+revisions. The commander immediately performs its normal foreground registry
+verification at the primitive boundary. Parent cancellation, mission deadlines,
+action ownership failures, stale pre-dispatch plans, and target-specific
+approach changes retain their existing fail-closed behavior.
 
 The VLM also inspects a fresh forward-camera frame after a 20-second cooldown by
 default while an exploration primitive or a model-directed wait remains active.

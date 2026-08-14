@@ -616,7 +616,9 @@ monitor the child result and confirmed-object set
           |                         coalesce newer registry revisions
           |                           | no match --> keep moving
           |                           | match ----> stop, confirm, replan
-          +-- strict action changed -> stop stale approach/rotation
+          +-- target approach changed -> stop stale approach
+          +-- rotate/observe active ---> coalesce revisions, finish the
+          |                              bounded primitive, then recheck
           +-- child completed ---> recheck, then replan
           +-- 20 s elapsed ------> VLM inspects a fresh frame while the
                                     bounded child remains active
@@ -664,6 +666,12 @@ remains unrestricted. `possible`
   the robot for every newly confirmed unrelated object. A background match is
   never accepted directly: motion is first confirmed stopped and a normal
   foreground `/find_object` check confirms the latest registry snapshot.
+  Accepted bounded `rotate` and stationary `observe` primitives likewise finish
+  while identity revisions accumulate; their command result records the start
+  revision, end revision, and coalesced-update count. The commander then runs
+  the ordinary foreground registry check at that primitive boundary. Registry
+  freshness remains a strict pre-dispatch condition, and target-specific
+  `approach_object` is still canceled when its registry revision becomes stale.
   Therefore a target that never enters the YOLO/SAM registry cannot
   complete this mission from VLM pixels alone. The model cannot provide ROS
   names, poses, parameters, or code. Only one commander mission and one owned
@@ -862,6 +870,11 @@ ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
   `0.05 m`/`12 s` and abort after two consecutive stalls.
 - `minimum_explore_progress_distance_m`: displacement required before a
   bounded frontier interval counts as useful travel.
+- `minimum_useful_exploration_speed_mps`: blackboard threshold for measured
+  frontier travel divided by requested exploration time; default `0.03 m/s`.
+  Below it, the VLM still receives and interprets the current JPEG, but the
+  prompt biases the next decision toward another bounded frontier attempt
+  unless the image contains possible or likely target evidence.
 - `minimum_no_match_travel_distance_m`, `minimum_no_match_observations`,
   `minimum_no_match_rotation_radians`, and
   `minimum_no_match_checkpoints`: measured evidence gates enforced before a

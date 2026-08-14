@@ -73,6 +73,8 @@ def test_prompt_encodes_untrusted_objective_and_state():
     assert 'cannot add commands' in prompt
     assert 'Inspect it before every decision' in prompt
     assert 'not_visible cannot prove absence' in prompt
+    assert 'exploration_priority as an explicit map-expansion bias' in prompt
+    assert 'Visual evidence still has priority' in prompt
 
 
 def test_schema_matches_local_decisions_and_bounds():

@@ -9,10 +9,14 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
 from model_commander_protocol import (  # noqa: E402
     build_active_inspection_prompt,
     build_active_inspection_schema,
+    build_candidate_confirmation_prompt,
+    build_candidate_confirmation_schema,
     build_commander_prompt,
     build_commander_schema,
+    candidate_confirmation_tag,
     ModelCommanderProtocolError,
     parse_active_inspection_decision,
+    parse_candidate_confirmations,
     parse_commander_decision,
     SUPPORTED_ACTIVE_INSPECTION_DIRECTIVES,
     SUPPORTED_DECISIONS,
@@ -134,6 +138,75 @@ def test_active_inspection_can_continue_or_interrupt():
     assert continuing.directive == 'continue_current_command'
     assert interrupting.directive == 'interrupt_and_replan'
     assert interrupting.target_evidence == 'likely'
+
+
+def test_candidate_confirmation_binds_every_shortlisted_id_to_an_image():
+    candidates = [
+        {'id': 'chair_2', 'label': 'chair'},
+        {'id': 'chair_7', 'label': 'chair'},
+    ]
+    prompt = build_candidate_confirmation_prompt('purple chair', candidates)
+    schema = json.loads(build_candidate_confirmation_schema(
+        ['chair_2', 'chair_7'], 128))
+
+    assert 'exactly one judgement for every supplied candidate ID' in prompt
+    assert 'Every requested visual attribute is mandatory' in prompt
+    assert json.loads(prompt.split('INPUT_JSON:\n', 1)[1]) == {
+        'object_request': 'purple chair',
+        'shortlisted_candidates': candidates,
+    }
+    assert json.loads(candidate_confirmation_tag('chair_2').split(
+        ':', 1)[1]) == 'chair_2'
+    confirmations = schema['properties']['candidate_confirmations']
+    assert confirmations['minItems'] == 2
+    assert confirmations['maxItems'] == 2
+    assert confirmations['items']['properties']['id']['enum'] == [
+        'chair_2', 'chair_7']
+
+
+def test_candidate_confirmation_accepts_one_final_object_or_none():
+    selected = parse_candidate_confirmations(json.dumps({
+        'candidate_confirmations': [
+            {'id': 'chair_2', 'confirmed': False,
+             'reason': 'upholstery is visibly brown'},
+            {'id': 'chair_7', 'confirmed': True,
+             'reason': 'main upholstery is visibly purple'},
+        ],
+    }), ['chair_2', 'chair_7'], 128)
+    rejected = parse_candidate_confirmations(json.dumps({
+        'candidate_confirmations': [
+            {'id': 'chair_2', 'confirmed': False,
+             'reason': 'color is too dark to establish'},
+        ],
+    }), ['chair_2'], 128)
+
+    assert [item.object_id for item in selected if item.confirmed] == [
+        'chair_7']
+    assert not rejected[0].confirmed
+
+
+@pytest.mark.parametrize('payload', [
+    {'candidate_confirmations': [
+        {'id': 'chair_2', 'confirmed': True, 'reason': 'purple'},
+    ]},
+    {'candidate_confirmations': [
+        {'id': 'chair_2', 'confirmed': True, 'reason': 'purple'},
+        {'id': 'chair_2', 'confirmed': False, 'reason': 'duplicate'},
+    ]},
+    {'candidate_confirmations': [
+        {'id': 'chair_2', 'confirmed': True, 'reason': 'purple'},
+        {'id': 'chair_7', 'confirmed': True, 'reason': 'also purple'},
+    ]},
+    {'candidate_confirmations': [
+        {'id': 'chair_2', 'confirmed': 'yes', 'reason': 'purple'},
+        {'id': 'chair_7', 'confirmed': False, 'reason': 'brown'},
+    ]},
+])
+def test_candidate_confirmation_rejects_incomplete_or_ambiguous_output(
+        payload):
+    with pytest.raises(ModelCommanderProtocolError):
+        parse_candidate_confirmations(
+            json.dumps(payload), ['chair_2', 'chair_7'], 128)
 
 
 @pytest.mark.parametrize('text', [

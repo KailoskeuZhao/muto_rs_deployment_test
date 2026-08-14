@@ -508,11 +508,25 @@ small hardware, armrests, reflections, tinted lighting, and nearby objects do
 not qualify unless the request explicitly names that part. Occluded or ambiguous
 candidates are rejected.
 
+That two-pass behavior is the direct `/find_object` compatibility contract.
+`FindObject` also has a `shortlist_only` goal flag. The model commander always
+sets it: `/find_object` then stops after the name/label/class shortlist and
+returns those candidates without calling its visual pass. The commander reads
+the candidates' stored JPEGs, issues its own strict confirmation request, and
+promotes at most one exact ID or rejects every candidate. Thus the commander
+mission chain is:
+
+```text
+registry name/metadata lookup -> exact-ID shortlist
+  -> commander checks tagged stored JPEGs
+  -> one confirmed candidate or all candidates unconfirmed
+```
+
 `FindObject` also accepts optional `candidate_ids`. When supplied, the server
 skips whole-registry metadata shortlisting and visually refines only those
-exact confirmed registry IDs using their stored JPEGs. The commander uses this
-as `refine_registry_selection` when an approach mission has multiple confirmed
-matches and needs one exact object ID before `/go_to_object`.
+exact registry IDs using their stored JPEGs. This remains available to direct
+legacy callers; commander missions do not delegate final confirmation through
+this path.
 
 Every final result is returned in the `FindObject` action result and published
 individually as `muto_command_layer/msg/ObjectMatch` on
@@ -595,7 +609,10 @@ child cannot be confirmed stopped, the node keeps ownership latched and rejects
 new missions until restart.
 
 ```text
-check the current registry
+shortlist the current registry by name/metadata
+          |
+          v
+commander confirms tagged candidate JPEGs (at most one exact ID)
           |
           +-- match + report completion ----------------> return it
           +-- match + approach completion --------------> retain exact ID
@@ -626,10 +643,10 @@ monitor the child result and confirmed-object set
                                       | stop, verify stopped, recheck, replan
 ```
 
-The planner selects only from that bounded primitive enum.
-`refine_registry_selection` reuses `/find_object` with caller-provided
-candidate IDs, so stored registry JPEGs can narrow multiple confirmed matches
-without searching outside that set. `approach_object` is unavailable until
+The planner selects only from that bounded primitive enum. Candidate
+confirmation runs automatically inside `verify_registry` before another
+planner request; `refine_registry_selection` remains only as a compatibility
+no-op for a set that is already unambiguous. `approach_object` is unavailable until
 the current registry revision contains exactly one confirmed target ID; camera
 evidence alone can never unlock it. The
 commander owns the `/go_to_object` child and records its target ID plus
@@ -656,16 +673,18 @@ followed by a fresh registry check. Frontier time alone is not coverage: a step
 moving less than 0.10 m is reported as `no_spatial_progress`, and the default
 no-match gate requires at least 0.50 m of measured travel. The other defaults
 are four observations, one full turn, and one checkpoint. The primitive order
-remains unrestricted. `possible`
-  or `likely` target evidence
-  forces another registry check before any further motion or no-match finish.
-  Visual evidence never sets `found`; only `/find_object` can confirm a registry
-  match. During `explore_frontier`, motion and registry verification use
+remains unrestricted. `possible` or `likely` target evidence forces another
+registry shortlist and commander confirmation before further search motion or
+a no-match finish. It does not replace an already-current, confirmed
+`approach_object` command. Live-camera evidence never sets `found`; only the
+commander's stored-image confirmation of a registry shortlist can do that.
+During `explore_frontier`, motion and registry verification use
   separate ROS action handles and are polled concurrently. Only one of each may
   be active; intermediate registry revisions are coalesced instead of stopping
   the robot for every newly confirmed unrelated object. A background match is
   never accepted directly: motion is first confirmed stopped and a normal
-  foreground `/find_object` check confirms the latest registry snapshot.
+  foreground shortlist plus commander confirmation checks the latest registry
+  snapshot.
   Accepted bounded `rotate` and stationary `observe` primitives likewise finish
   while identity revisions accumulate; their command result records the start
   revision, end revision, and coalesced-update count. The commander then runs

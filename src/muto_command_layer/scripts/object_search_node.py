@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two-stage registry and VLM object-search action server."""
+"""Registry name-shortlisting with optional direct visual refinement."""
 
 import math
 from pathlib import Path
@@ -425,8 +425,9 @@ class ObjectSearchNode(Node):
         return content, included
 
     def _publish_matches(
-            self, prompt, selections, objects_by_id, registry_header):
-        """Publish one correlated ObjectMatch message per final selection."""
+            self, prompt, selections, objects_by_id, registry_header,
+            publish=True):
+        """Build correlated results and publish only final selections."""
         query_id = uuid.uuid4().hex
         total = len(selections)
         stamp = self.get_clock().now().to_msg()
@@ -442,11 +443,12 @@ class ObjectSearchNode(Node):
             message.object_id = selection.object_id
             message.label = stored_object.label
             message.description = selection.description
-            self._match_publisher.publish(message)
+            if publish:
+                self._match_publisher.publish(message)
             messages.append(message)
         self.get_logger().info(
-            f'Object search completed: query_id={query_id} '
-            f'matches={total} prompt_characters={len(prompt)}')
+            f'Object search completed: query_id={query_id} results={total} '
+            f'published={publish} prompt_characters={len(prompt)}')
         return messages
 
     def _execute_callback(self, goal_handle):
@@ -528,7 +530,7 @@ class ObjectSearchNode(Node):
                     'metadata shortlist', shortlist, list(objects_by_id))
 
             final_selections = shortlist
-            if shortlist:
+            if shortlist and not goal_handle.request.shortlist_only:
                 self._publish_feedback(
                     goal_handle,
                     FindObject.Feedback.PHASE_VISUAL_REFINEMENT,
@@ -557,13 +559,15 @@ class ObjectSearchNode(Node):
                     final_selections,
                     visual_ids,
                 )
-            elif self.log_vlm_judgements:
+            elif not shortlist and self.log_vlm_judgements:
                 self.get_logger().info(
                     'VLM visual target filtering skipped: no metadata candidates')
 
             self._publish_feedback(
                 goal_handle,
                 FindObject.Feedback.PHASE_PUBLISHING,
+                'returning registry candidates'
+                if goal_handle.request.shortlist_only else
                 'publishing final object matches',
                 len(final_selections),
             )
@@ -572,9 +576,14 @@ class ObjectSearchNode(Node):
                 final_selections,
                 objects_by_id,
                 registry_header,
+                publish=not goal_handle.request.shortlist_only,
             )
             result.success = True
-            if result.matches:
+            if result.matches and goal_handle.request.shortlist_only:
+                result.message = (
+                    f'shortlisted {len(result.matches)} registry candidate(s)'
+                )
+            elif result.matches:
                 result.message = f'found {len(result.matches)} object match(es)'
             else:
                 result.message = 'no registered object matched the prompt'

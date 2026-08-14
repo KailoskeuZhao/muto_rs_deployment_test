@@ -4,8 +4,10 @@ from collections import deque
 import json
 import math
 import os
+from pathlib import Path
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -117,6 +119,7 @@ class FakeCommanderBackends(Node):
         self._lock = threading.Lock()
         self._decisions = deque()
         self._active_inspections = deque()
+        self._candidate_confirmations = deque()
         self._script_release_events = []
         self.match_available = False
         self.unrelated_object_available = False
@@ -128,11 +131,13 @@ class FakeCommanderBackends(Node):
         self.vlm_requests = 0
         self.vlm_camera_jpegs = []
         self.vlm_camera_labels = []
+        self.candidate_confirmation_requests = []
         self.vlm_cancellations = 0
         self.vlm_rejections_remaining = 0
         self.ignore_vlm_cancel = False
         self.find_prompts = []
         self.find_candidate_id_sets = []
+        self.find_shortlist_only = []
         self.program_cycles = []
         self.primitive_names = []
         self.program_cancellations = 0
@@ -151,6 +156,14 @@ class FakeCommanderBackends(Node):
         self.simulate_explore_motion = True
         self.explore_motion_distance = 0.6
         self.simulate_navigate_motion = True
+        self._candidate_image_directory = tempfile.TemporaryDirectory(
+            prefix=f'muto_commander_test_{test_id}_')
+        self.candidate_image_paths = {}
+        for object_id in ('blue_box', 'red_mug_2', 'red_mug_3'):
+            image_path = Path(self._candidate_image_directory.name) / (
+                object_id + '.jpg')
+            image_path.write_bytes(b'\xff\xd8\xff\xd9')
+            self.candidate_image_paths[object_id] = str(image_path)
 
         self.vlm_server = ActionServer(
             self,
@@ -326,11 +339,55 @@ class FakeCommanderBackends(Node):
                 '',
             ))
 
+    def queue_candidate_confirmation(self, confirmed_object_id=None):
+        with self._lock:
+            self._candidate_confirmations.append(confirmed_object_id)
+
     def execute_vlm(self, goal_handle):
         schema = json.loads(goal_handle.request.response_json_schema)
         assert schema['additionalProperties'] is False
         properties = schema.get('properties', {})
         is_active_inspection = 'directive' in properties
+        is_candidate_confirmation = 'candidate_confirmations' in properties
+        if is_candidate_confirmation:
+            candidate_ids = properties['candidate_confirmations']['items'][
+                'properties']['id']['enum']
+            with self._lock:
+                confirmed_object_id = (
+                    self._candidate_confirmations.popleft()
+                    if self._candidate_confirmations else candidate_ids[0]
+                )
+                self.vlm_requests += 1
+                self.candidate_confirmation_requests.append(
+                    list(candidate_ids))
+            assert confirmed_object_id is None or \
+                confirmed_object_id in candidate_ids
+            parts = list(goal_handle.request.content)
+            assert len(parts) == 1 + (2 * len(candidate_ids))
+            assert parts[0].type == VlmContent.TYPE_TEXT
+            for index, object_id in enumerate(candidate_ids):
+                tag = parts[1 + (2 * index)]
+                image = parts[2 + (2 * index)]
+                assert tag.type == VlmContent.TYPE_TEXT
+                assert object_id in tag.text
+                assert image.type == VlmContent.TYPE_JPEG
+                assert bytes(image.jpeg_data).startswith(b'\xff\xd8')
+                assert bytes(image.jpeg_data).endswith(b'\xff\xd9')
+            result = GenerateVlm.Result()
+            result.success = True
+            result.response_text = json.dumps({
+                'candidate_confirmations': [{
+                    'id': object_id,
+                    'confirmed': object_id == confirmed_object_id,
+                    'reason': (
+                        'stored image clearly matches the complete request'
+                        if object_id == confirmed_object_id else
+                        'stored image does not clearly match the request'
+                    ),
+                } for object_id in candidate_ids],
+            })
+            goal_handle.succeed()
+            return result
         with self._lock:
             responses = (
                 self._active_inspections
@@ -380,6 +437,7 @@ class FakeCommanderBackends(Node):
         self.find_prompts.append(goal_handle.request.prompt)
         candidate_ids = list(goal_handle.request.candidate_ids)
         self.find_candidate_id_sets.append(candidate_ids)
+        self.find_shortlist_only.append(goal_handle.request.shortlist_only)
         with self._lock:
             match_available = self.match_available
             ambiguous_available = self.ambiguous_matches_available
@@ -416,14 +474,6 @@ class FakeCommanderBackends(Node):
             second.description = 'fake second red mug candidate'
             result.matches = [first, second]
             result.message = 'found two matching static objects'
-        elif ambiguous_available and candidate_ids == ['red_mug_2',
-                                                       'red_mug_3']:
-            match = ObjectMatch()
-            match.object_id = 'red_mug_3'
-            match.label = 'cup'
-            match.description = 'stored JPEG best matches the requested mug'
-            result.matches = [match]
-            result.message = 'refined to one matching static object'
         else:
             result.message = 'no registered object matched'
         goal_handle.succeed()
@@ -599,14 +649,14 @@ class FakeCommanderBackends(Node):
             unrelated.name = 'blue_box'
             unrelated.label = 'box'
             unrelated.class_id = 1
-            unrelated.image_path = '/tmp/blue_box.jpg'
+            unrelated.image_path = self.candidate_image_paths['blue_box']
             objects.append(unrelated)
         if match_available:
             stored = StoredObject()
             stored.name = 'red_mug_2'
             stored.label = 'cup'
             stored.class_id = 2
-            stored.image_path = '/tmp/red_mug_2.jpg'
+            stored.image_path = self.candidate_image_paths['red_mug_2']
             objects.append(stored)
         if ambiguous_available:
             for name in ('red_mug_2', 'red_mug_3'):
@@ -614,7 +664,7 @@ class FakeCommanderBackends(Node):
                 stored.name = name
                 stored.label = 'cup'
                 stored.class_id = 2
-                stored.image_path = f'/tmp/{name}.jpg'
+                stored.image_path = self.candidate_image_paths[name]
                 objects.append(stored)
         message.objects = objects
         self.registry_publisher.publish(message)
@@ -787,6 +837,7 @@ def running_commander(request):
         executor.shutdown(timeout_sec=5.0)
         spin_thread.join(timeout=5.0)
         backend.destroy_node()
+        backend._candidate_image_directory.cleanup()
         rclpy.shutdown()
         assert process.returncode == 0, output
 
@@ -818,7 +869,9 @@ def test_existing_match_finishes_without_planning_or_motion(
     assert not wrapped.result.approached
     assert wrapped.result.outcome == LookForObject.Result.OUTCOME_FOUND
     assert [item.object_id for item in wrapped.result.matches] == ['red_mug_2']
-    assert backend.vlm_requests == 0
+    assert backend.vlm_requests == 1
+    assert backend.candidate_confirmation_requests == [['red_mug_2']]
+    assert backend.find_shortlist_only == [True]
     assert backend.program_cycles == []
     wait_until(lambda: any(
         event['event'] == 'succeeded'
@@ -846,6 +899,8 @@ def test_approach_completion_is_planned_after_exact_registry_confirmation(
     backend.queue_decision(
         'approach_object',
         reason='the exact confirmed target can now be approached',
+        visual_observation='a red mug-like object is visible ahead',
+        target_evidence='likely',
     )
 
     goal_handle = send_mission(
@@ -859,7 +914,7 @@ def test_approach_completion_is_planned_after_exact_registry_confirmation(
     assert wrapped.result.found
     assert wrapped.result.approached
     assert backend.approach_object_ids == ['red_mug_2']
-    assert backend.vlm_requests == 1
+    assert backend.vlm_requests == 2
     assert backend.program_cycles == []
     approach_event = next(
         event for event in backend.trace_events
@@ -870,17 +925,14 @@ def test_approach_completion_is_planned_after_exact_registry_confirmation(
     assert approach_event['outcome'] == 'completed'
 
 
-def test_approach_can_refine_multiple_confirmed_registry_candidates(
+def test_commander_visually_selects_one_name_shortlisted_candidate(
         running_commander):
     backend, client = running_commander
     backend.make_ambiguous_matches_available()
-    backend.queue_decision(
-        'refine_registry_selection',
-        reason='use stored registry crop images to choose one mug',
-    )
+    backend.queue_candidate_confirmation('red_mug_3')
     backend.queue_decision(
         'approach_object',
-        reason='the registry refinement selected one exact target',
+        reason='commander confirmation selected one exact target',
     )
 
     goal_handle = send_mission(
@@ -896,17 +948,49 @@ def test_approach_can_refine_multiple_confirmed_registry_candidates(
     assert [item.object_id for item in wrapped.result.matches] == [
         'red_mug_3']
     assert backend.approach_object_ids == ['red_mug_3']
-    assert backend.find_candidate_id_sets == [
-        [],
-        ['red_mug_2', 'red_mug_3'],
-    ]
-    refine_event = next(
+    assert backend.find_candidate_id_sets == [[]]
+    assert backend.find_shortlist_only == [True]
+    assert backend.candidate_confirmation_requests == [[
+        'red_mug_2', 'red_mug_3']]
+    confirmation_event = next(
         event for event in backend.trace_events
         if event.get('event') == 'command_result' and
-        event.get('command') == 'refine_registry_selection'
+        event.get('command') == 'confirm_registry_candidates'
     )
-    assert refine_event['candidate_object_ids'] == ['red_mug_2', 'red_mug_3']
-    assert refine_event['matched_object_ids'] == ['red_mug_3']
+    assert confirmation_event['candidate_object_ids'] == [
+        'red_mug_2', 'red_mug_3']
+    assert confirmation_event['matched_object_ids'] == ['red_mug_3']
+
+
+def test_commander_rejects_name_match_when_visual_request_is_unconfirmed(
+        running_commander):
+    backend, client = running_commander
+    backend.make_match_available()
+    backend.queue_candidate_confirmation(None)
+    backend.queue_decision(
+        'explore_frontier',
+        exploration_seconds=10.0,
+        reason='the registry name candidate failed visual confirmation',
+    )
+
+    goal_handle = send_mission(client)
+    wait_until(lambda: backend.program_cycles == [1])
+
+    assert backend.approach_object_ids == []
+    confirmation_event = next(
+        event for event in backend.trace_events
+        if event.get('event') == 'command_result' and
+        event.get('command') == 'confirm_registry_candidates'
+    )
+    assert confirmation_event['outcome'] == 'candidates_rejected'
+    assert confirmation_event['candidate_object_ids'] == ['red_mug_2']
+    assert confirmation_event['matched_object_ids'] == []
+    assert confirmation_event['candidate_confirmations'][0][
+        'confirmed'] is False
+
+    wait_future(goal_handle.cancel_goal_async())
+    wrapped = wait_future(goal_handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_CANCELED
 
 
 def test_transient_registry_search_failure_retries_without_motion(
@@ -921,7 +1005,7 @@ def test_transient_registry_search_failure_retries_without_motion(
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.found
     assert backend.find_prompts == ['the red mug', 'the red mug']
-    assert backend.vlm_requests == 0
+    assert backend.vlm_requests == 1
     assert backend.program_cycles == []
 
 
@@ -1294,7 +1378,7 @@ def test_deferred_decision_wakes_early_for_registry_change(
 
     assert wrapped.result.found
     assert backend.program_cycles == []
-    assert backend.vlm_requests == 1
+    assert backend.vlm_requests == 2
 
 
 def test_vlm_actively_inspects_and_can_end_a_model_directed_wait(
@@ -1480,7 +1564,7 @@ def test_registry_change_during_camera_capture_forces_check_before_planning(
 
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.found
-    assert backend.vlm_requests == 0
+    assert backend.vlm_requests == 1
     assert backend.program_cycles == []
 
 

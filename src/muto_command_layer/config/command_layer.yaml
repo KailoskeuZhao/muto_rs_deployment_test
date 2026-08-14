@@ -192,6 +192,8 @@ model_commander:
     max_reason_characters: 512
     max_visual_observation_characters: 512
     max_state_message_characters: 512
+    # Commander-owned confirmation reads bounded registry candidate crops.
+    max_candidate_jpeg_bytes: 8388608
     max_wait_seconds: 60.0
     max_exploration_seconds: 60.0
     max_rotation_radians: 6.283185307179586

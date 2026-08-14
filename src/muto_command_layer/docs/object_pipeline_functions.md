@@ -249,8 +249,7 @@ join after the object was registered.
 
 The `/find_object` action accepts a natural-language prompt and returns zero or
 more `ObjectMatch` records. Optional `candidate_ids` restrict the search to
-specific confirmed registry IDs; this mode is used by the commander to refine
-an ambiguous confirmed target set with the registry's stored JPEGs.
+specific registry IDs for direct callers.
 
 ```bash
 ros2 action send_goal /find_object \
@@ -286,6 +285,14 @@ color to dominate the object's primary visible body or upholstery; small parts,
 lighting tint, reflections, and background colors do not satisfy the request.
 Occluded or ambiguous candidates are rejected.
 
+For a `/look_for_object` commander mission, `/find_object` is called with
+`shortlist_only: true`. It returns the first-stage name/metadata candidates
+without visually declaring a final match. The commander then sends tagged
+stored JPEGs through its own strict confirmation request and returns either one
+confirmed exact ID or no confirmed candidate. This keeps final object judgment
+with the commander while preserving the direct two-stage `/find_object`
+behavior for legacy clients.
+
 ### 8. Legacy active-search compatibility
 
 `/find_something` wires together `/find_object`, `/explore_and_record`, and the
@@ -313,16 +320,18 @@ should use `/look_for_object`, whose commander schedules smaller primitives.
 ### 9. Run a persistent model-supervised object search
 
 `/look_for_object` is an always-available mission server above the existing
-typed commands. For each goal it first calls `/find_object` without moving. If
-there is no match, it waits for a new color-camera frame, converts it to a
-bounded JPEG, and asks the VLM to inspect that frame plus compact mission state.
+typed commands. For each goal it first asks `/find_object` for a name/metadata
+shortlist without moving, then confirms or rejects that shortlist itself from
+the registry JPEGs. If there is no confirmed match, it waits for a new
+color-camera frame, converts it to a bounded JPEG, and asks the VLM to inspect
+that frame plus compact mission state.
 The VLM then chooses exactly one locally validated next primitive:
-`verify_registry`, registry-JPEG `refine_registry_selection`, bounded
+`verify_registry`, compatibility `refine_registry_selection`, bounded
 `explore_frontier`, visibility-helper `navigate_to_observation_poi`, in-place
 `rotate`, stationary `observe`, `checkpoint_registry`, bounded `wait`, or
 `finish_not_found`. For a find-and-approach mission it may also choose
-`approach_object`, but only after the current registry query/refinement has
-returned exactly one confirmed ID.
+`approach_object`, but only after the current registry shortlist and commander
+confirmation have produced exactly one confirmed ID.
 
 `explore_frontier` runs frontier travel for a bounded interval and stops without
 rotating. Its elapsed time counts as search evidence only when odometry confirms

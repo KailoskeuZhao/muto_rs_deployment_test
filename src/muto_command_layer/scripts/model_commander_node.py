@@ -3,6 +3,7 @@
 
 import json
 import math
+from pathlib import Path
 import threading
 import time
 import traceback
@@ -39,10 +40,14 @@ from model_commander_memory import (
 from model_commander_protocol import (
     build_active_inspection_prompt,
     build_active_inspection_schema,
+    build_candidate_confirmation_prompt,
+    build_candidate_confirmation_schema,
     build_commander_prompt,
     build_commander_schema,
+    candidate_confirmation_tag,
     ModelCommanderProtocolError,
     parse_active_inspection_decision,
+    parse_candidate_confirmations,
     parse_commander_decision,
 )
 from muto_command_layer.action import (
@@ -51,7 +56,7 @@ from muto_command_layer.action import (
     GoToObject,
     LookForObject,
 )
-from muto_command_layer.msg import VisibilityObservation
+from muto_command_layer.msg import ObjectMatch, VisibilityObservation
 from muto_command_layer.srv import GetVisibilityCoverage
 from muto_vlm_socket.action import GenerateVlm
 from muto_vlm_socket.msg import VlmContent
@@ -303,6 +308,7 @@ class ModelCommanderNode(Node):
                 'object_id': item.name,
                 'label': item.label,
                 'class_id': int(item.class_id),
+                'image_path': item.image_path,
                 'x': round(float(item.position.x), 4),
                 'y': round(float(item.position.y), 4),
                 'z': round(float(item.position.z), 4),
@@ -1577,18 +1583,14 @@ class ModelCommanderNode(Node):
 
     def _run_find(
             self, objective, goal_handle, deadline,
-            planning_steps, commands_dispatched, candidate_ids=None):
+            planning_steps, commands_dispatched):
         child_goal = FindObject.Goal()
         child_goal.prompt = objective
-        if candidate_ids:
-            child_goal.candidate_ids = list(candidate_ids)
+        child_goal.shortlist_only = True
         self._publish_feedback(
             goal_handle,
             LookForObject.Feedback.PHASE_CHECKING_REGISTRY,
-            'refining confirmed registry candidates'
-            if candidate_ids else
-            'checking the confirmed-object registry',
-            'refine_registry_selection' if candidate_ids else
+            'shortlisting registry objects by name and metadata',
             'verify_registry',
             planning_steps,
             commands_dispatched,
@@ -1634,12 +1636,169 @@ class ModelCommanderNode(Node):
                 wrapped.result.message or 'registry object search failed')
         return list(wrapped.result.matches), wrapped.result.message
 
+    def _read_registry_candidate_jpeg(self, object_id, image_path):
+        """Read one registry crop for commander-owned confirmation."""
+        if not image_path:
+            raise CommanderFailure(
+                f'registry candidate {object_id} has no stored image')
+        path = Path(image_path).expanduser()
+        try:
+            with path.open('rb') as image_file:
+                jpeg_data = image_file.read(
+                    self.max_candidate_jpeg_bytes + 1)
+        except OSError as error:
+            raise CommanderFailure(
+                f'registry candidate {object_id} image is unavailable'
+            ) from error
+        if len(jpeg_data) > self.max_candidate_jpeg_bytes:
+            raise CommanderFailure(
+                f'registry candidate {object_id} image exceeds size limit')
+        if len(jpeg_data) < 4 or not jpeg_data.startswith(b'\xff\xd8') or \
+                not jpeg_data.endswith(b'\xff\xd9'):
+            raise CommanderFailure(
+                f'registry candidate {object_id} image is not a complete JPEG')
+        return jpeg_data
+
+    def _confirm_registry_candidates(
+            self, objective, candidates, expected_revision,
+            goal_handle, deadline):
+        """Let the commander visually promote or reject name candidates."""
+        self._assert_registry_revision(expected_revision)
+        candidate_ids = [candidate.object_id for candidate in candidates]
+        if not candidate_ids or len(candidate_ids) != len(set(candidate_ids)):
+            raise CommanderFailure(
+                'registry candidate confirmation requires unique exact IDs')
+        with self._state_lock:
+            object_context = dict(self._registry_object_context)
+        candidate_context = []
+        content = []
+        for candidate in candidates:
+            context = object_context.get(candidate.object_id)
+            if context is None:
+                raise StalePlan(
+                    'registry candidate disappeared before confirmation')
+            candidate_context.append({
+                'id': candidate.object_id,
+                'label': candidate.label,
+                'shortlist_reason': candidate.description[
+                    :self.max_state_message_characters],
+            })
+        content.append(self._text_content(
+            build_candidate_confirmation_prompt(
+                objective, candidate_context)))
+        for candidate in candidates:
+            context = object_context[candidate.object_id]
+            jpeg_data = self._read_registry_candidate_jpeg(
+                candidate.object_id, context.get('image_path', ''))
+            content.append(self._text_content(
+                candidate_confirmation_tag(candidate.object_id)))
+            content.append(self._jpeg_content(jpeg_data))
+
+        vlm_goal = GenerateVlm.Goal()
+        vlm_goal.content = content
+        vlm_goal.model = self.vlm_model
+        vlm_goal.response_json_schema = build_candidate_confirmation_schema(
+            candidate_ids, self.max_reason_characters)
+        try:
+            child_handle = self._send_goal(
+                self._vlm_client,
+                vlm_goal,
+                goal_handle,
+                deadline,
+                'commander candidate-confirmation VLM',
+                pre_dispatch_callback=lambda: self._assert_registry_revision(
+                    expected_revision),
+            )
+        except (CommanderCanceled, MissionBudgetExhausted,
+                OwnedGoalStateUnknown, StalePlan):
+            raise
+        except CommanderFailure as error:
+            raise PlannerFailure(str(error)) from error
+        with self._state_lock:
+            self._active_vlm_goal = child_handle
+        try:
+            result_future = child_handle.get_result_async()
+        except Exception as error:
+            self._cancel_goal_best_effort(child_handle)
+            with self._state_lock:
+                if self._active_vlm_goal is child_handle:
+                    self._active_vlm_goal = None
+            raise PlannerFailure(
+                'could not monitor commander candidate confirmation') from error
+        try:
+            result_deadline = min(
+                deadline, time.monotonic() + self.vlm_result_timeout)
+            while not result_future.done():
+                self._check_parent_state(goal_handle, deadline)
+                revision, _, _ = self._registry_state()
+                if revision != expected_revision:
+                    self._cancel_goal_and_wait(child_handle, result_future)
+                    raise StalePlan(
+                        'registry changed during candidate confirmation')
+                if time.monotonic() >= result_deadline:
+                    self._cancel_goal_and_wait(child_handle, result_future)
+                    raise PlannerFailure(
+                        'commander candidate confirmation timed out')
+                time.sleep(self.monitor_period)
+            self._check_parent_state(goal_handle, deadline)
+            wrapped = result_future.result()
+        except (CommanderCanceled, MissionBudgetExhausted):
+            self._cancel_goal_and_wait(child_handle, result_future)
+            raise
+        except (StalePlan, PlannerFailure, OwnedGoalStateUnknown):
+            raise
+        except Exception as error:
+            self._cancel_goal_and_wait(child_handle, result_future)
+            raise PlannerFailure(
+                'commander candidate confirmation failed') from error
+        finally:
+            with self._state_lock:
+                if self._active_vlm_goal is child_handle:
+                    self._active_vlm_goal = None
+
+        if wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            raise PlannerFailure(
+                'commander candidate confirmation did not succeed')
+        if not wrapped.result.success:
+            message = wrapped.result.error_message.strip()
+            raise PlannerFailure(
+                message or 'commander candidate confirmation failed')
+        try:
+            confirmations = parse_candidate_confirmations(
+                wrapped.result.response_text,
+                candidate_ids,
+                self.max_reason_characters,
+            )
+        except ModelCommanderProtocolError as error:
+            raise PlannerFailure(str(error)) from error
+        self._assert_registry_revision(expected_revision)
+
+        candidates_by_id = {
+            candidate.object_id: candidate for candidate in candidates
+        }
+        matches = []
+        for confirmation in confirmations:
+            if not confirmation.confirmed:
+                continue
+            source = candidates_by_id[confirmation.object_id]
+            match = ObjectMatch()
+            match.header = source.header
+            match.query_id = source.query_id
+            match.rank = 1
+            match.total = 1
+            match.object_id = source.object_id
+            match.label = source.label
+            match.description = confirmation.reason
+            matches.append(match)
+        return matches, confirmations
+
     def _start_background_registry_probe(
             self, objective, goal_handle, deadline, planning_steps,
             commands_dispatched, current_command):
         """Start one non-motion registry check without replacing motion state."""
         child_goal = FindObject.Goal()
         child_goal.prompt = objective
+        child_goal.shortlist_only = True
         self._publish_feedback(
             goal_handle,
             LookForObject.Feedback.PHASE_EXECUTING,
@@ -3053,24 +3212,110 @@ class ModelCommanderNode(Node):
                 last_command = 'verify_registry'
                 last_message = message
                 if found_matches and revision == start_revision:
+                    candidate_ids = [
+                        candidate.object_id for candidate in found_matches
+                    ]
+                    self._publish_trace_event(
+                        'registry_shortlist', mission_id,
+                        planning_step=planning_steps,
+                        command='verify_registry',
+                        world_revision=revision,
+                        candidate_object_ids=candidate_ids,
+                        shortlist=self._match_context(found_matches),
+                    )
+                    if not dispatch_budget_available():
+                        raise MissionBudgetExhausted(
+                            'command-dispatch budget exhausted')
+                    commands_dispatched += 1
+                    self._publish_feedback(
+                        goal_handle,
+                        LookForObject.Feedback.PHASE_INSPECTING,
+                        'commander is visually confirming registry candidates',
+                        'confirm_registry_candidates',
+                        planning_steps,
+                        commands_dispatched,
+                    )
+                    try:
+                        confirmed_matches, confirmations = \
+                            self._confirm_registry_candidates(
+                                objective,
+                                found_matches,
+                                revision,
+                                goal_handle,
+                                deadline,
+                            )
+                    except StalePlan:
+                        continue
+                    except PlannerFailure as error:
+                        consecutive_command_failures += 1
+                        last_command = 'confirm_registry_candidates'
+                        last_outcome = 'command_failure'
+                        last_message = str(error)
+                        self._publish_trace_event(
+                            'command_result', mission_id,
+                            planning_step=planning_steps,
+                            command='confirm_registry_candidates',
+                            outcome=last_outcome,
+                            message=last_message[
+                                :self.max_state_message_characters],
+                            world_revision=revision,
+                            candidate_object_ids=candidate_ids,
+                            matched_object_ids=[],
+                        )
+                        if consecutive_command_failures >= \
+                                self.max_consecutive_command_failures:
+                            raise CommanderFailure(
+                                'commander candidate confirmation repeatedly '
+                                'failed') from error
+                        retry_delay = min(
+                            self.command_retry_max_delay,
+                            self.command_retry_initial_delay *
+                            (2 ** (consecutive_command_failures - 1)),
+                        )
+                        self._wait_while_monitoring(
+                            retry_delay,
+                            revision,
+                            goal_handle,
+                            deadline,
+                            planning_steps,
+                            commands_dispatched,
+                            'candidate confirmation unavailable; retrying '
+                            'without motion',
+                        )
+                        continue
                     registry_checked_revision = revision
-                    last_outcome = 'match_found'
-                    matched_objects = self._match_context(found_matches)
+                    consecutive_command_failures = 0
+                    last_command = 'confirm_registry_candidates'
+                    last_outcome = (
+                        'match_found' if confirmed_matches else
+                        'candidates_rejected'
+                    )
+                    last_message = (
+                        f'commander confirmed {len(confirmed_matches)} of '
+                        f'{len(found_matches)} registry candidate(s)'
+                    )
+                    matched_objects = self._match_context(confirmed_matches)
                     self._publish_trace_event(
                         'command_result', mission_id,
                         planning_step=planning_steps,
-                        command='verify_registry',
+                        command='confirm_registry_candidates',
                         outcome=last_outcome,
-                        message=message[
-                            :self.max_state_message_characters],
+                        message=last_message,
                         world_revision=revision,
+                        candidate_object_ids=candidate_ids,
+                        candidate_confirmations=[{
+                            'object_id': item.object_id,
+                            'confirmed': item.confirmed,
+                            'reason': item.reason,
+                        } for item in confirmations],
                         matched_object_ids=[
-                            match.object_id for match in found_matches
+                            match.object_id for match in confirmed_matches
                         ],
                         matched_objects=matched_objects,
                     )
-                    confirmed_match_revision = revision
-                    return found_matches
+                    confirmed_match_revision = (
+                        revision if confirmed_matches else -1)
+                    return confirmed_matches
                 if revision == start_revision:
                     registry_checked_revision = revision
                     last_outcome = 'no_match'
@@ -3110,135 +3355,30 @@ class ModelCommanderNode(Node):
                 return []
 
         def refine_registry_selection():
-            nonlocal commands_dispatched
-            nonlocal registry_checked_revision
-            nonlocal consecutive_command_failures
             nonlocal last_command
             nonlocal last_outcome
             nonlocal last_message
-            nonlocal confirmed_match_revision
             if not matches:
                 last_command = 'refine_registry_selection'
                 last_outcome = 'confirmation_required'
                 last_message = (
-                    'registry refinement requires existing confirmed '
-                    'candidate matches')
+                    'there are no commander-confirmed candidates to refine')
                 return []
             if len(matches) == 1:
                 last_command = 'refine_registry_selection'
                 last_outcome = 'already_unambiguous'
-                last_message = 'registry selection already has one exact ID'
-                return matches
-            if confirmed_match_revision < 0:
-                last_command = 'refine_registry_selection'
-                last_outcome = 'confirmation_required'
                 last_message = (
-                    'registry refinement requires a current candidate '
-                    'revision')
+                    'commander confirmation already selected one exact ID')
                 return matches
-            while True:
-                if not dispatch_budget_available():
-                    raise MissionBudgetExhausted(
-                        'command-dispatch budget exhausted')
-                start_revision, _, _ = self._registry_state()
-                if start_revision != confirmed_match_revision:
-                    last_command = 'refine_registry_selection'
-                    last_outcome = 'stale_world_revision'
-                    last_message = (
-                        'registry changed before candidate refinement')
-                    return check_registry()
-                candidate_ids = [match.object_id for match in matches]
-                commands_dispatched += 1
-                try:
-                    refined_matches, message = self._run_find(
-                        objective,
-                        goal_handle,
-                        deadline,
-                        planning_steps,
-                        commands_dispatched,
-                        candidate_ids=candidate_ids,
-                    )
-                except OwnedGoalStateUnknown:
-                    raise
-                except CommanderFailure as error:
-                    consecutive_command_failures += 1
-                    last_command = 'refine_registry_selection'
-                    last_outcome = 'command_failure'
-                    last_message = str(error)
-                    self._publish_trace_event(
-                        'command_result', mission_id,
-                        planning_step=planning_steps,
-                        command='refine_registry_selection',
-                        outcome=last_outcome,
-                        message=last_message[
-                            :self.max_state_message_characters],
-                        world_revision=start_revision,
-                        matched_object_ids=candidate_ids,
-                    )
-                    if consecutive_command_failures >= \
-                            self.max_consecutive_command_failures:
-                        raise CommanderFailure(
-                            'registry candidate refinement repeatedly failed'
-                        ) from error
-                    revision, _, _ = self._registry_state()
-                    retry_delay = min(
-                        self.command_retry_max_delay,
-                        self.command_retry_initial_delay
-                        * (2 ** (consecutive_command_failures - 1)),
-                    )
-                    self._wait_while_monitoring(
-                        retry_delay,
-                        revision,
-                        goal_handle,
-                        deadline,
-                        planning_steps,
-                        commands_dispatched,
-                        'registry refinement unavailable; retrying without '
-                        'motion',
-                    )
-                    continue
-                revision, _, _ = self._registry_state()
-                consecutive_command_failures = 0
-                last_command = 'refine_registry_selection'
-                last_message = message
-                if revision == start_revision:
-                    registry_checked_revision = revision
-                    confirmed_match_revision = revision \
-                        if refined_matches else -1
-                    last_outcome = (
-                        'match_found' if refined_matches else 'no_match')
-                    matched_objects = self._match_context(refined_matches)
-                    self._publish_trace_event(
-                        'command_result', mission_id,
-                        planning_step=planning_steps,
-                        command='refine_registry_selection',
-                        outcome=last_outcome,
-                        message=message[
-                            :self.max_state_message_characters],
-                        world_revision=revision,
-                        candidate_object_ids=candidate_ids,
-                        matched_object_ids=[
-                            match.object_id for match in refined_matches
-                        ],
-                        matched_objects=matched_objects,
-                    )
-                    return refined_matches
-                registry_checked_revision = start_revision
-                last_outcome = 'registry_changed_during_check'
-                last_message = (
-                    'registry changed during candidate refinement; checking '
-                    'the new snapshot before replanning'
-                )
-                self._publish_trace_event(
-                    'command_result', mission_id,
-                    planning_step=planning_steps,
-                    command='refine_registry_selection',
-                    outcome=last_outcome,
-                    message=last_message,
-                    world_revision=revision,
-                    candidate_object_ids=candidate_ids,
-                    matched_object_ids=[],
-                )
+            # This state should be unreachable: commander-owned confirmation
+            # admits at most one final object. Re-run the whole shortlist and
+            # confirmation chain if stale data ever violates that invariant.
+            last_command = 'refine_registry_selection'
+            last_outcome = 'invalid_confirmed_set'
+            last_message = (
+                'multiple final objects violated the confirmation invariant; '
+                'rechecking the registry')
+            return check_registry()
 
         def completion_state():
             return {
@@ -3249,8 +3389,6 @@ class ModelCommanderNode(Node):
                 'approach_required': approach_required,
                 'approach_completed': approach_completed,
                 'remaining_completion_requirements': (
-                    ['refine_registry_selection']
-                    if approach_required and len(matches) > 1 else
                     ['approach_confirmed_object']
                     if approach_required and matches and
                     not approach_completed else
@@ -3749,12 +3887,13 @@ class ModelCommanderNode(Node):
                         decision.decision not in (
                             'verify_registry',
                             'refine_registry_selection',
+                            'approach_object',
                         ):
                     last_command = decision.decision
                     last_outcome = 'visual_evidence_requires_registry_check'
                     last_message = (
                         'possible or likely visual evidence blocks further '
-                        'motion until the confirmed-object registry is checked'
+                        'search motion until registry candidates are checked'
                     )
                     matches = check_registry()
                     if matches:

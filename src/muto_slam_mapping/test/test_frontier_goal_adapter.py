@@ -137,6 +137,26 @@ def test_unsafe_distant_frontier_becomes_reachable_staged_advance():
     )
 
 
+def test_projection_uses_lateral_staging_cell_when_nearest_is_too_close():
+    message = _grid(width=100, height=80)
+    _set_rect(message, 20, 33, 80, 49, 0)
+    robot_x, robot_y = _cell_center(message, 50, 40)
+    target_x, target_y = _cell_center(message, 50, 60)
+
+    nearest = adapter.project_goal_to_reachable_known_free(
+        message, target_x, target_y, robot_x, robot_y,
+        0.27, 0.75, 0.0, 0, 0.0)
+    staged = adapter.project_goal_to_reachable_known_free(
+        message, target_x, target_y, robot_x, robot_y,
+        0.27, 0.75, 0.0, 0, 0.20)
+
+    assert nearest is not None
+    assert staged is not None
+    assert math.hypot(nearest.x - robot_x, nearest.y - robot_y) < 0.20
+    assert math.hypot(staged.x - robot_x, staged.y - robot_y) >= 0.20
+    assert staged.displaced
+
+
 def test_projection_respects_a_rotated_map_origin():
     message = _grid(fill=0)
     message.info.origin.position.x = 2.0

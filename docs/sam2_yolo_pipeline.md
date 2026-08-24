@@ -6,9 +6,9 @@ This document describes the complete perception-to-persistence path implemented
 by `sam2_image_annotator` and `sam2_object_registry`. It covers YOLO
 detection, SAM2 segmentation, RGB/depth geometry, the instance-marked point
 cloud, TF2 centroid localization, temporal confirmation, indexed object storage,
-RViz visualization, services, and YAML persistence. It also documents the
-independent `muto_command_layer` launch that adds VLM-based object selection,
-active object search, and Nav2 go-to-object commands above the registry.
+RViz visualization, services, and YAML persistence. The v2 mission executive
+uses this registry as an independent authority for shortlist lookup and visual
+candidate confirmation; it does not add another object-command package.
 
 ## Static-Object Assumption
 
@@ -76,11 +76,9 @@ TF: color <- depth ---------> extrinsic transform                        |
                          +---- image_path ------------------------------+
                                                 services: query / save / clear
                          |
-                         +-> object_search <-> /vlm/generate -> /find_object
-                         +-> active_object_search
-                         |     /find_object + /explore_and_record
-                         |                    -> /find_something
-                         +-> command_layer -> /navigate_to_pose -> /go_to_object
+                         +-> v2 MissionExecutive <-> /vlm/generate
+                               registry shortlist -> candidate confirmation
+                               -> Nav2 /navigate_to_pose when confirmed
 ```
 
 The Python annotator owns image inference and depth-to-mask projection. The C++
@@ -106,11 +104,11 @@ node. End-to-end runtime requires:
   configured registry `target_frame`, normally `map`.
 - The `sam2_object_registry` C++ package and yaml-cpp for registry and
   persistence features.
-- For natural-language search: `muto_vlm_socket`, a reachable configured VLM
-  endpoint, and the `HKU_API_KEY` environment variable used by the checked-in
-  provider profile.
-- For `/go_to_object`: an independently running Nav2 `/navigate_to_pose`
-  action and a current `map <- base_frame` transform.
+- For v2 mission planning and candidate confirmation: `muto_vlm_socket`, a
+  reachable configured VLM endpoint, and the `HKU_API_KEY` environment
+  variable used by the checked-in provider profile.
+- For a v2 approach tool: an independently running Nav2
+  `/navigate_to_pose` action and a current `map <- base_frame` transform.
 
 Pre-stage both model files on the robot. A named Ultralytics model can trigger
 a download when it is not cached.
@@ -126,21 +124,20 @@ registry observation path.
 
 ## Start
 
-The normal integrated object launch starts the annotator, registry, VLM socket,
-go-to-object server, and natural-language object-search server:
+The v2 field composition starts the annotator, registry, VLM socket, mission
+executive, independent frontier authority, Nav2, and high-level recorder:
 
 ```bash
 source /opt/ros/humble/setup.bash
 cd /opt/muto_rs_ws
 source install/setup.bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer command_layer_launch.py
+ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 ```
 
-This does not start the camera driver, TF publishers, SLAM, or Nav2. Run
-`muto_nav2_pipeline_launch.py` independently when hardware/navigation is
-needed. Keeping the launches separate also allows navigation without making
-the GPU/network VLM path a prerequisite.
+For a registry-only diagnostic, launch the annotator and registry directly as
+described below. For a mission, use the v2 launch rather than composing the
+retired action servers by hand.
 
 For component debugging, perception and registry can still be started in
 separate terminals:
@@ -556,99 +553,64 @@ confirmation normally.
 
 ## VLM Search And Object Navigation
 
-`muto_command_layer/launch/command_layer_launch.py` adds registry lookup,
-active search, and object-navigation actions above the confirmed registry.
-These actions never consume tentative candidates.
+The v2 mission executive uses the registry as an independent authority. It
+never treats a name/metadata match as final confirmation and never consumes a
+tentative candidate for approach.
 
 ### Find an object from a prompt
 
 ```bash
-ros2 action send_goal /find_object \
-  muto_command_layer/action/FindObject \
-  "{prompt: 'find the red cup'}" --feedback
+ros2 action send_goal /muto/mission \
+  muto_command_layer_v2/action/Mission \
+  "{request_id: 'registry-001', objective: 'find the red cup', object_request: 'red cup', completion_policy: 'report_confirmed', schema_version: 'muto_command_layer_v2'}" \
+  --feedback
 ```
 
-The search node first queries every confirmed object and sends only IDs,
-labels, and class IDs to the VLM. This text-only pass returns a shortlist. If
-more than one candidate remains, a second pass loads the shortlisted objects'
-representative JPEGs and compares them with the original prompt. Final matches
-are returned in the action result and published individually on
-`/object_search/matches` as `muto_command_layer/msg/ObjectMatch`.
+The executive queries confirmed registry records and gives the commander a
+revision-scoped shortlist. If more than one candidate remains, the commander
+requests a second VLM pass over each candidate's stored JPEG. Only the
+candidate decision tied to the current registry revision may promote one ID to
+the confirmed target.
 
-Both VLM passes request strict JSON Schema output. The schema's ID enum is
-built from the exact eligible registry IDs, and the node independently parses
-one complete JSON object and validates every returned ID. Refusals, incomplete
-responses, unknown IDs, or required candidate images that cannot be loaded
-abort the action instead of silently producing a partial match. Validated
-shortlist and final-filter judgements are logged by default, with bounded
-description and ID lengths.
+Both VLM passes request strict structured output. Local enum, ID, revision, and
+evidence validation rejects malformed, stale, or incomplete model responses.
 
 The VLM socket is configured by
-`muto_command_layer/config/object_pipeline_vlm.yaml`. The checked-in profile
-uses the Responses protocol, model `gpt-5.6-sol`, and reads the credential from
-`HKU_API_KEY`; no key is stored in YAML. The current URL is plain HTTP, so use a
-trusted network, VPN, or secure tunnel, or switch to HTTPS. Top-level launch
-arguments for provider URL, protocol, and model override the corresponding file
-values and currently default to the same tested profile.
+`muto_command_layer_v2/config/v2_vlm_socket.yaml`. The checked-in profile reads
+the credential from `HKU_API_KEY`; no key is stored in YAML.
 
-### Actively search for an object
+### Search and approach through v2
+
+The v2 mission action is the only command surface:
 
 ```bash
-ros2 action send_goal /find_something \
-  muto_command_layer/action/FindSomething \
-  "{prompt: 'find the red cup'}" --feedback
+ros2 action send_goal /muto/mission \
+  muto_command_layer_v2/action/Mission \
+  "{request_id: 'approach-001', objective: 'find and approach chair_2', object_request: 'chair', completion_policy: 'approach_confirmed', schema_version: 'muto_command_layer_v2'}" \
+  --feedback
 ```
 
-This action first calls `/find_object` without moving. If no confirmed object
-matches, it starts the existing `/explore_and_record` mission. A changed set of
-confirmed IDs on `/sam2/stored_objects` triggers another registry/VLM lookup.
-When a match appears, the action cancels exploration and returns the existing
-`ObjectMatch` records. If the predictive visibility mission completes first,
-it makes a final query and returns a successful no-match result.
+The commander may query the registry, inspect each shortlisted stored JPEG,
+observe or rotate through the independent frontier authority, and approach only
+one target confirmed for the current registry revision. The deterministic
+motion authority selects a footprint-safe stance and delegates the actual path
+and obstacle avoidance to Nav2. Tool failures and stale evidence are recorded
+on the mission board for replanning; they do not silently promote a candidate.
 
-This is orchestration over the existing static-object pipeline. It does not add
-another detector, does not track moving targets, and does not automatically
-approach a match. Repeated observations of the same confirmed ID do not trigger
-additional VLM calls.
-
-### Approach an exact stored object
-
-```bash
-ros2 action send_goal /go_to_object \
-  muto_command_layer/action/GoToObject \
-  "{object_id: 'chair_2'}" --feedback
-```
-
-The command node performs an exact registry-name lookup, transforms the stored
-centroid into the configured global frame when necessary, reads the current
-robot pose through TF2, and requests Nav2's current master global costmap. It
-selects a robot-reachable costmap cell on or beyond the `0.75 m` approach ring
-and sets its yaw toward the centroid. It publishes the computed pose on the
-transient-local `/object_navigation/target_pose` topic and delegates execution to Nav2
-`/navigate_to_pose`. Cancellation is forwarded to the active Nav2 goal.
-
-The persistent `StoredObject.name`, such as `chair_2`, is the command ID. A
-frame-local `instance_id` or generic YOLO label is not sufficient. This command
-does not visually re-identify the object at arrival, and Nav2 can reject an
-occupied or unreachable approach pose.
-
-### Command-layer interfaces
+### v2 interfaces
 
 | Default name | Type | Purpose |
 | --- | --- | --- |
-| `/vlm/generate` | `muto_vlm_socket/action/GenerateVlm` | General ordered text/JPEG VLM action with optional structured output. |
-| `/find_object` | `muto_command_layer/action/FindObject` | Natural-language selection of confirmed registry IDs. |
-| `/find_something` | `muto_command_layer/action/FindSomething` | Compose registry lookup with exploration and recording until a static-object match appears or predictive coverage completes. |
-| `/object_search/matches` | `muto_command_layer/msg/ObjectMatch` | One publication for each final match and description. |
-| `/go_to_object` | `muto_command_layer/action/GoToObject` | Approach and face one exact confirmed object. |
-| `/global_costmap/get_costmap` | `nav2_msgs/srv/GetCostmap` | Current Nav2 master costmap used for approach and visibility traversal. |
-| `/object_navigation/target_pose` | `geometry_msgs/msg/PoseStamped` | Latest global-costmap-selected Nav2 object approach pose. |
+| `/muto/mission` | `muto_command_layer_v2/action/Mission` | Normalized mission request, commander loop, and terminal result. |
+| `/vlm/generate` | `muto_vlm_socket/action/GenerateVlm` | Planner and candidate-confirmation transport. |
+| `/sam2/get_stored_objects` | `sam2_object_registry/srv/GetStoredObjects` | Confirmed registry snapshot. |
+| `/navigate_to_pose` | `nav2_msgs/action/NavigateToPose` | Final path-following and obstacle-avoidance authority. |
+| `/muto/mission_board` | `muto_command_layer_v2/msg/MissionBoard` | Current board projection. |
+| `/muto/mission_event` | `muto_command_layer_v2/msg/MissionEvent` | Decision, tool, evidence, and lifecycle trail. |
 
-The object launch is not owned by the Nav2 launch. `/find_object` needs the
-registry and VLM provider; `/find_something` additionally needs the existing
-explore-and-record dependencies; `/go_to_object` needs the registry, Nav2
-global costmap service and navigation action, and map TF. A failure in one
-higher-level command does not stop image annotation or registry services.
+The high-level recorder subscribes to these projections and the frontier
+adapter's compact diagnostics, writing one unique mission-scoped MCAP without
+raw camera, LiDAR, IMU, or point-cloud streams.
 
 ## YAML Persistence
 
@@ -910,11 +872,10 @@ ros2 service call /sam2/get_stored_objects sam2_object_registry/srv/GetStoredObj
 ros2 param get /object_registry target_frame
 ros2 param get /object_registry confirmation_min_average_confidence
 ros2 action info /vlm/generate
-ros2 action info /find_object
-ros2 action info /find_something
-ros2 action info /go_to_object
-ros2 topic echo /object_search/matches --once
-ros2 topic echo /object_navigation/target_pose --once
+ros2 action info /muto/mission
+ros2 topic echo /muto/mission_board --once
+ros2 topic echo /muto/mission_event --once
+ros2 topic echo /muto/mission_board --once
 ```
 
 Manual prompts can isolate detector problems from SAM2 or camera problems:

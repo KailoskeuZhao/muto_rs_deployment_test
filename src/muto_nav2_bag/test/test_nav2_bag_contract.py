@@ -35,7 +35,9 @@ def test_topic_profile_is_explicit_unique_and_navigation_scoped():
         '/muto/motion_command_state',
         '/navigate_to_pose/_action/status',
         '/explore/selected_frontier',
-        '/object_navigation/target_pose',
+        '/muto/mission_board',
+        '/muto/mission_event',
+        '/muto/mission_rejection',
         '/behavior_tree_log',
         '/diagnostics',
         '/parameter_events',
@@ -45,7 +47,7 @@ def test_topic_profile_is_explicit_unique_and_navigation_scoped():
         '/muto/nav2_bag/path',
     }
     assert required <= set(topics)
-    assert len(topics) <= 55
+    assert len(topics) <= 56
 
     forbidden_fragments = (
         '/image_raw',

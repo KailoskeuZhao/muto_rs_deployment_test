@@ -39,8 +39,7 @@ constexpr char kDefaultPathTopic[] = "/muto/nav2_bag/path";
 constexpr char kDefaultStopService[] = "/muto/nav2_bag/stop";
 constexpr char kManifestFilename[] = "muto_nav2_recording_manifest.json";
 constexpr const char * kManagedBagPrefixes[] = {
-  "muto_command_",
-  "muto_explore_",
+  "muto_command_v2_",
   "muto_nav2_",
   "muto_odometry_",
 };

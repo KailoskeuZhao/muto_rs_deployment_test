@@ -104,8 +104,8 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 ```
 
 This entry point owns hardware, TF, localization, mapping, and Nav2 only. The
-GPU perception/object command pipeline remains an independent launch. By
-default that command launch owns a frontier explorer process in cold idle.
+GPU perception/object mission pipeline remains an independent v2 launch. By
+default that v2 launch owns a frontier explorer process in cold idle.
 
 The launch combines minimum delays with observable readiness checks. A delay
 does not declare a stage ready; it only determines when that stage begins
@@ -156,28 +156,20 @@ Useful top-level switches include:
 If a prerequisite stage is disabled, any enabled downstream stage must already
 have equivalent topics and TF supplied externally.
 
-For a complete deployment with object commands, run the command stack in a
-second terminal:
+For a complete deployment with the v2 mission command layer, run the v2 field
+composition in a second terminal (or use its individual launch arguments to
+attach to an already-running pipeline):
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer command_layer_launch.py
+ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 ```
 
-The command-layer launch starts SAM2/YOLO, the object registry, and the VLM
-socket as its lower layer, together with `/find_object`,
-`/find_something`, `/go_to_object`, `/explore`,
-`/explore_and_record`, and a cold-idle frontier explorer. `/find_something`
-composes registry lookup with the existing autonomous mission and cancels that
-mission when a newly confirmed static object matches.
-After frontier exhaustion, `/explore_and_record` may continue through
-costmap-reachable viewpoints until its 2-D model reaches the configured
-predicted observable free-space and boundary ratio. This estimate is based on
-occupancy-grid line of sight after successful Nav2 scans; camera frames, depth,
-detections, and registry growth do not gate completion.
-After Nav2 is active, call `/explore` with `data: true` to start autonomous map
-exploration and `data: false` to stop it. Do not run exploration concurrently
-with another navigation command client unless preemption is intentional.
+The v2 launch starts the SAM2/registry/VLM authorities, the independent
+frontier authority in cold idle, Nav2, the mission executive, and the
+mission-scoped high-level recorder. It exposes the single `/muto/mission`
+action; natural-language requests are normalized inside the v2 executive and
+the commander chooses the next bounded tool from the mission board.
 
 ## Layer-By-Layer Debug Startup
 
@@ -384,7 +376,7 @@ SLAM Toolbox consumes the full-resolution filtered LiDAR scan and the existing
 This launch is online mapping, not saved-map localization. Starting it creates
 or extends a map from the current run.
 
-When `muto_command_layer` is running alongside this pipeline, export the
+When `muto_command_layer_v2` is running alongside this pipeline, export the
 current occupancy map through its sanitized SLAM Toolbox wrapper:
 
 ```bash
@@ -764,6 +756,6 @@ and `camera_depth_to_laserscan_node`.
 | `src/yahboomcar_bringup/launch/ekf_imu_lidar_launch.py` | Normal localization layer. |
 | `src/yahboomcar_bringup/config/ekf_lidar_imu.yaml` | EKF frame and source configuration. |
 | `src/tf2_publisher/launch/all_tf2_publishers_launch.py` | Static sensor mounts. |
-| `src/muto_command_layer/launch/command_layer_launch.py` | Full command stack; includes the lower object pipeline. |
-| `src/muto_command_layer/launch/object_pipeline_launch.py` | Lower SAM2/registry/VLM startup only. |
+| `src/muto_command_layer_v2/launch/v2_hardware_smoke_launch.py` | v2 field composition: hardware/localization/SLAM/Nav2, independent authorities, mission executive, and high-level recorder. |
+| `src/muto_command_layer_v2/launch/v2_command_layer_launch.py` | v2 executive and recorder when the independent authorities are already running. |
 | `src/yahboomcar_description/README.md` | Reference-only Yahboom tutorial URDF boundary and footprint measurements. |

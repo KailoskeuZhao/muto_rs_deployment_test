@@ -2,7 +2,7 @@
 
 This package records a compact session-level diagnostic bag for navigation. It
 starts after the normal Nav2 pipeline passes its readiness gate and remains
-independent of mission-scoped command and exploration recorders.
+independent of the v2 mission recorder.
 
 It is enabled by default by `muto_nav2_pipeline_launch.py`, covering direct
 Nav2 goals and the navigation portions of commander missions. Set

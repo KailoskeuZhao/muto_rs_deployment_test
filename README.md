@@ -15,11 +15,12 @@ The 2026-08-05 10 Hz joint-feedback mini-test is documented in
 [docs/odometry_10hz_mini_test_2026-08-05.md](docs/odometry_10hz_mini_test_2026-08-05.md).
 Launch-file roles and example startup sequences are in [docs/launches.md](docs/launches.md).
 The current SLAM and Nav2 runbook is in [docs/slam_pipeline.md](docs/slam_pipeline.md).
-Default command/exploration/Nav2 monitoring, diagnostic bags, retention,
-manual notes, and replay safety are in [docs/bags.md](docs/bags.md).
+Default v2 mission/Nav2 monitoring, diagnostic bags, retention, manual notes,
+and replay safety are in [docs/bags.md](docs/bags.md).
 Repeatable odometry recording and replay is in [src/muto_odometry_bag/README.md](src/muto_odometry_bag/README.md).
-Action-scoped exploration recording and manual milestones are in
-[src/muto_exploration_bag/README.md](src/muto_exploration_bag/README.md).
+The v2 command-layer contract and agent handoff note are in
+[docs/commander_stack_reference.md](docs/commander_stack_reference.md) and
+[src/muto_command_layer_v2/README.md](src/muto_command_layer_v2/README.md).
 Mapping and costmap design notes are in [docs/Muto Mapping and Costmap Notes.md](<docs/Muto Mapping and Costmap Notes.md>).
 TF2 frame ownership and diagnostics are in [docs/TF2.md](docs/TF2.md).
 
@@ -37,7 +38,7 @@ Some packages in this workspace are original deployment glue, while others were 
 | `src/muto_slam_mapping` | Local SLAM launch/config package for this deployment. |
 | `src/tf2_publisher` | Local TF publisher package for robot sensor frames. |
 | `src/muto_odometry_bag` | Local C++ source-data recorder and original-stack replay layer for repeatable odometry tests. |
-| `src/muto_exploration_bag` | Standalone action-scoped MCAP recorder for exploration, scanning, and operator milestones. |
+| `src/muto_command_layer_v2` | Replacement mission executive, commander, typed authorities, and high-level MCAP recorder. |
 | `src/yahboomcar_imu` | IMU publishing package used by the robot. |
 | `src/lidar_tg30` | TG30 LiDAR driver/package used by the robot. |
 

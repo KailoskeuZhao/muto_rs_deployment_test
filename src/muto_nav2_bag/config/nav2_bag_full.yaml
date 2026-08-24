@@ -102,15 +102,10 @@ nav2_bag_recorder:
       - /frontier_goal_adapter/status
       - /frontier/navigate_to_pose/_action/feedback
       - /frontier/navigate_to_pose/_action/status
-      - /object_navigation/target_pose
-      - /explore_and_record/_action/feedback
-      - /explore_and_record/_action/status
-      - /explore_and_record/recording_event
-      - /explore_and_record/operator_event
-      - /explore_and_record/bag_status
-      - /explore_and_record/last_bag_path
-      - /go_to_object/_action/feedback
-      - /go_to_object/_action/status
+      - /muto/mission_board
+      - /muto/mission_event
+      - /muto/mission_rejection
+      - /muto/mission_recorder_status
 
       # Behavior, diagnostics, parameter changes, and lifecycle state.
       - /behavior_tree_log

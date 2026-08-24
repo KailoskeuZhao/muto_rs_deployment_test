@@ -6,7 +6,7 @@ This document summarizes the launch files that matter for the current Muto RS
 workspace. It separates the normal robot sequence from experimental and
 component launches.
 
-For the default command/exploration/Nav2 monitoring layers, optional deep Nav2
+For the default v2 mission/Nav2 monitoring layers, optional deep Nav2
 and odometry captures, shared retention policy, manual notes, and replay safety,
 see [Default Bags And Mission Monitoring](bags.md).
 
@@ -32,15 +32,14 @@ files use the installed Humble or Jazzy `ekf_node`; this workspace does not keep
 | `muto_odometry_bag/launch/record_odometry_bag_launch.py` | Records raw LiDAR, raw/processed IMU, controller attitude, telemetry and yaw-gate status, motion/gait state, `cmd_vel`, endpoint events, build metadata, `/tf_static`, and optional motor snapshots. | Attach to a live hardware pipeline to capture odometry source data and field-test provenance. |
 | `muto_odometry_bag/launch/replay_odometry_bag_launch.py` | Publishes recorded source topics and `/clock`, recreates `get_motor_angles`, and starts the normal LiDAR/optional-foot/EKF launch. Stop-only controller yaw is enabled by default; recorded static TF can be pre-published before the first scan. | Offline repeatable odometry run through the original nodes; no hardware, mapping, or Nav2. |
 | `muto_odometry_bag/launch/replay_odometry_comparison_launch.py` | Replays one source bag through LiDAR-only, raw-gyro, raw-RF2O, and optional relative-controller-yaw EKF branches concurrently; foot input is independently optional. Only `/odometry/filtered` publishes odom TF. | Side-by-side odometry comparison under one replay clock. Use 2x or slower for quantitative work. |
-| `muto_command_bag/launch/record_command_bag_launch.py` | Arms the parent mission monitor with decisions, exact inspected JPEGs, registry changes, primitive outcomes, navigation context, pose/progress snapshots, and operator events. | Automatic with the command launch; one MCAP spans each complete `/look_for_object` commander mission. |
-| `muto_exploration_bag/launch/record_exploration_bag_launch.py` | Arms a child-scoped compact MCAP recorder that retains navigation, odometry, structured object results, action traffic, and operator events while excluding bulky image and point-cloud payloads. | Automatic with the command launch; opens only while an exploration child is active, or launch separately before a compatibility action. |
+| `muto_command_layer_v2/high_level_recorder_node.py` | Opens one mission-scoped high-level MCAP with board, decisions, registry evidence, frontier projection, lifecycle, and terminal outcome. | Automatic with the v2 mission launch; raw sensor capture remains opt-in through the dedicated diagnostic bags. |
 | `muto_nav2_bag/launch/record_nav2_bag_launch.py` | Opens a navigation-only MCAP with TF, maps, compact pose/scan evidence, goals, paths, commands, action state, diagnostics, and config snapshots. | Included by the normal pipeline. It can also be launched separately; select `nav2_bag_full.yaml` for a short costmap/action-feedback deep dive. |
 | `lidar_pointcloud_filter/launch/camera_depth_to_laserscan_launch.py` | Converts raw depth plus CameraInfo into the narrow, NaN-masked `/camera/filtered_laserscan`. It does not subscribe to LiDAR. | Independent camera preprocessing component. The top-level pipeline includes it when `launch_camera_obstacle_scan:=true`. |
 | `muto_slam_mapping/launch/online_async_mapping_launch.py` | Starts SLAM Toolbox online asynchronous mapping. | Mapping-only layer. SLAM uses `/lidar/filtered_laserscan_no_downsample` and does not own camera preprocessing. |
 | `muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Starts `controller_server`, `planner_server`, path `smoother_server`, `velocity_smoother`, `behavior_server`, `bt_navigator`, and lifecycle manager. | Requires mapping, TF, EKF, and `/lidar/filtered_laserscan`; camera observations are optional. |
 | `muto_slam_mapping/launch/frontier_exploration_launch.py` | Starts the submodule's `frontier_explorer` with the Muto-specific map, costmap, TF, Nav2 action, QoS, and bounded-DP configuration. | Optional autonomous exploration client. Start only after mapping and Nav2 are ready; it is not included by the one-shot Nav2 launch. |
-| `muto_command_layer/launch/command_layer_launch.py` | Starts the lower object pipeline, typed object commands, persistent event-driven model commander, validated natural-language router, standalone exploration recorder, and the Muto frontier explorer in cold idle. | Independent command stack. Motion delegates to already-running Nav2 actions. |
-| `muto_command_layer/launch/object_pipeline_launch.py` | Starts the SAM2 image annotator, C++ object registry, and VLM socket. | Lower object-identification layer; it does not start command actions or exploration. |
+| `muto_command_layer_v2/launch/v2_hardware_smoke_launch.py` | Starts the v2 field composition: the production pipeline, independent perception/registry/frontier authorities, mission executive, and high-level MCAP recorder. | Use for a supervised Humble hardware smoke. |
+| `muto_command_layer_v2/launch/v2_command_layer_launch.py` | Starts only the v2 executive and high-level recorder. | Use when the independent authorities are already running. |
 | `yahboomcar_ctrl/launch/yahboomcar_joy_launch.py` | Starts `joy_node` and `yahboom_joy`. | Joystick teleop. |
 
 ## Main Ownership Graph
@@ -76,16 +75,12 @@ nav2_planner_controller_launch.py
   -> controller /cmd_vel_nav -> velocity_smoother -> /cmd_vel
   -> recovery behaviors --> /cmd_vel_nav -> velocity_smoother -> /cmd_vel
 
-command_layer_launch.py                       (independent process group)
-  -> object_pipeline_launch.py
-     -> YOLO/SAM2 -> instance cloud -> object registry
-     -> VLM socket -> /vlm/generate
-  -> /find_object and deterministic /find_something
-  -> model commander -> /look_for_object
-       -> check registry, schedule one bounded command, monitor, replan
-  -> /go_to_object through Nav2 /navigate_to_pose
-  -> /natural_language_command -> validated typed command dispatch
-  -> cold-idle frontier explorer -> /explore -> /navigate_to_pose
+muto_command_layer_v2 (independent process group)
+  -> YOLO/SAM2 -> instance cloud -> object registry
+  -> VLM socket -> /vlm/generate
+  -> /muto/mission -> MissionExecutive -> CommanderAgent
+       -> registry/frontier/Nav2 authorities -> typed bounded tools
+  -> high-level mission recorder -> MCAP
 ```
 
 Only one node should publish dynamic `odom -> base_frame` at a time. In the
@@ -113,7 +108,8 @@ topics and TF chains are available. The delay arguments are minimum offsets; the
 failure.
 
 The one-shot launch ends at Nav2. It deliberately does **not** start SAM2, the
-object registry, the VLM bridge, the command layer, or frontier exploration.
+object registry, the VLM bridge, the v2 mission executive, or frontier
+exploration.
 This keeps navigation usable without the GPU or a network VLM provider and
 prevents unrelated action clients from being started implicitly.
 
@@ -234,14 +230,14 @@ Start the independent command stack in another terminal:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer command_layer_launch.py
+ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 ```
 
 The checked-in object-pipeline VLM profile uses a plain-HTTP provider. Keep it
 on a trusted network, VPN, or tunnel, or replace it with an HTTPS endpoint.
-`/look_for_object` sends fresh full-camera JPEGs through this connection for
-each model scheduling decision and for slow periodic inspections while a
-bounded exploration or wait command is active.
+`/muto/mission` sends bounded planning requests through this connection; the
+executive supplies the current board and one fresh camera snapshot at each
+decision boundary.
 
 ## Example Sequences
 
@@ -349,7 +345,7 @@ Expected nodes include:
 This launch is not a full `nav2_bringup` replacement with AMCL, route server,
 waypoint follower, docking, or other optional Nav2 servers.
 
-The controller, behavior server, and command-layer direct-rotate primitive
+The controller, behavior server, and v2 direct-rotate primitive
 publish to `/cmd_vel_nav`; the velocity smoother publishes the final
 `/cmd_vel` sent to the Muto driver. This keeps one Humble-compatible hard
 velocity/acceleration limiter before hardware.
@@ -362,122 +358,59 @@ behind the robot.
 
 ### Object Perception And Commands
 
-Run this beside, not inside, the Nav2 pipeline:
+Run the v2 field composition beside the normal operator console:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer command_layer_launch.py
+ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 ```
 
-Expected high-level interfaces include:
-
-- `/sam2/instance_pointcloud`
-- `/sam2/stored_objects`
-- `/sam2/stored_object_markers`
-- `/sam2/get_stored_objects`
-- `/vlm/generate`
-- `/find_object`
-- `/find_something`
-- `/look_for_object`
-- `/model_commander/status`
-- `/go_to_object`
-- `/explore`
-- `/explore_and_record`
-
-Detection, registry query, visualization, and `/find_object` can be diagnosed
-independently of Nav2. `/go_to_object` requires the separate
-`/navigate_to_pose` server and the complete `map -> base_frame` TF chain.
-`/find_something` first performs the same no-motion registry query, then uses
-the existing `/explore_and_record` action until a newly confirmed static object
-matches or predicted coverage completes.
-
-`/look_for_object` is the persistent highest-level alternative. Its resident
-commander first checks `/find_object`, then asks the model at scheduling points
-to inspect a newly received bounded RGB frame plus mission state and choose a
-registry recheck, a bounded `/explore_and_record` program, a bounded wait, or a
-valid no-match finish. During a long exploration or wait, a fresh snapshot is
-inspected after a 20-second cooldown by default; inference latency is additional.
-That restricted monitor can only leave
-the owned command running or request that local code stop it, confirm the stop,
-check the registry, and replan. Changed confirmed-object identities interrupt
-stale decisions or child work. The raw camera subscription is snapshot-scoped;
-frames do not invoke the model at camera rate. The model cannot name ROS
-interfaces or declare that an object was found; visual evidence remains
-advisory until `/find_object` confirms a registry match. Possible or likely
-evidence forces that check before further motion. Nav2 remains responsible for
-real-time collision handling. A single periodic frame is not a batch of all six
-scan headings.
+The v2 surface is one typed `/muto/mission` action. Natural-language input is
+normalized into a `Mission` goal, the `CommanderAgent` selects one of the two
+v2 skills from the mission board, and deterministic registry/frontier/Nav2
+authorities execute the bounded tools. The mission-scoped MCAP recorder
+captures the board, decisions, rejections, registry evidence, frontier
+projection, and terminal result.
 
 ```bash
-ros2 action send_goal /look_for_object \
-  muto_command_layer/action/LookForObject \
-  "{prompt: 'the red mug beside the kettle', max_duration: 0.0, max_planning_steps: 0}" \
+ros2 action send_goal /muto/mission \
+  muto_command_layer_v2/action/Mission \
+  "{request_id: 'field-001', objective: 'find the red mug beside the kettle', object_request: 'red mug', completion_policy: 'approach_confirmed', schema_version: 'muto_command_layer_v2'}" \
   --feedback
 ```
 
-A zero duration or planning-step value selects the finite configured defaults
-of 1800 seconds and 64 decisions. `/find_something` remains the deterministic
-rollback command. The stack does not yet enforce a graph-wide motion lease, so
-do not send competing direct Nav2 or exploration goals during either mission.
+Do not send the retired v1 actions or direct competing exploration/navigation
+goals during a mission. Nav2 remains the final navigation and obstacle-
+avoidance authority; the commander only requests bounded typed tools.
 
 ### Frontier Exploration
 
-The normal object-command launch already owns a cold-idle explorer. After
-mapping and Nav2 are active, start and stop it through the public command:
+The v2 field launch owns a cold-idle independent explorer. After mapping and
+Nav2 are active, the v2 executive starts and stops bounded observation sessions
+through its authority adapter. Manual control is available only for diagnosis:
 
 ```bash
-ros2 service call /explore std_srvs/srv/SetBool "{data: true}"
-ros2 service call /explore std_srvs/srv/SetBool "{data: false}"
+ros2 service call /control_exploration frontier_exploration_ros2/srv/ControlExploration "{action: 0, delay_seconds: 0.0, quit_after_stop: false}"
+ros2 service call /control_exploration frontier_exploration_ros2/srv/ControlExploration "{action: 1, delay_seconds: 0.0, quit_after_stop: false}"
 ```
 
 The stop command enters cold idle and keeps the process reusable. To run the
-explorer independently instead, set `launch_frontier_explorer:=false` on the
-command launch, then use:
+independent explorer for diagnosis, use its standalone launch with
+`autostart:=false` and keep the v2 executive stopped:
 
 ```bash
-ros2 launch muto_slam_mapping frontier_exploration_launch.py
-frontier_exploration_ctl stop
-frontier_exploration_ctl start
-frontier_exploration_ctl stop -q
+ros2 launch muto_slam_mapping frontier_exploration_launch.py autostart:=false
+ros2 service call /control_exploration frontier_exploration_ros2/srv/ControlExploration "{action: 0, delay_seconds: 0.0, quit_after_stop: false}"
+ros2 service call /control_exploration frontier_exploration_ros2/srv/ControlExploration "{action: 1, delay_seconds: 0.0, quit_after_stop: false}"
 ```
 
-The standalone Muto wrapper autostarts exploration. Its `stop -q` option also
-terminates the explorer process without stopping the parent Nav2 pipeline.
-The wrapper disables visibility-gain goal preemption so SLAM refreshes cannot
-repeatedly cancel and resend the same active Nav2 goal. Blocked-goal skipping
-and the independent `0.25 m` close-enough completion guard remain enabled.
-
-For command-layer-controlled exploration and object recording, use the
-`/explore_and_record` action. It periodically pauses frontier navigation, uses
-Nav2 `/spin` for six 60-degree turns, waits for three fresh detector results at
-each heading (with a three-second timeout), checkpoints the registry after the
-complete 360-degree scan, and resumes exploration. A cycle's ten-second
-exploration interval is a minimum: an active frontier trip is allowed to finish
-before the scan begins. The action owns
-command-layer navigation until it succeeds, aborts, or is canceled.
-
-The command launch arms two mission-scoped monitoring layers. The parent
-`muto_command_bag` opens for the complete commander mission and records what
-the agent knew, decided, dispatched, and achieved. `muto_exploration_bag`
-opens a second child-scoped MCAP only while an exploration action is active.
-Both write under `/opt/muto_rs_ws/bags`; neither opens a mission file while the
-robot is idle. The normal Nav2 pipeline independently opens one compact
-boot-session Nav2 bag, including idle navigation health and direct goals. All
-three profiles exclude continuous camera imagery, SAM image products, and
-point clouds. See [Default Bags And Mission
-Monitoring](bags.md) for exact scope, path/status topics, manual-event commands,
-the shared 20-directory retention limit, and replay safety.
-
-When frontier exploration reports completion, the action snapshots `/map` and
-Nav2's global costmap and queries a 2-D line-of-sight calculator for current
-coverage and ranked observation points of interest. The legacy action visits
-the top-ranked points; the same read-only report is available at
-`/command_layer/visibility_coverage`. Its default `0.98` completion ratio is
-predicted observable free-space and occupied-boundary coverage. Successful
-navigation and spin steps receive the model's predicted visibility credit;
-RGB, depth, detector, and registry results are not coverage inputs. Treat this
-as a geometric mission-progress estimate, not measured camera coverage or
-proof that every object was seen.
+The v2 executive owns the exploration session boundary. It starts a bounded
+frontier observation only after the commander selects the search skill, stops
+it cooperatively, records the result on `MissionBoard`, and lets the next model
+turn decide whether to query the registry, rotate, observe again, approach a
+confirmed target, or finish. The high-level recorder writes the board/events
+and frontier-adapter diagnostics to one unique MCAP per mission. It does not
+record raw camera, LiDAR, IMU, or point-cloud streams.
 
 ### Nav2 Diagnostic Bag
 

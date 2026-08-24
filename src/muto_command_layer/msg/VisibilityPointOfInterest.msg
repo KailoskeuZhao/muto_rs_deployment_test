@@ -1,9 +1,0 @@
-uint32 candidate_index
-geometry_msgs/PoseStamped pose
-int32 cell_x
-int32 cell_y
-uint32 new_free_cells
-uint32 new_boundary_cells
-float64 path_length_m
-float64 weighted_gain
-float64 score

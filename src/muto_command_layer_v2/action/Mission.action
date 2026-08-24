@@ -1,0 +1,39 @@
+# v2 normalized mission request. scenario_id is harness metadata, not a goal field.
+string request_id
+string objective
+string object_request
+string completion_policy
+string schema_version
+---
+# Result
+uint8 OUTCOME_SUCCEEDED=0
+uint8 OUTCOME_CANCELED=1
+uint8 OUTCOME_FAILED=2
+
+uint8 outcome
+string mission_id
+string reason_code
+string summary
+string confirmed_target_id
+string bag_uri
+---
+# Feedback
+uint8 STATE_IDLE=0
+uint8 STATE_ACCEPTED=1
+uint8 STATE_RUNNING=2
+uint8 STATE_SUCCEEDED=3
+uint8 STATE_CANCELED=4
+uint8 STATE_FAILED=5
+
+uint8 state
+string mission_id
+string active_skill
+string active_tool
+uint64 board_revision
+string last_event_type
+string last_reason_code
+string active_command_status
+string confirmed_target_id
+float32 search_progress
+float32 approach_progress
+string recorder_uri

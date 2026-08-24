@@ -18,7 +18,6 @@ SOURCE_ROOT = PACKAGE_ROOT.parent
 SENSOR_ROOT = SOURCE_ROOT / 'lidar_pointcloud_filter'
 HARDWARE_ROOT = SOURCE_ROOT / 'yahboomcar_bringup'
 ODOMETRY_BAG_ROOT = SOURCE_ROOT / 'muto_odometry_bag'
-COMMAND_LAYER_ROOT = SOURCE_ROOT / 'muto_command_layer'
 NAV2_BAG_ROOT = SOURCE_ROOT / 'muto_nav2_bag'
 
 RETIRED_RUNTIME_IDENTIFIERS = (
@@ -260,15 +259,14 @@ def test_frontier_navigation_uses_the_known_free_goal_adapter():
     assert adapter['robot_seed_search_distance'] >= 0.27
     assert adapter['minimum_staged_advance_distance'] == 0.20
     assert adapter['free_space_max_occupancy'] == 0
+    assert explorer['frontier_suppression_persist_across_sessions'] is True
+    assert explorer['frontier_candidate_partition_size_m'] > 0.0
+    assert explorer['weight_gain_ws'] == 0.0
 
     standalone_launch = (
         PACKAGE_ROOT / 'launch' / 'frontier_exploration_launch.py'
     ).read_text(encoding='utf-8')
-    command_launch = (
-        COMMAND_LAYER_ROOT / 'launch' / 'command_layer_launch.py'
-    ).read_text(encoding='utf-8')
-    for source in (standalone_launch, command_launch):
-        assert "executable='frontier_goal_adapter'" in source
+    assert "executable='frontier_goal_adapter'" in standalone_launch
 
     for profile_name in ('nav2_bag.yaml', 'nav2_bag_full.yaml'):
         profile = _load_yaml(NAV2_BAG_ROOT / 'config' / profile_name)

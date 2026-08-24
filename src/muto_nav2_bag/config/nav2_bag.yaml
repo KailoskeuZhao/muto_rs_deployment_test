@@ -9,8 +9,8 @@ nav2_bag_recorder:
     # keeping CPU cost low enough for field diagnostics.
     storage_preset: zstd_fast
     max_cache_size: 52428800
-    # Shared cap across muto_command_*, muto_explore_*, muto_nav2_* and
-    # muto_odometry_* directories. Zero disables pruning.
+    # Shared cap across muto_command_v2_*, muto_nav2_* and muto_odometry_*
+    # directories. Zero disables pruning.
     max_bag_directories: 20
     include_hidden_topics: true
     # Keep the recorder topic-scoped on every ROS distro. Humble cannot select
@@ -76,9 +76,10 @@ nav2_bag_recorder:
       - /frontier_goal_adapter/projected_goal
       - /frontier_goal_adapter/status
       - /frontier/navigate_to_pose/_action/status
-      - /object_navigation/target_pose
-      - /explore_and_record/_action/status
-      - /go_to_object/_action/status
+      - /muto/mission_board
+      - /muto/mission_event
+      - /muto/mission_rejection
+      - /muto/mission_recorder_status
 
       # Behavior, diagnostics, parameter changes, and lifecycle state.
       - /behavior_tree_log

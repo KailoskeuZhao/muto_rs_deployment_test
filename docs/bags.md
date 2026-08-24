@@ -1,9 +1,10 @@
 # Default Bags And Mission Monitoring
 
 This is the authoritative overview of recording in the Muto deployment. The
-normal Nav2 pipeline records one compact navigation session, while the command
-launch arms two mission-scoped recorders. Together they reconstruct both robot
-motion and the agent's reasoning without recording the full sensor graph.
+normal Nav2 pipeline records one compact navigation session, while the v2
+mission launch opens one high-level mission-scoped recorder. Together they
+reconstruct robot motion and agent decisions without recording the full sensor
+graph.
 
 All standard Muto bags belong under:
 
@@ -13,40 +14,30 @@ All standard Muto bags belong under:
 
 ## Default Monitoring Layers
 
-The two normal startup launches enable three default layers:
+The normal startup launches enable two default layers:
 
 | Layer | Opens when | Closes when | Main question it answers |
 | --- | --- | --- | --- |
 | Nav2 session bag, `muto_nav2_*` | `muto_nav2_pipeline_launch.py` passes its Nav2 readiness gate. | The pipeline shuts down or `/muto/nav2_bag/stop` is called. | What goals, paths, obstacle scans, velocity commands, poses, action states, and navigation diagnostics occurred during this robot session? |
-| Command mission bag, `muto_command_*` | A `/look_for_object` model-commander mission is accepted, including one reached through `/natural_language_command`. | The parent mission succeeds, is canceled, aborts, or enters fail-closed ownership uncertainty. | What did the agent know, decide, dispatch, observe, and achieve over the complete mission? |
-| Exploration child bag, `muto_explore_*` | A command-layer exploration action or primitive starts. | That child action succeeds, is canceled, or aborts. | What happened inside this particular exploration/navigation interval? |
+| v2 mission bag, `muto_command_v2_*` | A `/muto/mission` goal is accepted. | The v2 mission succeeds, is canceled, or fails terminally. | What did the agent know, decide, dispatch, observe, and achieve over the complete mission? |
 
-The command bag is the primary overall monitor. It spans registry checks, model
-requests and validated decisions, waits, primitive dispatch and results,
-replanning gaps, navigation context, and the final mission result. Its decision
-events include the latest fused pose, motion progress, perception readiness,
-navigation ownership, and visibility-helper context available at that decision.
-It also stores the exact bounded JPEGs actually sent to the model.
+The v2 bag spans registry checks, model requests and validated decisions,
+bounded tool dispatch/results, reachability reports, navigation context, and
+the final mission result. Its decision events contain the current board and
+progress evidence. Raw camera frames are not recorded by this profile.
 
-The exploration bag is a child-scoped diagnostic view. Some topics overlap the
-parent bag deliberately; the separate file makes one exploration interval easy
-to inspect and can still be produced by a direct compatibility action without a
-parent commander mission.
-
-Direct `/go_to_object`, `/explore`, joystick activity, and arbitrary Nav2 goals
-are outside the parent command-mission lifecycle, but their navigation effects
-are still captured by the default Nav2 session bag. `/save_map` without motion
-is not a dedicated Nav2-bag event unless annotated manually.
+Direct Nav2 goals, joystick activity, and `/save_map` without a mission are
+outside the v2 mission lifecycle, but their navigation effects are still
+captured by the default Nav2 session bag.
 
 ## Default Scope
 
 The automatic profiles retain the information needed to reconstruct high-level
 behavior:
 
-- append-only commander decisions, mission status, and primitive outcomes;
-- exact inspected JPEGs rather than the continuous camera stream;
-- registry changes, detections, object matches, and object markers;
-- Nav2/frontier action state, goals, paths, and command topics;
+- append-only v2 decisions, mission status, and typed tool outcomes;
+- registry revisions, candidate IDs, confirmation evidence, and object summaries;
+- frontier selection/projection, Nav2 action state, goals, paths, and command topics;
 - map state, TF, LiDAR and derived camera obstacle scans, fused/scan odometry, and
   relevant diagnostics;
 - lifecycle events, recorder manifests, Git/build provenance, and manual
@@ -64,22 +55,13 @@ distribution, recorder revision and dirty state, and the active topic filter.
 
 ## Find The Active Or Latest Bags
 
-Parent command mission:
+v2 mission:
 
 ```bash
 ros2 topic echo --once --qos-durability transient_local \
-  /model_commander/last_bag_path
+  /muto/mission_recorder_manifest
 ros2 topic echo --once --qos-durability transient_local \
-  /model_commander/bag_status
-```
-
-Exploration child:
-
-```bash
-ros2 topic echo --once --qos-durability transient_local \
-  /explore_and_record/last_bag_path
-ros2 topic echo --once --qos-durability transient_local \
-  /explore_and_record/bag_status
+  /muto/mission_recorder_status
 ```
 
 `recording_ready` means the scoped MCAP is open. `recording_finalized` means
@@ -87,21 +69,8 @@ the recorder has closed the file and written final metadata.
 
 ## Add A Human Observation
 
-For a mission-wide observation:
-
-```bash
-ros2 topic pub --once /model_commander/operator_event std_msgs/msg/String \
-  "{data: 'observation: robot oscillated before turning toward the rear path'}"
-```
-
-For a note specific to the active exploration child:
-
-```bash
-ros2 topic pub --once /explore_and_record/operator_event std_msgs/msg/String \
-  "{data: 'milestone: entered the second room'}"
-```
-
-A short string is sufficient; rosbag supplies the timestamp.
+Operator annotations are currently external to the v2 high-level allowlist;
+annotate the MCAP or use the Nav2 diagnostic event topic for a field note.
 
 ## Optional Diagnostic Bags
 
@@ -122,9 +91,9 @@ Stop an odometry recorder with `Ctrl-C` so rosbag2 finalizes its metadata.
 
 ## Retention
 
-All three automatic recorder profiles default to `max_bag_directories: 20`.
+Both automatic recorder profiles default to `max_bag_directories: 20`.
 After any automatic bag finalizes cleanly, it counts recognized directories with
-the prefixes `muto_command_`, `muto_explore_`, `muto_nav2_`, and
+the prefixes `muto_command_v2_`, `muto_nav2_`, and
 `muto_odometry_` under the shared parent and removes the oldest until only 20
 remain. Unrelated directories are untouched.
 
@@ -147,7 +116,6 @@ ros2 bag play <bag-directory> --clock --topics <topic> [<topic> ...]
 Do not replay a complete bag on the live robot domain.
 
 Package-specific details remain in the
-[`muto_command_bag`](../src/muto_command_bag/README.md),
-[`muto_exploration_bag`](../src/muto_exploration_bag/README.md),
+[`muto_command_layer_v2`](../src/muto_command_layer_v2/README.md),
 [`muto_nav2_bag`](../src/muto_nav2_bag/README.md), and
 [`muto_odometry_bag`](../src/muto_odometry_bag/README.md) READMEs.

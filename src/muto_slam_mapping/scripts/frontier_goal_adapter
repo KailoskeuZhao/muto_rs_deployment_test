@@ -191,6 +191,7 @@ def project_goal_to_reachable_known_free(
     robot_seed_search_distance: float,
     maximum_projection_distance: float = 0.0,
     free_space_max_occupancy: int = 0,
+    minimum_staged_advance_distance: float = 0.0,
 ) -> Optional[ProjectedGoal]:
     """Choose the target-nearest robot-reachable footprint-safe map cell.
 
@@ -249,6 +250,8 @@ def project_goal_to_reachable_known_free(
     visited = {seed}
     best = None
     best_score = None
+    best_staged = None
+    best_staged_score = None
     neighbor_offsets = (
         (-1, -1), (0, -1), (1, -1),
         (-1, 0),             (1, 0),
@@ -264,6 +267,16 @@ def project_goal_to_reachable_known_free(
             if best_score is None or score < best_score:
                 best_score = score
                 best = ProjectedGoal(
+                    x=world_x,
+                    y=world_y,
+                    displaced=displacement > 0.5 * resolution,
+                    displacement=displacement,
+                )
+            staged_advance = math.hypot(world_x - robot_x, world_y - robot_y)
+            if staged_advance + 1.0e-9 >= minimum_staged_advance_distance and \
+                    (best_staged_score is None or score < best_staged_score):
+                best_staged_score = score
+                best_staged = ProjectedGoal(
                     x=world_x,
                     y=world_y,
                     displaced=displacement > 0.5 * resolution,
@@ -288,7 +301,16 @@ def project_goal_to_reachable_known_free(
                     continue
             visited.add(neighbor)
             queue.append(neighbor)
-    return best
+    if best is None or not best.displaced:
+        return best
+    best_advance = math.hypot(best.x - robot_x, best.y - robot_y)
+    if best_advance + 1.0e-9 >= minimum_staged_advance_distance:
+        return best
+    # The frontier-nearest safe cell may sit inside Nav2's goal-tolerance
+    # bubble even though another cell in the same robot-reachable component
+    # provides a useful lateral or forward staging move. Prefer the
+    # target-nearest such cell before declaring a local impasse.
+    return best_staged if best_staged is not None else best
 
 
 def _copy_navigation_result(source):
@@ -592,6 +614,7 @@ class FrontierGoalAdapter(Node):
                 self._robot_seed_search_distance,
                 self._maximum_projection_distance,
                 self._free_space_max_occupancy,
+                self._minimum_staged_advance_distance,
             )
             if projected is None:
                 detail = (

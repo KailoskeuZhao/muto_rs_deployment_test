@@ -385,7 +385,7 @@ them separately when needed:
 
 ```bash
 export HKU_API_KEY='your-key'
-ros2 launch muto_command_layer command_layer_launch.py
+ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 ```
 
 That launch consumes the existing camera optical frames and, for registry and
@@ -602,6 +602,6 @@ processing/output frame. SLAM uses the TG30 no-downsample LaserScan directly.
 | `src/yahboomcar_bringup/config/ekf_lidar_imu.yaml` | Normal dynamic odom TF owner. |
 | `src/muto_slam_mapping/config/mapper_params_online_async.yaml` | SLAM frame contract. |
 | `src/muto_slam_mapping/launch/muto_nav2_pipeline_launch.py` | Topic and TF readiness gates. |
-| `src/muto_command_layer/launch/command_layer_launch.py` | Independent object perception and command consumers of camera and map TF. |
+| `src/muto_command_layer_v2/launch/v2_hardware_smoke_launch.py` | Independent mission executive and object-perception consumers of camera and map TF. |
 | `src/lidar_pointcloud_filter/src/camera_depth_to_laserscan_node.cpp` | Depth-frame lookup and output-frame behavior. |
 | `src/yahboomcar_description/README.md` | Boundary between reference `base_link` URDF data and deployed `base_frame` TF. |

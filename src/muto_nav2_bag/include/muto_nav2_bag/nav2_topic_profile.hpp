@@ -58,9 +58,10 @@ inline std::vector<std::string> default_nav2_topics()
     "/frontier_goal_adapter/projected_goal",
     "/frontier_goal_adapter/status",
     "/frontier/navigate_to_pose/_action/status",
-    "/object_navigation/target_pose",
-    "/explore_and_record/_action/status",
-    "/go_to_object/_action/status",
+    "/muto/mission_board",
+    "/muto/mission_event",
+    "/muto/mission_rejection",
+    "/muto/mission_recorder_status",
 
     // Compact action state. Goal/result payloads are service events on Humble;
     // high-rate feedback is derivable from pose, plans and target mirrors.

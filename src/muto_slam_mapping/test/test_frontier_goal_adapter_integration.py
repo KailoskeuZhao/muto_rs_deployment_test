@@ -137,7 +137,20 @@ class FakeNav2(Node):
         # The robot is at (50, 40). After applying its 0.27 m footprint, this
         # patch offers only a few centimetres of forward staging room.
         for cell_y in range(33, 49):
-            for cell_x in range(25, 75):
+            for cell_x in range(43, 58):
+                message.data[cell_y * 100 + cell_x] = 0
+        self.map_publisher.publish(message)
+
+    def publish_lateral_staging_patch(self):
+        message = OccupancyGrid()
+        message.header.frame_id = 'map'
+        message.info.width = 100
+        message.info.height = 80
+        message.info.resolution = 0.04
+        message.info.origin.orientation.w = 1.0
+        message.data = [-1] * (100 * 80)
+        for cell_y in range(33, 50):
+            for cell_x in range(20, 81):
                 message.data[cell_y * 100 + cell_x] = 0
         self.map_publisher.publish(message)
 
@@ -275,6 +288,31 @@ def test_local_impasse_is_rejected_instead_of_reporting_false_progress(
         '"outcome":"rejected_no_progress"' in item
         for item in backend.status_messages))
     assert backend.cmd_vel_messages == []
+
+
+def test_near_projection_uses_reachable_lateral_staging_goal(running_adapter):
+    backend, client = running_adapter
+    backend.publish_lateral_staging_patch()
+    time.sleep(0.15)
+    goal = NavigateToPose.Goal()
+    goal.pose.header.frame_id = 'map'
+    goal.pose.pose.position.x = (50 + 0.5) * 0.04
+    goal.pose.pose.position.y = (60 + 0.5) * 0.04
+    goal.pose.pose.orientation.w = 1.0
+
+    goal_handle = _wait_future(client.send_goal_async(goal))
+    assert goal_handle.accepted
+    wrapped = _wait_future(goal_handle.get_result_async())
+
+    assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
+    assert len(backend.received_goals) == 1
+    forwarded = backend.received_goals[0].pose.pose.position
+    robot_x = (50 + 0.5) * 0.04
+    robot_y = (40 + 0.5) * 0.04
+    assert math.hypot(forwarded.x - robot_x, forwarded.y - robot_y) >= 0.20
+    assert not any(
+        '"outcome":"rejected_no_progress"' in item
+        for item in backend.status_messages)
 
 
 def test_parent_cancel_propagates_to_the_owned_nav2_goal(running_adapter):

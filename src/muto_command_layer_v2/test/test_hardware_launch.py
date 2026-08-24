@@ -32,6 +32,9 @@ def test_hardware_smoke_uses_direct_v2_authorities_and_not_retired_composition()
     assert 'default_value="true"' in text
     assert '"sensor_tf_delay",' in text
     assert '"sensor_tf_delay": LaunchConfiguration("sensor_tf_delay")' in text
+    assert '"camera_scan_max_publish_rate",' in text
+    assert '"camera_scan_max_publish_rate": LaunchConfiguration(' in text
+    assert '"camera_scan_max_publish_rate"' in text
     assert '"launch_nav2_bag", default_value="false"' in text
     assert '"record_odometry_bag", default_value="false"' in text
     assert '"autostart": "false"' in text

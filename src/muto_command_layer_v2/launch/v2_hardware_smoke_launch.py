@@ -74,6 +74,11 @@ def generate_launch_description():
             description="Minimum delay before static sensor TF starts.",
         ),
         DeclareLaunchArgument("launch_camera_obstacle_scan", default_value="true"),
+        DeclareLaunchArgument(
+            "camera_scan_max_publish_rate",
+            default_value="7.0",
+            description="Maximum camera-depth-to-scan processing rate in Hz.",
+        ),
         DeclareLaunchArgument("nav2_autostart", default_value="true"),
         DeclareLaunchArgument("nav2_use_respawn", default_value="false"),
         DeclareLaunchArgument("nav2_log_level", default_value="info"),
@@ -195,6 +200,9 @@ def generate_launch_description():
             "launch_sensor_tf": LaunchConfiguration("launch_sensor_tf"),
             "launch_camera_obstacle_scan": LaunchConfiguration(
                 "launch_camera_obstacle_scan"
+            ),
+            "camera_scan_max_publish_rate": LaunchConfiguration(
+                "camera_scan_max_publish_rate"
             ),
             "nav2_autostart": LaunchConfiguration("nav2_autostart"),
             "nav2_use_respawn": LaunchConfiguration("nav2_use_respawn"),

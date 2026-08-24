@@ -15,7 +15,9 @@ def main(args=None) -> None:
     # applied before the real executive node is constructed.
     parameter_node = rclpy.create_node("muto_command_layer_v2_system")
     parameter_node.declare_parameter("mission_action", "muto/mission")
-    parameter_node.declare_parameter("use_sim_time", False)
+    # rclpy's TimeSource declares ``use_sim_time`` while constructing every
+    # node.  Launch already applies the override before this point, so
+    # declaring it again raises ParameterAlreadyDeclaredException on Humble.
     parameter_node.declare_parameter("vlm_action", "/vlm/generate")
     parameter_node.declare_parameter("vlm_model", "")
     parameter_node.declare_parameter("vlm_timeout_s", 30.0)

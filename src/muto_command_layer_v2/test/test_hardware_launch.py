@@ -30,6 +30,8 @@ def test_hardware_smoke_uses_direct_v2_authorities_and_not_retired_composition()
 
     assert '"launch_hardware",' in text
     assert 'default_value="true"' in text
+    assert '"sensor_tf_delay",' in text
+    assert '"sensor_tf_delay": LaunchConfiguration("sensor_tf_delay")' in text
     assert '"launch_nav2_bag", default_value="false"' in text
     assert '"record_odometry_bag", default_value="false"' in text
     assert '"autostart": "false"' in text
@@ -59,3 +61,10 @@ def test_recorder_defaults_are_unique_persistent_and_overrideable():
 def test_frontier_completion_default_matches_production_explorer_topic():
     for path in (COMPOSITION, SYSTEM_NODE, AUTHORITIES, COMMAND_LAUNCH):
         assert "/explore/exploration_complete" in path.read_text(encoding="utf-8")
+
+
+def test_nodes_do_not_redeclare_ros_owned_use_sim_time_parameter():
+    for path in (SYSTEM_NODE, RECORDER):
+        text = path.read_text(encoding="utf-8")
+        assert 'declare_parameter("use_sim_time"' not in text
+        assert "declare_parameter('use_sim_time'" not in text

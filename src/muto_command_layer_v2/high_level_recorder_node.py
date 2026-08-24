@@ -76,7 +76,9 @@ class HighLevelRecorderNode(Node):
 
     def __init__(self) -> None:
         super().__init__("muto_command_layer_v2_recorder")
-        self.declare_parameter("use_sim_time", False)
+        # rclpy's TimeSource owns this ROS-wide parameter and applies the
+        # launch override during Node construction.  Redeclaring it here
+        # raises ParameterAlreadyDeclaredException on Humble.
         self.declare_parameter("output_uri", "")
         self.declare_parameter("run_id", "")
         self.declare_parameter("storage_id", "mcap")

@@ -68,6 +68,11 @@ def generate_launch_description():
             "nav2_bag_output_directory", default_value="/opt/muto_rs_ws/bags"
         ),
         DeclareLaunchArgument("launch_sensor_tf", default_value="true"),
+        DeclareLaunchArgument(
+            "sensor_tf_delay",
+            default_value="1.0",
+            description="Minimum delay before static sensor TF starts.",
+        ),
         DeclareLaunchArgument("launch_camera_obstacle_scan", default_value="true"),
         DeclareLaunchArgument("nav2_autostart", default_value="true"),
         DeclareLaunchArgument("nav2_use_respawn", default_value="false"),
@@ -183,6 +188,7 @@ def generate_launch_description():
             "launch_mapping": LaunchConfiguration("launch_mapping"),
             "launch_nav2": LaunchConfiguration("launch_nav2"),
             "launch_nav2_bag": LaunchConfiguration("launch_nav2_bag"),
+            "sensor_tf_delay": LaunchConfiguration("sensor_tf_delay"),
             "nav2_bag_output_directory": LaunchConfiguration(
                 "nav2_bag_output_directory"
             ),

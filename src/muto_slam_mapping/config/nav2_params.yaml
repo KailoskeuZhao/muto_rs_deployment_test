@@ -95,7 +95,7 @@ controller_server:
       # 0.30 rad/s rotate-to-path request to 0.03 rad/s indefinitely when the
       # measured response is weak or delayed. Keep this controller-internal
       # clamp non-binding across the full configured [-0.30, +0.30] range;
-      # nav2_velocity_smoother below remains the physical 0.6 rad/s^2 limiter.
+      # nav2_velocity_smoother below remains the physical 1.0 rad/s^2 limiter.
       max_angular_accel: 12.0
 
 local_costmap:
@@ -212,11 +212,12 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.30]
-    min_velocity: [-0.10, 0.0, -0.30]
-    # Keep the smoother consistent with RPP's conservative physical envelope.
-    max_accel: [0.15, 0.0, 0.6]
-    max_decel: [-0.2, 0.0, -0.6]
+    # Direct commander rotations use the faster Spin envelope below. RPP's
+    # path-following heading request remains at 0.30 rad/s.
+    max_velocity: [0.25, 0.0, 0.50]
+    min_velocity: [-0.10, 0.0, -0.50]
+    max_accel: [0.15, 0.0, 1.0]
+    max_decel: [-0.2, 0.0, -1.0]
     odom_topic: /odometry/filtered
     odom_duration: 0.2
     deadband_velocity: [0.0, 0.0, 0.0]
@@ -239,9 +240,11 @@ behavior_server:
     robot_base_frame: base_frame
     transform_tolerance: 0.1
     simulate_ahead_time: 1.5
-    max_rotational_vel: 0.30
+    # Commander rotate_to_heading dispatches Nav2 Spin, so it has a separate
+    # faster envelope than path-following RPP.
+    max_rotational_vel: 0.50
     min_rotational_vel: 0.1
-    rotational_acc_lim: 0.6
+    rotational_acc_lim: 1.0
 
 global_costmap:
   global_costmap:

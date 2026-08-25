@@ -128,19 +128,19 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
     assert smoother['min_velocity'][1] == 0.0
     assert smoother['max_velocity'][0] == 0.25
     assert smoother['min_velocity'][0] == -0.10
-    assert smoother['max_velocity'][2] == 0.30
-    assert smoother['min_velocity'][2] == -0.30
+    assert smoother['max_velocity'][2] == 0.50
+    assert smoother['min_velocity'][2] == -0.50
     assert smoother['max_accel'][0] == 0.15
-    assert smoother['max_accel'][2] == 0.6
+    assert smoother['max_accel'][2] == 1.0
     assert smoother['max_decel'][0] == -0.2
-    assert smoother['max_decel'][2] == -0.6
+    assert smoother['max_decel'][2] == -1.0
     assert controller['desired_linear_vel'] == 0.25
     assert controller['lookahead_dist'] == 0.40
     assert controller['rotate_to_heading_angular_vel'] == 0.30
     # Humble RPP clamps rotate-to-heading around measured yaw velocity before
     # the velocity smoother. Its internal limit must be non-binding across the
-    # complete signed yaw range; the smoother owns the physical 0.6 rad/s^2
-    # acceleration limit.
+    # complete signed path-following yaw range; direct Spin owns the faster
+    # 0.50 rad/s envelope below.
     controller_period = 1.0 / config[
         'controller_server']['ros__parameters']['controller_frequency']
     yaw_limit = controller['rotate_to_heading_angular_vel']
@@ -148,8 +148,8 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
     assert internal_delta >= 2.0 * yaw_limit
     assert min(yaw_limit, 0.0 + internal_delta) == yaw_limit
     assert min(yaw_limit, -yaw_limit + internal_delta) == yaw_limit
-    assert behavior['max_rotational_vel'] == 0.30
-    assert behavior['rotational_acc_lim'] == 0.6
+    assert behavior['max_rotational_vel'] == 0.50
+    assert behavior['rotational_acc_lim'] == 1.0
 
 
 def test_navfn_clearance_field_covers_the_effective_robot_footprint():

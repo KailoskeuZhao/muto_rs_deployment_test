@@ -436,7 +436,9 @@ achieved yaw and weak simultaneous forward-turn response. Humble RPP's own
 limit. RPP otherwise clamps every rotate-to-path request around the measured
 odometry yaw rate, which reduced a requested `0.30 rad/s` turn to approximately
 `0.03 rad/s` in the 2026-08-13 field bag. The downstream velocity smoother is
-the physical acceleration authority and still ramps yaw at `0.6 rad/s^2`.
+the physical acceleration authority. Path-following yaw remains capped at
+`0.30 rad/s`, while commander `rotate_to_heading` uses Nav2 Spin's separate
+`0.50 rad/s` cap and `1.0 rad/s^2` ramp.
 Odometry remains authoritative for achieved motion and completion. Its
 output is remapped to `/cmd_vel_nav`; the lifecycle-managed
 velocity smoother publishes the normal follow-path `/cmd_vel` at 20 Hz.

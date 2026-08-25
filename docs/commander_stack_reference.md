@@ -66,6 +66,12 @@ shortlist evidence, robot pose/readiness, current board/progress, recent tool
 results, and a bounded camera snapshot. It selects a skill and at most one
 tool call. It cannot publish raw ROS commands or mutate mission state.
 
+The VLM transport keeps `tool` and `completion_proposal` as required nullable
+fields because the deployed Chat Completions provider rejects a root-level
+`oneOf`. The commander parser still rejects both fields being set (or neither
+being set), so provider compatibility does not weaken the bounded decision
+contract.
+
 ## Confirmation chain
 
 Registry name/metadata matching creates only a shortlist. Every candidate

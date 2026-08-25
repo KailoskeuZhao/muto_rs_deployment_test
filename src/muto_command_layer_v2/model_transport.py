@@ -62,31 +62,16 @@ def build_decision_schema() -> str:
         "type": "object",
         "additionalProperties": False,
         "required": ["schema_version", "skill", "tool", "completion_proposal", "rationale"],
-        # A planning turn is exactly one bounded operation: either a tool call
-        # or a completion proposal.  The parser repeats this check as
-        # defense-in-depth after the provider validates the schema.
-        "oneOf": [
-            {
-                "properties": {
-                    "tool": {"type": "object"},
-                    "completion_proposal": {"type": "null"},
-                },
-            },
-            {
-                "properties": {
-                    "tool": {"type": "null"},
-                    "completion_proposal": {
-                        "type": "string",
-                        "enum": [
-                            "report_confirmed", "approach_confirmed",
-                            "search_until_exhausted",
-                        ],
-                    },
-                },
-            },
-        ],
+        # Chat Completions providers used by the Humble deployment reject a
+        # root-level ``oneOf`` in strict response schemas.  Both operation
+        # fields are therefore required and nullable here; the strict parser
+        # in commander.py remains the authority that enforces exactly one
+        # tool call or completion proposal.
         "properties": {
-            "schema_version": {"const": SCHEMA_VERSION},
+            "schema_version": {
+                "type": "string",
+                "enum": [SCHEMA_VERSION],
+            },
             "skill": {
                 "type": "string",
                 "enum": ["search_for_object", "approach_confirmed_object"],
@@ -126,8 +111,14 @@ def build_decision_schema() -> str:
                                 ]
                             },
                             "heading": {"anyOf": [{"type": "null"}, {"type": "number"}]},
-                            "frame_id": {"const": "map"},
-                            "projection_policy": {"enum": ["reject", "allow"]},
+                            "frame_id": {
+                                "type": "string",
+                                "enum": ["map"],
+                            },
+                            "projection_policy": {
+                                "type": "string",
+                                "enum": ["reject", "allow"],
+                            },
                         },
                     },
                 ]
@@ -148,6 +139,40 @@ def build_decision_schema() -> str:
         },
     }
     return json.dumps(schema, sort_keys=True, separators=(",", ":"))
+
+
+def build_candidate_inspection_schema() -> str:
+    """Return the provider-compatible schema for registry candidate checks."""
+
+    return json.dumps({
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "candidate_decisions"],
+        "properties": {
+            "schema_version": {
+                "type": "string",
+                "enum": [SCHEMA_VERSION],
+            },
+            "candidate_decisions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "candidate_id", "confirmed", "confidence", "reason_code"
+                    ],
+                    "properties": {
+                        "candidate_id": {"type": "string"},
+                        "confirmed": {"type": "boolean"},
+                        "confidence": {
+                            "type": "number", "minimum": 0.0, "maximum": 1.0
+                        },
+                        "reason_code": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }, sort_keys=True, separators=(",", ":"))
 
 
 class VlmCommanderPlanner:
@@ -358,28 +383,7 @@ class VlmCandidateInspector:
         goal = self._generate_vlm.Goal()
         goal.content = content
         goal.model = self._model
-        goal.response_json_schema = json.dumps({
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["schema_version", "candidate_decisions"],
-            "properties": {
-                "schema_version": {"const": SCHEMA_VERSION},
-                "candidate_decisions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["candidate_id", "confirmed", "confidence", "reason_code"],
-                        "properties": {
-                            "candidate_id": {"type": "string"},
-                            "confirmed": {"type": "boolean"},
-                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            "reason_code": {"type": "string"},
-                        },
-                    },
-                },
-            },
-        }, sort_keys=True, separators=(",", ":"))
+        goal.response_json_schema = build_candidate_inspection_schema()
         handle = _wait_future(
             self._client.send_goal_async(goal), self._timeout_s, "candidate inspection goal"
         )

@@ -102,6 +102,10 @@ class HighLevelRecorderNode(Node):
         self.output_uri = ""
         self._writer = None
         self._active_mission_id = ""
+        # The executive republishes a terminal board when it incorporates the
+        # recorder's own terminal status.  Keep terminal handling idempotent so
+        # that latched/republished board samples never reopen the same bag.
+        self._closed_mission_ids = set()
         try:
             import rosbag2_py
         except ImportError as exc:  # pragma: no cover - non-ROS host
@@ -162,6 +166,8 @@ class HighLevelRecorderNode(Node):
         mission_id = str(message.mission_id)
         if not mission_id:
             return
+        if mission_id in self._closed_mission_ids:
+            return
         if message.lifecycle_state in (MissionBoard.ACCEPTED, MissionBoard.RUNNING):
             if self._writer is None or mission_id != self._active_mission_id:
                 self._start_writer(mission_id, message.request_id, message)
@@ -172,6 +178,12 @@ class HighLevelRecorderNode(Node):
         ):
             if self._writer is None and mission_id:
                 self._start_writer(mission_id, message.request_id, message)
+            if self._writer is None:
+                # Opening a terminal bag is best effort.  Do not retry the
+                # same URI for every terminal board republished by the
+                # executive after recorder status is incorporated.
+                self._closed_mission_ids.add(mission_id)
+                return
             self._write("muto/mission_board", message)
             self._close_writer(mission_id, terminal=True)
 
@@ -240,7 +252,7 @@ class HighLevelRecorderNode(Node):
             self._active_mission_id = mission_id
             self.output_uri = ""
             self._publish_status(mission_id, False, "", "recorder_open_failed", False)
-            self.get_logger().error("v2 high-level recorder unavailable: %s", exc)
+            self.get_logger().error(f"v2 high-level recorder unavailable: {exc}")
 
     @staticmethod
     def _generate_run_id() -> str:
@@ -255,6 +267,8 @@ class HighLevelRecorderNode(Node):
 
     def _close_writer(self, mission_id, *, terminal):
         uri = self.output_uri
+        if terminal and mission_id:
+            self._closed_mission_ids.add(mission_id)
         if self._writer is not None:
             self._publish_status(mission_id, bool(uri), uri, "recorder_closed", terminal)
         if self._writer is not None:

@@ -6,6 +6,7 @@ from muto_command_layer_v2.contracts import (
     SCHEMA_VERSION,
 )
 from muto_command_layer_v2.model_transport import (
+    build_candidate_inspection_schema,
     build_decision_schema,
     build_planner_prompt,
 )
@@ -30,9 +31,25 @@ def test_prompt_is_compact_board_json_and_explicitly_marks_visual_input():
 def test_decision_schema_is_strict_and_matches_parser_enums():
     schema = json.loads(build_decision_schema())
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION
+    # The deployed Chat Completions provider rejects a root ``oneOf`` and
+    # untyped ``const``.  Nullable operation fields plus the parser's
+    # defense-in-depth check preserve the same decision boundary.
+    assert "oneOf" not in schema
+    assert schema["properties"]["schema_version"] == {
+        "type": "string", "enum": [SCHEMA_VERSION]
+    }
     assert schema["properties"]["skill"]["enum"] == [
         "search_for_object", "approach_confirmed_object"
     ]
     tool = schema["properties"]["tool"]["anyOf"][1]
-    assert tool["properties"]["frame_id"]["const"] == "map"
+    assert tool["properties"]["frame_id"] == {
+        "type": "string", "enum": ["map"]
+    }
+
+
+def test_candidate_inspection_schema_is_provider_compatible():
+    schema = json.loads(build_candidate_inspection_schema())
+    assert schema["properties"]["schema_version"] == {
+        "type": "string", "enum": [SCHEMA_VERSION]
+    }
+    assert "const" not in json.dumps(schema)

@@ -27,12 +27,25 @@ def _launch_file(package: str, name: str) -> str:
     return os.path.join(get_package_share_directory(package), "launch", name)
 
 
-def _scoped_include(package: str, name: str, arguments=None, condition=None):
+def _scoped_include(
+    package: str,
+    name: str,
+    arguments=None,
+    condition=None,
+    *,
+    scoped: bool = True,
+):
     include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(_launch_file(package, name)),
         launch_arguments=(arguments or {}).items(),
         condition=condition,
     )
+    # The Nav2 pipeline owns delayed readiness-gated actions. Those actions
+    # evaluate the pipeline's declared defaults after this top-level launch
+    # has visited the include, so those configurations must remain visible in
+    # the parent launch context.
+    if not scoped:
+        return include
     return GroupAction(actions=[include], scoped=True)
 
 
@@ -218,6 +231,7 @@ def generate_launch_description():
             ),
             "nav2_readiness_timeout": LaunchConfiguration("nav2_readiness_timeout"),
         },
+        scoped=False,
     )
     frontier = _scoped_include(
         "muto_slam_mapping",

@@ -24,6 +24,15 @@ from .contracts import (
 )
 
 
+# Completion must be backed by a reason emitted by the search authority.  A
+# bounded cycle ending cooperatively is useful progress, but it is not proof
+# that the scenario's search space has been exhausted.
+_SEARCH_EXHAUSTION_REASON_CODES = frozenset((
+    "frontier_exhausted",
+    "search_exhausted",
+))
+
+
 class ExecutiveError(RuntimeError):
     """Base error for invalid executive operations."""
 
@@ -478,6 +487,13 @@ class MissionExecutive:
                 )
         if policy == CompletionPolicy.SEARCH_UNTIL_EXHAUSTED and not search_exhausted:
             raise ContractError("search_until_exhausted requires exhausted search")
+        if (
+            policy == CompletionPolicy.SEARCH_UNTIL_EXHAUSTED
+            and self._board.last_reason_code not in _SEARCH_EXHAUSTION_REASON_CODES
+        ):
+            raise ContractError(
+                "search_until_exhausted requires explicit exhaustion evidence"
+            )
         self._board = self._board.evolve(
             lifecycle_state=LifecycleState.SUCCEEDED,
             confirmed_target_id=target_id,

@@ -194,6 +194,27 @@ def test_completion_policy_rejects_premature_finish_and_accepts_confirmation():
         executive.select_skill(SkillName.SEARCH_FOR_OBJECT)
 
 
+def test_search_exhaustion_completion_requires_authority_evidence():
+    executive = started_executive(CompletionPolicy.SEARCH_UNTIL_EXHAUSTED)
+    executive.select_skill(SkillName.SEARCH_FOR_OBJECT)
+    executive.record_tool_result(
+        ToolName.OBSERVE,
+        success=True,
+        progress_delta=1.0,
+        reason_code="frontier_cycle_completed",
+    )
+    with pytest.raises(ContractError, match="explicit exhaustion evidence"):
+        executive.complete(search_exhausted=True)
+
+    executive.record_tool_result(
+        ToolName.OBSERVE,
+        success=True,
+        progress_delta=1.0,
+        reason_code="frontier_exhausted",
+    )
+    assert executive.complete(search_exhausted=True).lifecycle_state is LifecycleState.SUCCEEDED
+
+
 def test_cancel_is_direct_and_terminal():
     executive = started_executive()
     board = executive.cancel()

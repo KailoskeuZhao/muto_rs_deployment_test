@@ -302,7 +302,14 @@ def main(args=None) -> None:
         pass
     finally:
         node._close_writer(node._active_mission_id, terminal=True)
-        node.destroy_node()
+        # Humble may remove a subscription waitable concurrently while the
+        # launch system is propagating SIGINT.  Treat that teardown race as
+        # ordinary shutdown; the mission-scoped writer has already been
+        # closed and the bag is complete.
+        try:
+            node.destroy_node()
+        except (RuntimeError, ValueError):
+            pass
         if rclpy.ok():
             rclpy.shutdown()
 

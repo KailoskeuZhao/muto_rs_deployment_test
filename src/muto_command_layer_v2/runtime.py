@@ -10,7 +10,7 @@ from threading import Event, RLock
 from typing import Callable, Optional
 
 from .commander import CommanderAgent, PlannerFailure
-from .contracts import MissionAction, MissionBoard
+from .contracts import ContractError, MissionAction, MissionBoard
 from .executive import MissionExecutive
 from .tools import ToolDispatcher
 
@@ -160,6 +160,11 @@ class CommanderRuntime:
 
     def _apply_completion(self, proposal: str) -> None:
         try:
+            policy = self.executive.board.completion_policy
+            if policy is None or proposal != policy.value:
+                raise ContractError(
+                    "completion proposal does not match the scenario policy"
+                )
             if proposal == "report_confirmed":
                 self.executive.complete(
                     confirmed_target_id=self.executive.board.confirmed_target_id

@@ -105,6 +105,32 @@ def test_runtime_stops_repeated_invalid_planner_output_without_mission_budget():
     assert result.decisions == 3
 
 
+def test_runtime_rejects_completion_that_redefines_scenario_policy():
+    def planner(_board):
+        return {
+            "schema_version": "muto_command_layer_v2",
+            "skill": "search_for_object",
+            "tool": None,
+            "completion_proposal": "search_until_exhausted",
+        }
+
+    result = CommanderRuntime(
+        MissionExecutive(),
+        CommanderAgent(planner),
+        ToolDispatcher(SearchBackend()),
+        consecutive_failure_limit=1,
+    ).run(
+        MissionAction(
+            request_id="req-policy-guard",
+            objective="find a chair",
+            object_request="chair",
+            completion_policy=CompletionPolicy.REPORT_CONFIRMED,
+        )
+    )
+    assert result.board.lifecycle_state.value == "failed"
+    assert result.board.last_reason_code == "consecutive_failures"
+
+
 def test_runtime_accepts_valid_not_found_exhaustion_as_success():
     def planner(board):
         if board.search_progress == 0.0:
@@ -150,7 +176,11 @@ def test_runtime_replans_after_one_backend_failure():
             calls.append(len(calls))
             if len(calls) == 1:
                 return ToolResult(False, reason_code="nav2_navigation_aborted")
-            return ToolResult(True, progress_delta=1.0)
+            return ToolResult(
+                True,
+                progress_delta=1.0,
+                reason_code="frontier_exhausted",
+            )
 
     def planner(board):
         if board.search_progress == 0.0:

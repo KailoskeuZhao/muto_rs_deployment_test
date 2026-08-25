@@ -426,7 +426,7 @@ fixed seven-point Savitzky-Golay filter, collision-check the result, and feed
 that `smoothed_path` to Regulated Pure Pursuit. `SimpleSmoother` remains loaded
 as an explicit rollback but is not selected by either behavior tree. They
 replan at 1 Hz. The controller reads `/odometry/filtered`, uses a fixed `0.40 m`
-lookahead and requests up to 0.20 m/s linear motion. Keeping the carrot beyond
+lookahead and requests up to 0.25 m/s linear motion. Keeping the carrot beyond
 the approximately `0.26 m` robot radius reduces turn-direction sensitivity
 when the path initially lies behind the robot. Its 0.30
 rad/s yaw request is a conservative physical envelope for the current Muto

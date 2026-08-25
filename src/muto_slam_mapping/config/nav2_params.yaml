@@ -59,7 +59,10 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.20
+      # Conservative linear-speed step-up for the geometric Muto gait. Keep
+      # yaw and acceleration limits unchanged until a marked-field trial
+      # measures the higher-speed response.
+      desired_linear_vel: 0.25
       # Fixed carrot distance. Keep it beyond the 0.26 m robot radius so small
       # NavFn/odometry changes near a directly-behind path do not repeatedly
       # flip RPP's selected turn direction. With velocity scaling disabled,
@@ -209,7 +212,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.20, 0.0, 0.30]
+    max_velocity: [0.25, 0.0, 0.30]
     min_velocity: [-0.10, 0.0, -0.30]
     # Keep the smoother consistent with RPP's conservative physical envelope.
     max_accel: [0.15, 0.0, 0.6]

@@ -126,7 +126,7 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
 
     assert smoother['max_velocity'][1] == 0.0
     assert smoother['min_velocity'][1] == 0.0
-    assert smoother['max_velocity'][0] == 0.20
+    assert smoother['max_velocity'][0] == 0.25
     assert smoother['min_velocity'][0] == -0.10
     assert smoother['max_velocity'][2] == 0.30
     assert smoother['min_velocity'][2] == -0.30
@@ -134,7 +134,7 @@ def test_nav2_does_not_request_unsupported_lateral_turning():
     assert smoother['max_accel'][2] == 0.6
     assert smoother['max_decel'][0] == -0.2
     assert smoother['max_decel'][2] == -0.6
-    assert controller['desired_linear_vel'] == 0.20
+    assert controller['desired_linear_vel'] == 0.25
     assert controller['lookahead_dist'] == 0.40
     assert controller['rotate_to_heading_angular_vel'] == 0.30
     # Humble RPP clamps rotate-to-heading around measured yaw velocity before
@@ -224,6 +224,10 @@ def test_frontier_goal_stays_stable_while_nav2_is_driving():
         PACKAGE_ROOT / 'config' / 'frontier_exploration_params.yaml'
     )
     parameters = config['frontier_explorer']['ros__parameters']
+
+    # Frontier timing estimates must use the same request-side linear cap as
+    # Nav2; these values do not command the base themselves.
+    assert parameters['max_linear_speed_vmax'] == 0.25
 
     # Do not cancel and redispatch an accepted goal merely because a SLAM map
     # refresh changes its estimated visibility gain. Genuine blocked goals and

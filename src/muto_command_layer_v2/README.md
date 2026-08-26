@@ -26,7 +26,7 @@ The package currently contains:
   writes a manifest and recorder status, and closes on terminal outcome; and
 - an event-driven commander/executive runtime loop;
 - a strict `muto_vlm_socket` planner transport with schema-checked output;
-- ROS authority adapters for registry snapshots, bounded frontier observation,
+- ROS authority adapters for registry snapshots, one-goal frontier observation,
   and Nav2 motion results;
 - an independent ROS composition and validation launch;
 - ROS projections and a single v2 mission action transport node.
@@ -52,8 +52,8 @@ The launch starts the v2 mission recorder by default and exposes the existing
 odometry input recorder as an opt-in:
 
 - the v2 high-level recorder writes only bounded mission/frontier diagnostics
-  (board, events, rejection, selected/projected goals, adapter status,
-  recorder status, and manifest) to a unique MCAP directory under
+  (board, events, rejection, selected/projected goals, typed frontier results,
+  adapter status, recorder status, and manifest) to a unique MCAP directory under
   `/opt/muto_rs_ws/bags/muto_command_v2_<run>_<mission>`; and
 - `muto_odometry_bag` is available as an opt-in lower-level diagnostic
   (`record_odometry_bag:=true`) and does not poll motor angles by default

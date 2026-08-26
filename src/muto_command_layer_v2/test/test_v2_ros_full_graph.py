@@ -7,7 +7,6 @@ the natural-language -> planner -> registry shortlist -> visual confirmation
 -> executive completion chain intact.
 """
 
-import importlib
 import json
 import os
 import sys
@@ -18,15 +17,16 @@ import pytest
 
 pytest.importorskip("rclpy")
 
-# Prefer the installed generated ROSIDL package over the source namespace
-# package, matching the other ROS transport tests in this package.
 for _path in list(sys.path):
     if _path.rstrip("/").endswith("/src") or "/src/muto_command_layer_v2" in _path:
         sys.path.remove(_path)
-for _name in list(sys.modules):
-    if _name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."):
+for _name, _module in list(sys.modules.items()):
+    _module_file = getattr(_module, "__file__", "") or ""
+    if (
+        (_name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."))
+        and "/src/muto_command_layer_v2" in _module_file
+    ):
         del sys.modules[_name]
-importlib.invalidate_caches()
 
 import rclpy
 from geometry_msgs.msg import Point
@@ -215,5 +215,5 @@ def test_real_v2_composition_runs_natural_language_registry_confirmation_chain(t
         client_node.destroy_node()
         v2.destroy_node()
         authorities.destroy_node()
-        rclpy.shutdown()
         thread.join(timeout=3.0)
+        rclpy.shutdown()

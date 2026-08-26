@@ -21,8 +21,10 @@ natural-language request
 
 The standalone `frontier_exploration_ros2` package remains an exploration
 authority because v2 adapts its control service directly; it is not a command
-layer and must remain cold-idle until the executive requests a bounded
-observation session. Nav2 remains the final navigation and obstacle-avoidance
+layer and must remain cold-idle until the executive requests one
+explorer-owned frontier step. The explorer publishes a typed result on
+`/explore/frontier_goal_result` and returns cold-idle before Commander chooses
+the next tool. Nav2 remains the final navigation and obstacle-avoidance
 authority.
 
 For a supervised robot composition use:
@@ -49,7 +51,7 @@ and point-cloud recording is opt-in through the dedicated diagnostic bags.
 The commander has exactly two skills:
 
 - `search_for_object`: use registry lookup, revision-scoped candidate
-  confirmation, bounded observation/rotation, and exploration as needed;
+  confirmation, one-goal observation/rotation steps, and exploration as needed;
 - `approach_confirmed_object`: approach exactly one candidate confirmed for the
   current registry revision.
 
@@ -95,9 +97,10 @@ recovery, dynamic obstacle avoidance, and final success/failure.
 Malformed planner output, rejected preconditions, stale evidence, and ordinary
 tool failures become board-visible nonfatal evidence for the next decision.
 Cancellation, safety/lifecycle corruption, infrastructure failure, and the
-scenario's terminal policy may end a mission. A frontier start/completion
-event is not navigation evidence by itself; inspect the frontier adapter,
-`/navigate_to_pose`, motion state, and the mission bag.
+scenario's terminal policy may end a mission. A legacy frontier
+start/completion event is not the v2 completion authority; inspect the typed
+frontier result, frontier adapter, `/navigate_to_pose`, motion state, and the
+mission bag.
 
 ## Verification checklist
 

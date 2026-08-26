@@ -46,6 +46,7 @@ TEST(Nav2TopicProfile, KeepsRecorderAndNavigationEvidence)
   EXPECT_TRUE(contains(topics, "/cmd_vel"));
   EXPECT_TRUE(contains(topics, "/navigate_to_pose/_action/status"));
   EXPECT_TRUE(contains(topics, "/explore/selected_frontier"));
+  EXPECT_TRUE(contains(topics, "/explore/frontier_goal_result"));
   EXPECT_TRUE(contains(topics, "/frontier_goal_adapter/original_goal"));
   EXPECT_TRUE(contains(topics, "/frontier_goal_adapter/projected_goal"));
   EXPECT_TRUE(contains(topics, "/frontier_goal_adapter/status"));

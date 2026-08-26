@@ -1,17 +1,19 @@
+import sys
+
 import pytest
 
 pytest.importorskip("rclpy")
 
-import importlib
-import sys
-
 for _path in list(sys.path):
     if _path.rstrip("/").endswith("/src") or "/src/muto_command_layer_v2" in _path:
         sys.path.remove(_path)
-for _name in list(sys.modules):
-    if _name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."):
+for _name, _module in list(sys.modules.items()):
+    _module_file = getattr(_module, "__file__", "") or ""
+    if (
+        (_name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."))
+        and "/src/muto_command_layer_v2" in _module_file
+    ):
         del sys.modules[_name]
-importlib.invalidate_caches()
 
 from muto_command_layer_v2.high_level_recorder_node import HIGH_LEVEL_TOPICS
 
@@ -29,6 +31,7 @@ def test_recorder_allowlist_contains_only_bounded_high_level_topics():
         "/frontier_goal_adapter/original_goal",
         "/frontier_goal_adapter/projected_goal",
         "/frontier_goal_adapter/status",
+        "/explore/frontier_goal_result",
     }.issubset(topics)
     assert all(
         sensor not in topic

@@ -8,16 +8,19 @@ import pytest
 
 pytest.importorskip("rclpy")
 
-# launch_testing can preload the source namespace package.  Use the installed
-# generated interfaces for this graph test, just like test_ros_transport.py.
 for _path in list(sys.path):
     if _path.rstrip("/").endswith("/src") or "/src/muto_command_layer_v2" in _path:
         sys.path.remove(_path)
-for _name in list(sys.modules):
-    if _name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."):
+for _name, _module in list(sys.modules.items()):
+    _module_file = getattr(_module, "__file__", "") or ""
+    if (
+        (_name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."))
+        and "/src/muto_command_layer_v2" in _module_file
+    ):
         del sys.modules[_name]
 
 import rclpy
+from frontier_exploration_ros2.msg import FrontierGoalResult
 from frontier_exploration_ros2.srv import ControlExploration
 from geometry_msgs.msg import Point
 from nav2_msgs.action import NavigateToPose, Spin
@@ -43,8 +46,12 @@ class _AuthorityServer(Node):
         self._navigate = ActionServer(self, NavigateToPose, "/v2/test_navigate", self._navigate_cb)
         self._spin = ActionServer(self, Spin, "/v2/test_spin", self._spin_cb)
         self._frontier_actions = []
+        self._frontier_stop_after_goal = []
         self._registry_queries = []
         self.create_service(ControlExploration, "/v2/test_frontier", self._frontier_cb)
+        self._frontier_result_pub = self.create_publisher(
+            FrontierGoalResult, "/v2/test_frontier_result", 10
+        )
 
     def _query(self, request, response):
         self._registry_queries.append((request.name, request.label))
@@ -72,14 +79,26 @@ class _AuthorityServer(Node):
 
     def _frontier_cb(self, request, response):
         self._frontier_actions.append(int(request.action))
+        self._frontier_stop_after_goal.append(bool(request.stop_after_frontier_goal))
         response.accepted = True
         response.scheduled = False
+        response.session_id = 1
         response.state = (
             ControlExploration.Request.STATE_RUNNING
             if request.action == ControlExploration.Request.ACTION_START
             else ControlExploration.Request.STATE_IDLE
         )
         response.message = "test frontier control accepted"
+        if request.action == ControlExploration.Request.ACTION_START:
+            result = FrontierGoalResult()
+            result.session_id = 1
+            result.event_sequence = 1
+            result.dispatch_id = 7
+            result.goal_kind = "frontier"
+            result.outcome = FrontierGoalResult.OUTCOME_SUCCEEDED
+            result.reason_code = "frontier_goal_succeeded"
+            result.detail = "test frontier goal succeeded"
+            self._frontier_result_pub.publish(result)
         return response
 
 
@@ -110,9 +129,9 @@ def test_real_ros_service_and_nav2_action_adapters_round_trip():
     frontier = RosFrontierAuthority(
         client_node,
         control_service="/v2/test_frontier",
-        completion_topic="/v2/test_completion",
+        result_topic="/v2/test_frontier_result",
         service_timeout_s=1.0,
-        observe_duration_s=0.05,
+        safety_watchdog_s=1.0,
     )
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(server)
@@ -139,14 +158,12 @@ def test_real_ros_service_and_nav2_action_adapters_round_trip():
         assert navigated.success
         observed = frontier.observe(board)
         assert observed.success
-        assert observed.reason_code == "frontier_cycle_completed"
-        assert server._frontier_actions == [
-            ControlExploration.Request.ACTION_START,
-            ControlExploration.Request.ACTION_STOP,
-        ]
+        assert observed.reason_code == "frontier_goal_succeeded"
+        assert server._frontier_actions == [ControlExploration.Request.ACTION_START]
+        assert server._frontier_stop_after_goal == [True]
     finally:
         executor.shutdown(timeout_sec=2.0)
         client_node.destroy_node()
         server.destroy_node()
-        rclpy.shutdown()
         thread.join(timeout=2.0)
+        rclpy.shutdown()

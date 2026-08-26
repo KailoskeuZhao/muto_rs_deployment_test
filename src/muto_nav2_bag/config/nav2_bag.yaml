@@ -70,7 +70,7 @@ nav2_bag_recorder:
 
       # Frontier/object-navigation targets and action state.
       - /explore/selected_frontier
-      - /explore/exploration_complete
+      - /explore/frontier_goal_result
       - /explore/visibility_target_pose
       - /frontier_goal_adapter/original_goal
       - /frontier_goal_adapter/projected_goal

@@ -237,8 +237,8 @@ def test_frontier_goal_stays_stable_while_nav2_is_driving():
     assert parameters['goal_preemption_complete_if_within_m'] == 0.25
     assert parameters['frontier_suppression_enabled'] is True
     assert parameters['frontier_suppression_attempt_threshold'] == 1
-    assert parameters['frontier_suppression_no_progress_timeout_s'] < 10.0
-    assert parameters['frontier_suppression_startup_grace_period_s'] == 0.0
+    assert parameters['frontier_suppression_no_progress_timeout_s'] == 15.0
+    assert parameters['frontier_suppression_startup_grace_period_s'] == 5.0
     assert parameters['post_goal_settle_enabled'] is False
     assert parameters['frontier_suppression_base_size_m'] == 0.60
     assert parameters['frontier_suppression_timeout_s'] == 90.0
@@ -266,6 +266,8 @@ def test_frontier_navigation_uses_the_known_free_goal_adapter():
     assert explorer['frontier_suppression_persist_across_sessions'] is True
     assert explorer['frontier_candidate_partition_size_m'] > 0.0
     assert explorer['weight_gain_ws'] == 0.0
+    assert explorer['completion_event_enabled'] is False
+    assert explorer['frontier_goal_result_topic'] == '/explore/frontier_goal_result'
 
     standalone_launch = (
         PACKAGE_ROOT / 'launch' / 'frontier_exploration_launch.py'

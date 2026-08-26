@@ -1,6 +1,5 @@
 """ROS Humble transport projection tests (no running graph required)."""
 
-import importlib
 import sys
 import threading
 import time
@@ -9,25 +8,25 @@ import pytest
 
 pytest.importorskip("rclpy")
 
+# launch_testing may prepend the source workspace while collecting this file.
+# Remove only those path entries before importing the installed ROSIDL package;
+# never reset ``sys.modules`` because that invalidates live type-support
+# capsules for tests collected later in the same process.
+for _path in list(sys.path):
+    if _path.rstrip("/").endswith("/src") or "/src/muto_command_layer_v2" in _path:
+        sys.path.remove(_path)
+for _name, _module in list(sys.modules.items()):
+    _module_file = getattr(_module, "__file__", "") or ""
+    if (
+        (_name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."))
+        and "/src/muto_command_layer_v2" in _module_file
+    ):
+        del sys.modules[_name]
+
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-
-# pytest adds the source test directory to sys.path.  ROSIDL's generated
-# action package is installed separately, so prefer that package for this
-# transport test instead of the source-tree interface directory.
-for _path in list(sys.path):
-    if _path.rstrip("/").endswith("/src") or "/src/muto_command_layer_v2" in _path:
-        sys.path.remove(_path)
-
-# launch_testing/pytest plugins can import the source-tree namespace package
-# before this module is collected.  Clear that cached package so the imports
-# below resolve the ROSIDL-generated package installed by CMake instead.
-for _name in list(sys.modules):
-    if _name == "muto_command_layer_v2" or _name.startswith("muto_command_layer_v2."):
-        del sys.modules[_name]
-importlib.invalidate_caches()
 
 from muto_command_layer_v2.action import Mission
 from muto_command_layer_v2.contracts import (
@@ -233,8 +232,8 @@ def test_real_v2_mission_action_runs_natural_language_to_terminal_result():
         executor.shutdown(timeout_sec=2.0)
         client_node.destroy_node()
         executive_node.destroy_node()
-        rclpy.shutdown()
         thread.join(timeout=2.0)
+        rclpy.shutdown()
 
 
 def test_real_v2_mission_action_cancel_stops_at_tool_boundary():
@@ -284,5 +283,5 @@ def test_real_v2_mission_action_cancel_stops_at_tool_boundary():
         executor.shutdown(timeout_sec=2.0)
         client_node.destroy_node()
         executive_node.destroy_node()
-        rclpy.shutdown()
         thread.join(timeout=2.0)
+        rclpy.shutdown()

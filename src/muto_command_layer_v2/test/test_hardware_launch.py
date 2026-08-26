@@ -39,8 +39,9 @@ def test_hardware_smoke_uses_direct_v2_authorities_and_not_retired_composition()
     assert '"launch_nav2_bag", default_value="false"' in text
     assert '"record_odometry_bag", default_value="false"' in text
     assert '"autostart": "false"' in text
-    assert '"frontier_completion_topic",' in text
-    assert "/explore/exploration_complete" in text
+    assert '"frontier_goal_result_topic",' in text
+    assert '"frontier_safety_watchdog_s",' in text
+    assert "/explore/frontier_goal_result" in text
     assert '"bag_storage_id", default_value="mcap"' in text
     assert '"commander_model": LaunchConfiguration("vlm_model")' in text
 
@@ -62,9 +63,9 @@ def test_recorder_defaults_are_unique_persistent_and_overrideable():
     )
 
 
-def test_frontier_completion_default_matches_production_explorer_topic():
+def test_frontier_result_default_matches_production_explorer_topic():
     for path in (COMPOSITION, SYSTEM_NODE, AUTHORITIES, COMMAND_LAUNCH):
-        assert "/explore/exploration_complete" in path.read_text(encoding="utf-8")
+        assert "/explore/frontier_goal_result" in path.read_text(encoding="utf-8")
 
 
 def test_nodes_do_not_redeclare_ros_owned_use_sim_time_parameter():
@@ -72,3 +73,12 @@ def test_nodes_do_not_redeclare_ros_owned_use_sim_time_parameter():
         text = path.read_text(encoding="utf-8")
         assert 'declare_parameter("use_sim_time"' not in text
         assert "declare_parameter('use_sim_time'" not in text
+
+
+def test_system_node_treats_supervised_shutdown_as_a_clean_lifecycle_exit():
+    text = SYSTEM_NODE.read_text(encoding="utf-8")
+
+    assert "ExternalShutdownException" in text
+    assert "except (KeyboardInterrupt, ExternalShutdownException)" in text
+    assert "executor.shutdown(timeout_sec=2.0)" in text
+    assert "except (Exception, KeyboardInterrupt)" in text

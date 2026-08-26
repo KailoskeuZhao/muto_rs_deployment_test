@@ -2,7 +2,7 @@
 """Launchable v2 composition for controlled Humble validation."""
 
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 
 from muto_command_layer_v2.composition import create_v2_node
 
@@ -24,9 +24,9 @@ def main(args=None) -> None:
     parameter_node.declare_parameter("registry_query_service", "/sam2/get_stored_objects")
     parameter_node.declare_parameter("frontier_control_service", "/control_exploration")
     parameter_node.declare_parameter(
-        "frontier_completion_topic", "/explore/exploration_complete"
+        "frontier_goal_result_topic", "/explore/frontier_goal_result"
     )
-    parameter_node.declare_parameter("frontier_observe_duration_s", 20.0)
+    parameter_node.declare_parameter("frontier_safety_watchdog_s", 180.0)
     parameter_node.declare_parameter("navigate_action", "/navigate_to_pose")
     parameter_node.declare_parameter("spin_action", "/spin")
     parameter_node.declare_parameter("scenario_completion_policy", "report_confirmed")
@@ -42,7 +42,7 @@ def main(args=None) -> None:
         for name in (
             "mission_action", "vlm_action", "vlm_model", "vlm_timeout_s",
             "registry_query_service", "frontier_control_service",
-            "frontier_completion_topic", "frontier_observe_duration_s",
+            "frontier_goal_result_topic", "frontier_safety_watchdog_s",
             "navigate_action", "spin_action",
             "scenario_completion_policy", "camera_topic", "map_stale_after_s",
             "tf_stale_after_s",
@@ -61,8 +61,8 @@ def main(args=None) -> None:
         vlm_timeout_s=float(values["vlm_timeout_s"]),
         registry_query_service=values["registry_query_service"],
         frontier_control_service=values["frontier_control_service"],
-        frontier_completion_topic=values["frontier_completion_topic"],
-        frontier_observe_duration_s=float(values["frontier_observe_duration_s"]),
+        frontier_goal_result_topic=values["frontier_goal_result_topic"],
+        frontier_safety_watchdog_s=float(values["frontier_safety_watchdog_s"]),
         nav_action=values["navigate_action"],
         spin_action=values["spin_action"],
         use_sim_time=bool(values["use_sim_time"]),
@@ -79,11 +79,34 @@ def main(args=None) -> None:
     executor.add_node(node)
     try:
         executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # ROS 2 may deliver SIGINT either as an executor exception or as a
+        # context shutdown while launch is tearing the graph down.  Both are
+        # normal lifecycle exits, not node failures.
+        pass
     finally:
-        executor.remove_node(node)
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        # Keep teardown best-effort: a launch supervisor can invalidate the
+        # context before it reaches this finally block.  In that case calling
+        # into an already-invalid subscription/guard condition only creates a
+        # second traceback and turns a clean stop into a reported process
+        # failure.
+        try:
+            executor.shutdown(timeout_sec=2.0)
+        except (Exception, KeyboardInterrupt):
+            pass
+        try:
+            executor.remove_node(node)
+        except (Exception, KeyboardInterrupt):
+            pass
+        try:
+            node.destroy_node()
+        except (Exception, KeyboardInterrupt):
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except (Exception, KeyboardInterrupt):
+            pass
 
 
 if __name__ == "__main__":

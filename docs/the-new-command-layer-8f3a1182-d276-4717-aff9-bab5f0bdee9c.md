@@ -256,22 +256,28 @@ behavior, update both the implementation and the relevant documentation.
 
 ### ADR-009: Exploration Is Not Interrupted By Candidate Discovery
 
-`search_for_object` runs as a bounded deterministic search skill. New
-registry identities and newly shortlisted target candidates are recorded as
-evidence during the command, but they do not stop the command early. The
-executive returns that evidence to the board when the command ends.
+`search_for_object` runs as a deterministic search skill. Each `observe` tool
+call requests one explorer-owned frontier goal and returns a typed semantic
+result to Commander. New registry identities and newly shortlisted target
+candidates are recorded as evidence during the command, but they do not stop
+that frontier step early. The executive returns the evidence to the board
+when the step ends and Commander chooses what happens next.
 
 Allowed early-stop reasons for `search_for_object`:
 
 - `frontier_no_reachable_goal`;
-- `no_progress`;
-- `navigation_fault`;
-- `safety_or_lifecycle_fault`;
-- `cancel_requested`;
-- `max_duration_elapsed`.
+- `frontier_goals_blocked`;
+- `frontier_goal_succeeded`;
+- `frontier_exhausted`;
+- `frontier_no_progress`;
+- `frontier_goal_failed`;
+- `frontier_goal_canceled`;
+- `frontier_safety_watchdog_elapsed` (emergency only).
 
-This prevents candidate churn from repeatedly cutting motion short. Candidate
-confirmation happens after the executive regains control and updates the board.
+The explorer owns single-step goal shutdown, so Commander does not race a
+second stop request against Nav2 result delivery. Candidate confirmation
+happens after the executive regains control and updates the board. There is no
+mission-wide time budget; the watchdog is only a local safety deadman.
 
 ### ADR-010: Skills Use One Generic Invocation Contract
 
@@ -1026,9 +1032,9 @@ Implementation status (2026-08-22):
   invalidate confirmation or interrupt bounded exploration. A same-revision
   lookup preserves prior rejection/confirmation evidence; only a genuinely
   new shortlist revision resets it.
-- The v2 composition now adapts bounded frontier observation through the
-  independent `frontier_exploration_ros2` control service and completion event,
-  and the high-level rosbag2 writer opens per-mission output, writes a typed
+- The v2 composition now adapts one explorer-owned frontier step through the
+  independent `frontier_exploration_ros2` control service and typed
+  `/explore/frontier_goal_result` event, and the high-level rosbag2 writer opens per-mission output, writes a typed
   manifest/status record, and records only the bounded board/event/rejection/
   frontier-adapter allowlist. The writer defaults to unique persistent MCAP
   output under `/opt/muto_rs_ws/bags` and accepts explicit URI/run-id

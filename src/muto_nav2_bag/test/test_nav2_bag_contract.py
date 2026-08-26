@@ -35,6 +35,7 @@ def test_topic_profile_is_explicit_unique_and_navigation_scoped():
         '/muto/motion_command_state',
         '/navigate_to_pose/_action/status',
         '/explore/selected_frontier',
+        '/explore/frontier_goal_result',
         '/muto/mission_board',
         '/muto/mission_event',
         '/muto/mission_rejection',

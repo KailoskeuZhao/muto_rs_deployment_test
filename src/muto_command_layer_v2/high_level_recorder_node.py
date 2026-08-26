@@ -22,6 +22,7 @@ from muto_command_layer_v2.msg import (
     MissionRejection,
     RecorderStatus,
 )
+from frontier_exploration_ros2.msg import FrontierGoalResult
 from std_msgs.msg import String
 
 
@@ -62,6 +63,11 @@ HIGH_LEVEL_TOPICS = (
         "/frontier_goal_adapter/status",
         "std_msgs/msg/String",
         String,
+    ),
+    (
+        "/explore/frontier_goal_result",
+        "frontier_exploration_ros2/msg/FrontierGoalResult",
+        FrontierGoalResult,
     ),
 )
 

@@ -15,8 +15,12 @@ frontier_explorer:
     selected_frontier_topic: /explore/selected_frontier
     optimized_map_topic: /explore/optimized_map
     frontier_marker_scale: 0.15
-    completion_event_enabled: true
+    # v2 consumes one typed result per commander-owned frontier step. Keep the
+    # legacy continuous-exploration completion event disabled in this profile
+    # so two terminal contracts cannot race.
+    completion_event_enabled: false
     completion_event_topic: /explore/exploration_complete
+    frontier_goal_result_topic: /explore/frontier_goal_result
 
     # SLAM Toolbox publishes /map as reliable, transient-local data. Nav2
     # costmaps are consumed as reliable, volatile streams by the explorer.
@@ -98,21 +102,17 @@ frontier_explorer:
     # explorer. Preserve failed endpoints across those bounded sessions so a
     # rejected goal is not immediately selected again by the next primitive.
     frontier_suppression_persist_across_sessions: true
-    # Bounded command-layer frontier steps are normally 10-15 s. Suppress a
-    # candidate after one confirmed planning/control/no-progress failure so a
-    # single brittle impasse cannot consume the entire bounded step.
+    # Suppress a candidate after one confirmed planning/control/no-progress
+    # failure so a single brittle impasse cannot consume the next step.
     frontier_suppression_attempt_threshold: 1
     # Suppress roughly one robot-width around the bad endpoint without
     # blacklisting a different passage or frontier elsewhere in the room.
     frontier_suppression_base_size_m: 0.60
     frontier_suppression_expansion_size_m: 0.20
     frontier_suppression_timeout_s: 90.0
-    frontier_suppression_no_progress_timeout_s: 8.0
+    frontier_suppression_no_progress_timeout_s: 15.0
     frontier_suppression_progress_epsilon_m: 0.10
-    # The former 15 s grace was longer than a normal bounded frontier step and
-    # reset whenever the command layer restarted exploration. That effectively
-    # disabled suppression for commander-owned exploration.
-    frontier_suppression_startup_grace_period_s: 0.0
+    frontier_suppression_startup_grace_period_s: 5.0
     frontier_suppression_max_attempt_records: 256
     frontier_suppression_max_regions: 64
     all_frontiers_suppressed_behavior: stay

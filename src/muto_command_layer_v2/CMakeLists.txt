@@ -88,6 +88,14 @@ install(DIRECTORY config
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+  # Keep the test interpreter aligned with the ROS environment used to
+  # configure this workspace.  Hard-coding a Humble/Python 3.10 path here
+  # makes tests silently skip on another valid ROS installation (and can hide
+  # transport regressions); the active prefix already contributes its own
+  # generated interfaces and Python runtime through PYTHONPATH.
+  set(V2_TEST_PYTHONPATH
+    "${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}:$ENV{PYTHONPATH}"
+  )
   ament_add_pytest_test(test_v2_contracts
     test/test_contracts.py
     TIMEOUT 30
@@ -118,22 +126,22 @@ if(BUILD_TESTING)
   )
   ament_add_pytest_test(test_v2_ros_authorities_transport
     test/test_ros_authorities_transport.py
-    ENV "PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}:${CMAKE_INSTALL_PREFIX}/../sam2_object_registry/local/lib/python3.10/dist-packages:${CMAKE_INSTALL_PREFIX}/../muto_vlm_socket/local/lib/python3.10/dist-packages:${CMAKE_INSTALL_PREFIX}/../frontier_exploration_ros2/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ENV "PYTHONPATH=${V2_TEST_PYTHONPATH}"
     TIMEOUT 45
   )
   ament_add_pytest_test(test_v2_recorder
     test/test_recorder.py
-    ENV "PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ENV "PYTHONPATH=${V2_TEST_PYTHONPATH}"
     TIMEOUT 30
   )
   ament_add_pytest_test(test_v2_ros_transport
     test/test_ros_transport.py
-    ENV "PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ENV "PYTHONPATH=${V2_TEST_PYTHONPATH}"
     TIMEOUT 30
   )
   ament_add_pytest_test(test_v2_ros_full_graph
     test/test_v2_ros_full_graph.py
-    ENV "PYTHONPATH=${CMAKE_INSTALL_PREFIX}/${PYTHON_INSTALL_DIR}:${CMAKE_INSTALL_PREFIX}/../sam2_object_registry/local/lib/python3.10/dist-packages:${CMAKE_INSTALL_PREFIX}/../muto_vlm_socket/local/lib/python3.10/dist-packages:${CMAKE_INSTALL_PREFIX}/../frontier_exploration_ros2/local/lib/python3.10/dist-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ENV "PYTHONPATH=${V2_TEST_PYTHONPATH}"
     TIMEOUT 60
   )
   ament_add_pytest_test(test_v2_hardware_launch

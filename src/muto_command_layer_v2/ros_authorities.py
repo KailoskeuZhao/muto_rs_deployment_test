@@ -449,11 +449,11 @@ class RosFrontierAuthority:
     """Adapt the independent frontier explorer control service to ``observe``.
 
     The frontier explorer is intentionally not treated as a v2 lifecycle or
-    command-layer implementation.  V2 starts one bounded frontier session,
-    waits for either the explorer's transient completion event or the local
-    observation window, and then requests a cooperative stop.  The service
-    response and completion event are transport evidence; MissionExecutive
-    remains the only owner of mission state.
+    command-layer implementation. V2 starts an explorer-owned single-step
+    session and waits for its typed terminal result. The explorer returns to
+    cold idle before another frontier goal can be dispatched; Commander then
+    owns the next decision. A long safety watchdog is retained only as a
+    deadman for a broken transport or lifecycle.
     """
 
     def __init__(
@@ -461,51 +461,62 @@ class RosFrontierAuthority:
         node,
         *,
         control_service: str = "/control_exploration",
-        completion_topic: str = "/explore/exploration_complete",
+        result_topic: str = "/explore/frontier_goal_result",
         service_timeout_s: float = 5.0,
-        observe_duration_s: float = 20.0,
+        safety_watchdog_s: float = 180.0,
     ) -> None:
-        if service_timeout_s <= 0.0 or observe_duration_s <= 0.0:
-            raise ValueError("frontier timeouts and observation duration must be positive")
+        if service_timeout_s <= 0.0 or safety_watchdog_s <= 0.0:
+            raise ValueError("frontier service timeout and safety watchdog must be positive")
         try:
             from frontier_exploration_ros2.srv import ControlExploration
+            from frontier_exploration_ros2.msg import FrontierGoalResult
             from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-            from std_msgs.msg import Empty
         except ImportError as exc:  # pragma: no cover - non-ROS host
             raise RuntimeError("frontier explorer ROS interfaces are unavailable") from exc
 
         self._node = node
         self._service_type = ControlExploration
+        self._result_type = FrontierGoalResult
         self._service_timeout_s = float(service_timeout_s)
-        self._observe_duration_s = float(observe_duration_s)
+        self._safety_watchdog_s = float(safety_watchdog_s)
         self._client = node.create_client(ControlExploration, control_service)
-        self._completion_generation = 0
-        self._completion_lock = threading.Lock()
+        self._result_condition = threading.Condition()
+        self._result_events = []
+        self._result_generation = 0
         self._cancel_requested = threading.Event()
-        completion_qos = QoSProfile(
-            depth=1,
+        result_qos = QoSProfile(
+            depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            durability=DurabilityPolicy.VOLATILE,
         )
-        self._completion_subscription = node.create_subscription(
-            Empty, completion_topic, self._completion_callback, completion_qos
+        self._result_subscription = node.create_subscription(
+            FrontierGoalResult, result_topic, self._result_callback, result_qos
         )
 
-    def _completion_callback(self, _message) -> None:
-        with self._completion_lock:
-            self._completion_generation += 1
+    def _result_callback(self, message) -> None:
+        with self._result_condition:
+            self._result_generation += 1
+            self._result_events.append((self._result_generation, message))
+            # Keep the queue bounded; session/sequence filtering makes older
+            # entries harmless while preventing a long-lived node from growing
+            # without limit when no mission is active.
+            del self._result_events[:-32]
+            self._result_condition.notify_all()
 
-    def _generation(self) -> int:
-        with self._completion_lock:
-            return self._completion_generation
-
-    def _request(self, action: int, *, quit_after_stop: bool = False):
+    def _request(
+        self,
+        action: int,
+        *,
+        quit_after_stop: bool = False,
+        stop_after_frontier_goal: bool = False,
+    ):
         if not self._client.wait_for_service(timeout_sec=self._service_timeout_s):
             return None
         request = self._service_type.Request()
         request.action = action
         request.delay_seconds = 0.0
         request.quit_after_stop = bool(quit_after_stop)
+        request.stop_after_frontier_goal = bool(stop_after_frontier_goal)
         return _wait_future(
             self._client.call_async(request),
             self._service_timeout_s,
@@ -513,12 +524,17 @@ class RosFrontierAuthority:
         )
 
     def observe(self, _board: MissionBoard) -> MotionResult:
-        """Run one bounded frontier cycle and stop it cooperatively."""
+        """Run one explorer-owned frontier goal and return its typed result."""
 
         self._cancel_requested.clear()
+        with self._result_condition:
+            result_generation = self._result_generation
 
         try:
-            start = self._request(self._service_type.Request.ACTION_START)
+            start = self._request(
+                self._service_type.Request.ACTION_START,
+                stop_after_frontier_goal=True,
+            )
         except RuntimeError as exc:
             return MotionResult(False, reason_code="frontier_start_failed", detail=str(exc))
         if start is None:
@@ -530,12 +546,8 @@ class RosFrontierAuthority:
                 detail=str(getattr(start, "message", "")),
             )
 
-        # Capture the baseline after the start response.  This prevents a
-        # transient-local completion event from an earlier session from being
-        # mistaken for completion of this session.
-        baseline = self._generation()
-        deadline = time.monotonic() + self._observe_duration_s
-        exhausted = False
+        session_id = int(getattr(start, "session_id", 0))
+        deadline = time.monotonic() + self._safety_watchdog_s
         while time.monotonic() < deadline:
             if self._cancel_requested.is_set():
                 try:
@@ -543,38 +555,54 @@ class RosFrontierAuthority:
                 except RuntimeError:
                     pass
                 return MotionResult(False, reason_code="motion_canceled")
-            if self._generation() > baseline:
-                exhausted = True
-                break
-            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            with self._result_condition:
+                matching = [
+                    message
+                    for generation, message in self._result_events
+                    if generation > result_generation
+                    if (session_id == 0 or int(getattr(message, "session_id", 0)) == session_id)
+                ]
+                if matching:
+                    result = matching[0]
+                else:
+                    result = None
+                    self._result_condition.wait(
+                        timeout=min(0.1, max(0.0, deadline - time.monotonic()))
+                    )
+            if result is None:
+                continue
+
+            outcome = int(getattr(result, "outcome", 0))
+            reason_code = str(getattr(result, "reason_code", "frontier_goal_failed"))
+            detail = str(getattr(result, "detail", ""))
+            if outcome == self._result_type.OUTCOME_SUCCEEDED:
+                return MotionResult(
+                    True,
+                    reason_code=reason_code or "frontier_goal_succeeded",
+                    detail=detail,
+                    progress_delta=1.0,
+                )
+            if outcome == self._result_type.OUTCOME_EXHAUSTED:
+                return MotionResult(
+                    True,
+                    reason_code=reason_code or "frontier_exhausted",
+                    detail=detail,
+                    progress_delta=0.0,
+                )
+            if outcome == self._result_type.OUTCOME_CANCELED:
+                return MotionResult(False, reason_code="motion_canceled", detail=detail)
+            return MotionResult(False, reason_code=reason_code, detail=detail)
 
         try:
             stop = self._request(self._service_type.Request.ACTION_STOP)
         except RuntimeError as exc:
-            return MotionResult(
-                False,
-                reason_code="frontier_stop_failed",
-                detail=str(exc),
-            )
+            return MotionResult(False, reason_code="frontier_stop_failed", detail=str(exc))
         if stop is None:
             return MotionResult(False, reason_code="frontier_control_unavailable")
-        if not exhausted and not bool(getattr(stop, "accepted", False)):
-            return MotionResult(
-                False,
-                reason_code="frontier_stop_rejected",
-                detail=str(getattr(stop, "message", "")),
-            )
         return MotionResult(
-            True,
-            reason_code="frontier_exhausted" if exhausted else "frontier_cycle_completed",
-            detail=(
-                "frontier completion event received"
-                if exhausted
-                else "bounded frontier observation stopped cooperatively"
-            ),
-            # Search progress is measured in completed bounded frontier cycles
-            # in this adapter; geometric progress remains authority-specific.
-            progress_delta=1.0,
+            False,
+            reason_code="frontier_safety_watchdog_elapsed",
+            detail="Frontier explorer did not publish a terminal result before the safety watchdog",
         )
 
     def cancel_active(self) -> None:

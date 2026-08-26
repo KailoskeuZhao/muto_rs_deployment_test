@@ -52,7 +52,7 @@ inline std::vector<std::string> default_nav2_topics()
     // Selected exploration/object targets and their terminal state. Candidate
     // marker arrays and child-bag bookkeeping belong in the scoped mission bag.
     "/explore/selected_frontier",
-    "/explore/exploration_complete",
+    "/explore/frontier_goal_result",
     "/explore/visibility_target_pose",
     "/frontier_goal_adapter/original_goal",
     "/frontier_goal_adapter/projected_goal",

@@ -26,8 +26,8 @@ def create_v2_node(
     vlm_timeout_s: float = 30.0,
     registry_query_service: str = "/sam2/get_stored_objects",
     frontier_control_service: str = "/control_exploration",
-    frontier_completion_topic: str = "/explore/exploration_complete",
-    frontier_observe_duration_s: float = 20.0,
+    frontier_goal_result_topic: str = "/explore/frontier_goal_result",
+    frontier_safety_watchdog_s: float = 180.0,
     nav_action: str = "/navigate_to_pose",
     spin_action: str = "/spin",
     use_sim_time: bool = False,
@@ -44,9 +44,9 @@ def create_v2_node(
     """Construct the production-shaped v2 graph without legacy imports.
 
     The frontier explorer is adapted through its independent control service;
-    it is not imported from or wrapped by the legacy command layer. A bounded
-    observation cycle is stopped cooperatively and reports completion-event
-    evidence when the explorer exhausts its current frontier set.
+    it is not imported from or wrapped by the legacy command layer. Each
+    observation requests one explorer-owned frontier step and receives a
+    typed terminal result before Commander regains control.
     """
 
     node = MissionExecutiveNode(
@@ -89,9 +89,9 @@ def create_v2_node(
     frontier = RosFrontierAuthority(
         node,
         control_service=frontier_control_service,
-        completion_topic=frontier_completion_topic,
+        result_topic=frontier_goal_result_topic,
         service_timeout_s=min(vlm_timeout_s, 5.0),
-        observe_duration_s=frontier_observe_duration_s,
+        safety_watchdog_s=frontier_safety_watchdog_s,
     )
     reachability = RosMapReachability(
         node,

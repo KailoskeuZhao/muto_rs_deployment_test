@@ -26,8 +26,8 @@ def test_prompt_is_compact_board_json_and_explicitly_marks_visual_input():
     payload = json.loads(prompt.split("STATE_JSON=", 1)[1])
     assert payload["mission_id"] == "mission-1"
     assert payload["shortlisted_candidate_ids"] == ["chair_1", "chair_2"]
-    assert "search_progress is the count of completed bounded observation cycles" in prompt
-    assert "frontier_cycle_completed means only that one bounded cycle ended cooperatively" in prompt
+    assert "search_progress counts frontier goals that actually succeeded" in prompt
+    assert "frontier_goal_succeeded means only that one frontier goal made progress" in prompt
     assert "Only last_reason_code=frontier_exhausted" in prompt
 
 

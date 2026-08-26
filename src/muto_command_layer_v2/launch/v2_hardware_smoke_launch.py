@@ -157,10 +157,10 @@ def generate_launch_description():
             "frontier_control_service", default_value="/control_exploration"
         ),
         DeclareLaunchArgument(
-            "frontier_completion_topic",
-            default_value="/explore/exploration_complete",
+            "frontier_goal_result_topic",
+            default_value="/explore/frontier_goal_result",
         ),
-        DeclareLaunchArgument("frontier_observe_duration_s", default_value="20.0"),
+        DeclareLaunchArgument("frontier_safety_watchdog_s", default_value="180.0"),
         DeclareLaunchArgument("navigate_action", default_value="/navigate_to_pose"),
         DeclareLaunchArgument("spin_action", default_value="/spin"),
         DeclareLaunchArgument(
@@ -325,11 +325,11 @@ def generate_launch_description():
                 "frontier_control_service": LaunchConfiguration(
                     "frontier_control_service"
                 ),
-                "frontier_completion_topic": LaunchConfiguration(
-                    "frontier_completion_topic"
+                "frontier_goal_result_topic": LaunchConfiguration(
+                    "frontier_goal_result_topic"
                 ),
-                "frontier_observe_duration_s": LaunchConfiguration(
-                    "frontier_observe_duration_s"
+                "frontier_safety_watchdog_s": LaunchConfiguration(
+                    "frontier_safety_watchdog_s"
                 ),
                 "navigate_action": LaunchConfiguration("navigate_action"),
                 "spin_action": LaunchConfiguration("spin_action"),

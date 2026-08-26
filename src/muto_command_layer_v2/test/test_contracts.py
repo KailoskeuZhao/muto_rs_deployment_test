@@ -201,7 +201,7 @@ def test_search_exhaustion_completion_requires_authority_evidence():
         ToolName.OBSERVE,
         success=True,
         progress_delta=1.0,
-        reason_code="frontier_cycle_completed",
+        reason_code="frontier_goal_succeeded",
     )
     with pytest.raises(ContractError, match="explicit exhaustion evidence"):
         executive.complete(search_exhausted=True)

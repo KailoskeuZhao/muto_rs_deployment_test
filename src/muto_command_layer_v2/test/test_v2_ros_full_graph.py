@@ -106,6 +106,8 @@ class _FullGraphAuthorities(Node):
                     "confirmed": True,
                     "confidence": 0.91,
                     "reason_code": "stored_image_matches_request",
+                    "matched_attributes": ["purple", "chair"],
+                    "unmatched_attributes": [],
                 }],
             })
         else:

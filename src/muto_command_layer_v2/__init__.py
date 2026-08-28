@@ -13,6 +13,9 @@ from .contracts import (
     ReachabilityState,
     SkillName,
     ToolName,
+    confirmation_matches_request,
+    missing_request_match_terms,
+    request_match_terms,
 )
 from .executive import (
     DuplicateMissionError,
@@ -51,6 +54,9 @@ __all__ = [
     "SkillName",
     "TerminalMissionError",
     "ToolName",
+    "confirmation_matches_request",
+    "missing_request_match_terms",
+    "request_match_terms",
     "ActionRejection",
     "CancellationRequest",
     "NaturalLanguageAdapter",

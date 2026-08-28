@@ -108,6 +108,25 @@ candidate confirmation for the current registry revision. Unconfirmed or
 arbitrary reverse skill changes are invalid planner output and are replanned
 as board-visible failures.
 
+### Confirmation semantics
+
+`object_request` is a conjunction, not a class-only hint. The final candidate
+must satisfy the object class and every attribute stated by the user; for
+example, `blue chair` requires both `blue` and `chair`. Registry names and
+labels may only create the shortlist. They cannot establish color, material,
+size, or any other appearance attribute.
+
+Candidate inspection receives the unchanged mission `object_request`, the
+revision-scoped candidate IDs, and one stored image per candidate. Its typed
+decision contains `matched_attributes` and `unmatched_attributes` in addition
+to `confirmed`. The inspector must set `confirmed=true` only when every
+requested term is explicitly matched in the image and `unmatched_attributes`
+is empty; unknown, occluded, or contradictory attributes are a rejection.
+The executive repeats this gate before promoting `ConfirmedTarget`, so a
+generic candidate such as `chair` cannot satisfy a request for `blue chair`.
+Attribute evidence is carried in the board/event projections and the
+high-level mission bag.
+
 ### State, completion, and navigation
 
 - One current `MissionBoard` and one append-only `MissionEvent` stream are the
@@ -211,6 +230,10 @@ registry name/metadata lookup
 
 A registry shortlist is not a final object. Live camera evidence may motivate
 a registry check, but it does not directly create a final confirmed object.
+Confirmation is against the entire mission `object_request`, including all
+stated attributes. A `chair` label can be shortlisted for `blue chair`, but it
+cannot be promoted unless the stored image inspection explicitly matches both
+the class and the color.
 
 ### ADR-004: Search Is Intent From The Agent, Policy In Code
 
@@ -319,8 +342,10 @@ feedback strings.
 ### ADR-014: Evidence And Confirmation Are Distinct
 
 Model judgments are stored as evidence with source, timestamp, candidate ID,
-and confidence. Only an explicit confirmation result can promote a candidate
-to `ConfirmedTarget`.
+confidence, and matched/unmatched requested attributes. Only an explicit
+confirmation result whose matched attributes cover the complete
+`object_request` and whose unmatched list is empty can promote a candidate to
+`ConfirmedTarget`. Attribute uncertainty is a rejection, not a confirmation.
 
 ### ADR-015: Candidate Identity Is Revision-Scoped
 
@@ -673,8 +698,10 @@ distance reduction. Free-form model prose cannot establish progress.
 
 Candidate inspection receives the object request, candidate IDs, registry
 metadata, one stored image per candidate, image timestamps, and registry
-revision. The response contains typed per-candidate decisions; the executive
-validates IDs and revision before committing them.
+revision. The response contains typed per-candidate decisions with matched and
+unmatched requested attributes; `confirmed` means a complete request match,
+not merely a class match. The executive validates IDs, revision, and complete
+attribute evidence before committing a candidate.
 
 ### ADR-054: Interrupted Skills Restart From Canonical State
 
@@ -961,10 +988,13 @@ executive before dispatch.
 `Candidate`: a registry object returned by name/metadata lookup.
 
 `ConfirmedTarget`: exactly one candidate accepted by visual confirmation from
-the stored candidate evidence for the current registry revision.
+the stored candidate evidence for the current registry revision. The visual
+decision must match every normalized term in the mission `object_request` and
+report no unmatched or uncertain term.
 
 `Evidence`: a source-tagged observation or model judgment that is not yet
-canonical mission truth.
+canonical mission truth. Candidate evidence includes the explicit matched and
+unmatched request terms used by the confirmation gate.
 
 `CompletionPolicy`: one of the fixed v2 policies `report_confirmed`,
 `approach_confirmed`, or `search_until_exhausted`.
@@ -1095,13 +1125,13 @@ Cutover verification (2026-08-26):
 
 - `colcon list` in the Humble container reports `muto_command_layer_v2` and no
   deleted v1 command or recorder packages.
-- The v2 and Nav2 contract suites pass on the host (`51 passed, 5 skipped`);
+- The v2 and Nav2 contract suites pass on the host (`55 passed, 5 skipped`);
   Python syntax compilation passes for the v2 and affected launch modules.
 - No frontier backend, action, launch, or package dependency remains in the
   graph. POI-grid selection is implemented in the v2 authority and Nav2 owns
   navigation and obstacle avoidance.
 
-Constitutional alignment review (2026-08-26):
+Constitutional alignment review (2026-08-28):
 
 - Search is now restricted to registry lookup, candidate inspection, POI
   observation, and explicit rotation. It cannot select a raw navigation point;
@@ -1111,10 +1141,15 @@ Constitutional alignment review (2026-08-26):
   current registry revision, map frame, and candidate position. Registry
   response ordering cannot create a semantic revision change, and failed
   invalid calls are recorded as nonfatal board evidence.
-- Source-tree v2 tests pass (`51 passed, 5 skipped`); the rebuilt Humble
-  installed-interface run passes (`60 passed`, with only pytest cache-write
-  warnings). This is a source/install gate, not a claim of connected
-  Humble/aarch64 hardware readiness.
+- Confirmation now treats the full mission `object_request` as a conjunction:
+  the registry can shortlist a `chair` for `blue chair`, but only the
+  revision-scoped stored-image inspection can promote it, and only when typed
+  `matched_attributes` cover both `blue` and `chair` with an empty unmatched
+  list. The backend and executive enforce this independently; the board,
+  events, and high-level bag retain those attribute lists for audit.
+- Source-tree v2 tests pass (`56 passed, 5 skipped`); a CMake-generated Humble
+  interface run passes (`64 passed, 1 skipped`). This is a source/install gate,
+  not a claim of connected Humble/aarch64 hardware readiness.
 - Humble CMake/CTest configuration and build pass; all 13 v2 CTest targets
   pass in the isolated container, with the optional full-graph case skipped
   there when external VLM/registry interfaces are absent and executed in the

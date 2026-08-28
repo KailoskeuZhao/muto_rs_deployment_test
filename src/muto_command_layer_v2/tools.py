@@ -141,6 +141,14 @@ class ToolDispatcher:
             raise ContractError(
                 "{} is not allowed by {}".format(call.tool.value, board.active_skill.value)
             )
+        if (
+            call.tool in {ToolName.QUERY_REGISTRY, ToolName.INSPECT_CANDIDATES}
+            and call.object_request
+            and call.object_request.strip() != board.object_request.strip()
+        ):
+            raise ContractError(
+                "registry tools must use the mission object_request unchanged"
+            )
         if call.tool == ToolName.GO_TO_POINT:
             if board.active_skill == SkillName.APPROACH_CONFIRMED_OBJECT:
                 if not board.confirmed_target_id:

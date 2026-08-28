@@ -44,7 +44,10 @@ class RevisionBackend:
             candidate_ids=call.candidate_ids,
             confirmed_target_id="candidate-b",
             registry_revision="r1",
-            evidence=(CandidateEvidence("candidate-b", "r1", "img-b", "fixture", 0.95),),
+            evidence=(CandidateEvidence(
+                "candidate-b", "r1", "img-b", "fixture", 0.95,
+                matched_attributes=("chair",),
+            ),),
         )
 
     def observe(self, _call, _board):
@@ -96,7 +99,10 @@ def test_revision_stale_inspection_cannot_replace_newer_shortlist():
         confirmed_target_id="old",
         registry_revision="r1",
         expected_registry_revision="r1",
-        evidence=(CandidateEvidence("old", "r1", "img-old", "fixture", 0.9),),
+        evidence=(CandidateEvidence(
+            "old", "r1", "img-old", "fixture", 0.9,
+            matched_attributes=("chair",),
+        ),),
     )
     assert executive.board.shortlisted_candidate_ids == ("new",)
     assert executive.board.confirmed_target_id == ""
@@ -138,7 +144,10 @@ def test_same_registry_refresh_preserves_rejection_and_confirmation_evidence():
         candidate_ids=("candidate-b",),
         confirmed_target_id="candidate-b",
         registry_revision="stable",
-        evidence=(CandidateEvidence("candidate-b", "stable", "img-b", "fixture", 0.95),),
+        evidence=(CandidateEvidence(
+            "candidate-b", "stable", "img-b", "fixture", 0.95,
+            matched_attributes=("chair",),
+        ),),
     )
     executive.record_tool_result(
         ToolName.QUERY_REGISTRY,
@@ -170,7 +179,10 @@ def test_cancellation_propagates_while_go_to_point_is_active():
                 candidate_ids=call.candidate_ids,
                 confirmed_target_id="candidate-a",
                 registry_revision="r1",
-                evidence=(CandidateEvidence("candidate-a", "r1", "img-a", "fixture", 0.95),),
+                evidence=(CandidateEvidence(
+                    "candidate-a", "r1", "img-a", "fixture", 0.95,
+                    matched_attributes=("chair",),
+                ),),
             )
 
         def go_to_point(self, _call, _board):

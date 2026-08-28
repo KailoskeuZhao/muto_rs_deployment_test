@@ -19,3 +19,7 @@ string evidence_id
 string evidence_source
 float32 evidence_confidence
 float64 evidence_timestamp_s
+# JSON arrays of request terms; confirmation requires complete matched terms
+# and an empty unmatched list.
+string evidence_matched_attributes_json
+string evidence_unmatched_attributes_json

@@ -1,5 +1,6 @@
 """ROS projections of the canonical v2 board and event contracts."""
 
+import json
 from math import cos, sin
 from geometry_msgs.msg import PoseStamped
 from muto_command_layer_v2.msg import MissionBoard as MissionBoardMsg
@@ -77,6 +78,14 @@ def board_to_msg(board: MissionBoard, *, stamp=None) -> MissionBoardMsg:
         item.observed_at_s if item.observed_at_s is not None else 0.0
         for item in board.candidate_evidence
     ]
+    msg.candidate_evidence_matched_attributes_json = [
+        json.dumps(list(item.matched_attributes), separators=(",", ":"))
+        for item in board.candidate_evidence
+    ]
+    msg.candidate_evidence_unmatched_attributes_json = [
+        json.dumps(list(item.unmatched_attributes), separators=(",", ":"))
+        for item in board.candidate_evidence
+    ]
     msg.reachability.state = _REACHABILITY[board.reachability.state]
     msg.reachability.reason_code = board.reachability.reason_code
     msg.reachability.path_length_m = (
@@ -121,6 +130,12 @@ def event_to_msg(event: MissionEvent, *, stamp=None) -> MissionEventMsg:
         event.evidence_confidence if event.evidence_confidence is not None else -1.0
     )
     msg.evidence_timestamp_s = event.evidence_timestamp_s or 0.0
+    msg.evidence_matched_attributes_json = json.dumps(
+        list(event.evidence_matched_attributes), separators=(",", ":")
+    )
+    msg.evidence_unmatched_attributes_json = json.dumps(
+        list(event.evidence_unmatched_attributes), separators=(",", ":")
+    )
     return msg
 
 

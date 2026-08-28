@@ -32,9 +32,11 @@ from muto_command_layer_v2.action import Mission
 from muto_command_layer_v2.contracts import (
     CandidateEvidence,
     CompletionPolicy,
+    EventType,
     LifecycleState,
     MissionAction,
     MissionBoard,
+    MissionEvent,
 )
 from muto_command_layer_v2.mission_executive_node import (
     _feedback_state,
@@ -42,7 +44,7 @@ from muto_command_layer_v2.mission_executive_node import (
     _to_action,
 )
 from muto_command_layer_v2.commander import CommanderAgent
-from muto_command_layer_v2.ros_projection import board_to_msg
+from muto_command_layer_v2.ros_projection import board_to_msg, event_to_msg
 from muto_command_layer_v2.tools import ToolDispatcher, ToolResult
 
 
@@ -101,6 +103,8 @@ def test_board_projection_preserves_candidate_evidence_provenance():
                 confidence=0.91,
                 observed_at_s=123.5,
                 reason_code="exact_match",
+                matched_attributes=("blue", "chair"),
+                unmatched_attributes=(),
             ),
         ),
     )
@@ -111,6 +115,23 @@ def test_board_projection_preserves_candidate_evidence_provenance():
     assert list(msg.candidate_evidence_confidences) == pytest.approx([0.91], abs=1e-5)
     assert list(msg.candidate_evidence_reason_codes) == ["exact_match"]
     assert list(msg.candidate_evidence_timestamps_s) == pytest.approx([123.5])
+    assert list(msg.candidate_evidence_matched_attributes_json) == ['["blue","chair"]']
+    assert list(msg.candidate_evidence_unmatched_attributes_json) == ["[]"]
+    event = MissionEvent(
+        sequence=1,
+        event_type=EventType.CANDIDATE_CONFIRMED,
+        mission_id="mission-0002",
+        request_id="request-2",
+        board_revision=5,
+        lifecycle_state=LifecycleState.RUNNING,
+        candidate_id="chair-1",
+        registry_revision="registry-7",
+        evidence_matched_attributes=("blue", "chair"),
+        evidence_unmatched_attributes=(),
+    )
+    event_msg = event_to_msg(event)
+    assert event_msg.evidence_matched_attributes_json == '["blue","chair"]'
+    assert event_msg.evidence_unmatched_attributes_json == "[]"
 
 
 def test_terminal_result_is_projected_without_bag_dependency():
@@ -138,7 +159,10 @@ class _ActionBackend:
             candidate_ids=("chair-1",),
             confirmed_target_id="chair-1",
             registry_revision="r1",
-            evidence=(CandidateEvidence("chair-1", "r1", evidence_id="img-chair-1", source="test", confidence=1.0),),
+            evidence=(CandidateEvidence(
+                "chair-1", "r1", evidence_id="img-chair-1", source="test", confidence=1.0,
+                matched_attributes=("purple", "chair"),
+            ),),
         )
 
     def observe(self, _call, _board):

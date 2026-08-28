@@ -49,3 +49,8 @@ string[] candidate_evidence_sources
 float32[] candidate_evidence_confidences
 string[] candidate_evidence_reason_codes
 float64[] candidate_evidence_timestamps_s
+# Parallel JSON-encoded string arrays keyed by candidate id above.  A
+# confirmation is valid only when matched covers the complete object_request
+# and unmatched is empty.
+string[] candidate_evidence_matched_attributes_json
+string[] candidate_evidence_unmatched_attributes_json

@@ -1,5 +1,7 @@
 """Tests for the independent registry/motion authority adapter boundary."""
 
+import pytest
+
 from muto_command_layer_v2.backend_adapters import (
     CandidateDecision,
     MotionResult,
@@ -7,8 +9,14 @@ from muto_command_layer_v2.backend_adapters import (
     RegistrySnapshot,
     V2ToolBackend,
 )
-from muto_command_layer_v2.contracts import CompletionPolicy, MissionAction, SkillName, ToolName
-from muto_command_layer_v2.contracts import CandidateEvidence
+from muto_command_layer_v2.contracts import (
+    CandidateEvidence,
+    CompletionPolicy,
+    ContractError,
+    MissionAction,
+    SkillName,
+    ToolName,
+)
 from muto_command_layer_v2.executive import MissionExecutive
 from muto_command_layer_v2.tools import ToolCall, ToolDispatcher
 
@@ -66,7 +74,9 @@ def _board():
 def test_adapter_preserves_registry_revision_and_confirmation_chain():
     executive = _board()
     backend = V2ToolBackend(
-        Registry((CandidateDecision("chair-a", True, 0.9), CandidateDecision("chair-b", False))),
+        Registry((CandidateDecision(
+            "chair-a", True, 0.9, matched_attributes=("chair",)
+        ), CandidateDecision("chair-b", False))),
         Motion(),
     )
     dispatcher = ToolDispatcher(backend)
@@ -105,7 +115,11 @@ def test_adapter_preserves_registry_revision_and_confirmation_chain():
 def test_adapter_refuses_multiple_confirmations_without_promoting_one():
     executive = _board()
     backend = V2ToolBackend(
-        Registry((CandidateDecision("chair-a", True), CandidateDecision("chair-b", True))),
+        Registry((CandidateDecision(
+            "chair-a", True, matched_attributes=("chair",)
+        ), CandidateDecision(
+            "chair-b", True, matched_attributes=("chair",)
+        ))),
         Motion(),
     )
     dispatcher = ToolDispatcher(backend)
@@ -133,7 +147,7 @@ def test_adapter_refuses_multiple_confirmations_without_promoting_one():
 def test_adapter_requires_revision_for_candidate_inspection():
     executive = _board()
     backend = V2ToolBackend(
-        Registry((CandidateDecision("chair-a", True),)),
+        Registry((CandidateDecision("chair-a", True, matched_attributes=("chair",)),)),
         Motion(),
     )
     dispatcher = ToolDispatcher(backend)
@@ -153,6 +167,70 @@ def test_adapter_requires_revision_for_candidate_inspection():
     )
     assert result.success is False
     assert result.reason_code == "registry_revision_required"
+
+
+def test_adapter_demotes_class_only_confirmation_for_blue_chair():
+    executive = MissionExecutive()
+    executive.accept(
+        MissionAction("blue-request", "find a blue chair", CompletionPolicy.REPORT_CONFIRMED, "blue chair")
+    )
+    executive.start()
+    executive.select_skill(SkillName.SEARCH_FOR_OBJECT)
+    backend = V2ToolBackend(
+        Registry((CandidateDecision("chair-a", True, matched_attributes=("chair",)),)),
+        Motion(),
+    )
+    dispatcher = ToolDispatcher(backend)
+    query = dispatcher.dispatch(ToolCall(ToolName.QUERY_REGISTRY), executive.board)
+    executive.record_tool_result(
+        ToolName.QUERY_REGISTRY,
+        success=query.success,
+        candidate_ids=query.candidate_ids,
+        registry_revision=query.registry_revision,
+    )
+    result = dispatcher.dispatch(
+        ToolCall(
+            ToolName.INSPECT_CANDIDATES,
+            candidate_ids=("chair-a",),
+            registry_revision="registry-7",
+        ),
+        executive.board,
+    )
+    assert result.success is False
+    assert result.reason_code == "candidate_rejected"
+    assert result.confirmed_target_id == ""
+    assert result.evidence[0].reason_code == "requested_attributes_unconfirmed"
+    assert result.evidence[0].unmatched_attributes == ("blue",)
+    executive.record_tool_result(
+        ToolName.INSPECT_CANDIDATES,
+        success=result.success,
+        reason_code=result.reason_code,
+        candidate_ids=result.candidate_ids,
+        rejected_candidate_ids=result.rejected_candidate_ids,
+        registry_revision=result.registry_revision,
+        evidence=result.evidence,
+    )
+    rejection_event = next(
+        event for event in executive.events
+        if event.candidate_id == "chair-a"
+        and event.event_type.value == "candidate_rejected"
+    )
+    assert rejection_event.reason_code == "requested_attributes_unconfirmed"
+    assert rejection_event.evidence_unmatched_attributes == ("blue",)
+
+
+def test_dispatcher_rejects_registry_request_that_drops_an_attribute():
+    executive = MissionExecutive()
+    executive.accept(
+        MissionAction("blue-request", "find a blue chair", CompletionPolicy.REPORT_CONFIRMED, "blue chair")
+    )
+    executive.start()
+    executive.select_skill(SkillName.SEARCH_FOR_OBJECT)
+    dispatcher = ToolDispatcher(V2ToolBackend(Registry(()), Motion()))
+    with pytest.raises(ContractError, match="mission object_request unchanged"):
+        dispatcher.dispatch(
+            ToolCall(ToolName.QUERY_REGISTRY, object_request="chair"), executive.board
+        )
 
 
 def _confirmed_approach_board(backend):
@@ -189,7 +267,9 @@ def _confirmed_approach_board(backend):
 def test_approach_resolves_the_confirmed_registry_position_when_point_is_omitted():
     motion = Motion()
     backend = V2ToolBackend(
-        Registry((CandidateDecision("chair-a", True, 0.9), CandidateDecision("chair-b", False))),
+        Registry((CandidateDecision(
+            "chair-a", True, 0.9, matched_attributes=("chair",)
+        ), CandidateDecision("chair-b", False))),
         motion,
     )
     executive, dispatcher = _confirmed_approach_board(backend)
@@ -222,7 +302,8 @@ def test_approach_fails_closed_when_confirmed_position_is_missing():
 
     backend = V2ToolBackend(
         MissingPositionRegistry(
-            (CandidateDecision("chair-a", True), CandidateDecision("chair-b", False))
+            (CandidateDecision("chair-a", True, matched_attributes=("chair",)),
+             CandidateDecision("chair-b", False))
         ),
         motion,
     )
@@ -240,7 +321,8 @@ def test_approach_rejects_a_coordinate_that_is_not_the_confirmed_candidate():
     motion = Motion()
     backend = V2ToolBackend(
         Registry(
-            (CandidateDecision("chair-a", True), CandidateDecision("chair-b", False))
+            (CandidateDecision("chair-a", True, matched_attributes=("chair",)),
+             CandidateDecision("chair-b", False))
         ),
         motion,
     )

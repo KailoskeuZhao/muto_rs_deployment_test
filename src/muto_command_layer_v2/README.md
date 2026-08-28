@@ -132,11 +132,17 @@ launch argument so v2 can be validated side-by-side before cutover.
 
 The commander may switch from search to approach only after a current-revision
 candidate confirmation is on the board; the parser rejects unconfirmed or
-arbitrary skill changes. Confirmation evidence is source-tagged and carries an
-evidence id, observation time, and registry revision, so a late inspection
-result cannot replace a newer shortlist. Nav2 remains the navigation and
-obstacle-avoidance authority; the v2 executive only performs a fresh,
-conservative reachability preflight and records the resulting report. The
+arbitrary skill changes. Confirmation is against the complete `object_request`,
+not only the registry class: a request for `blue chair` requires explicit
+visual matches for both `blue` and `chair`. The inspector returns matched and
+unmatched attributes, and the executive fails closed when an attribute is
+missing, uncertain, or contradictory. Confirmation evidence is source-tagged
+and carries an evidence id, observation time, registry revision, and the
+attribute match lists, so a late inspection result cannot replace a newer
+shortlist and an operator can audit why a candidate was promoted. Nav2 remains
+the navigation and obstacle-avoidance authority; the v2 executive only
+performs a fresh, conservative reachability preflight and records the
+resulting report. The
 reachability revision changes when grid contents change, while repeated
 unchanged map timestamps only refresh freshness; this keeps the final
 preflight-to-Nav2 revision check useful on live costmaps.

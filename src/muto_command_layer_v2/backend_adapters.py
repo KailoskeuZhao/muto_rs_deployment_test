@@ -5,11 +5,18 @@ POI-grid search are injected through these small protocols; Nav2 remains the
 navigation authority and is never replaced by the command layer.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import isfinite
 from typing import Mapping, Protocol, Sequence, Tuple
 
-from .contracts import CandidateEvidence, MissionBoard, ReachabilityReport, SkillName
+from .contracts import (
+    CandidateEvidence,
+    MissionBoard,
+    ReachabilityReport,
+    SkillName,
+    confirmation_matches_request,
+    missing_request_match_terms,
+)
 from .tools import ToolBackend, ToolCall, ToolResult
 
 
@@ -38,6 +45,21 @@ class CandidateDecision:
     source: str = ""
     evidence_id: str = ""
     observed_at_s: float = 0.0
+    matched_attributes: Tuple[str, ...] = ()
+    unmatched_attributes: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "confirmed", bool(self.confirmed))
+        object.__setattr__(
+            self,
+            "matched_attributes",
+            _string_tuple(self.matched_attributes),
+        )
+        object.__setattr__(
+            self,
+            "unmatched_attributes",
+            _string_tuple(self.unmatched_attributes),
+        )
 
 
 @dataclass(frozen=True)
@@ -83,7 +105,10 @@ class V2ToolBackend(ToolBackend):
         self._snapshot = RegistrySnapshot(revision="", candidates=(), checked=False)
 
     def query_registry(self, call: ToolCall, board: MissionBoard) -> ToolResult:
-        snapshot = self._registry.query(call.object_request or board.object_request, board)
+        object_request = call.object_request or board.object_request
+        if call.object_request and call.object_request.strip() != board.object_request.strip():
+            return ToolResult(False, reason_code="object_request_mismatch")
+        snapshot = self._registry.query(object_request, board)
         self._snapshot = snapshot
         candidates = tuple(candidate.candidate_id for candidate in snapshot.candidates)
         return ToolResult(
@@ -94,6 +119,9 @@ class V2ToolBackend(ToolBackend):
         )
 
     def inspect_candidates(self, call: ToolCall, board: MissionBoard) -> ToolResult:
+        object_request = call.object_request or board.object_request
+        if call.object_request and call.object_request.strip() != board.object_request.strip():
+            return ToolResult(False, reason_code="object_request_mismatch")
         if not self._snapshot.checked or not self._snapshot.revision:
             return ToolResult(False, reason_code="registry_snapshot_unavailable")
         # Inspection is evidence-scoped.  An omitted revision is not allowed
@@ -108,7 +136,7 @@ class V2ToolBackend(ToolBackend):
             return ToolResult(False, reason_code="candidate_not_in_snapshot")
         decisions = tuple(
             self._registry.inspect(
-                call.object_request or board.object_request,
+                object_request,
                 self._snapshot,
                 requested,
                 board,
@@ -117,6 +145,14 @@ class V2ToolBackend(ToolBackend):
         decision_ids = {decision.candidate_id for decision in decisions}
         if decision_ids != set(requested):
             return ToolResult(False, reason_code="inspection_incomplete")
+        # Treat the visual authority's boolean as a claim about the complete
+        # request, never as a class-only match.  Normalize an over-optimistic
+        # backend result into an ordinary rejection so the executive cannot
+        # promote a generic ``chair`` for a ``blue chair`` mission.
+        decisions = tuple(
+            _enforce_request_match(object_request, decision)
+            for decision in decisions
+        )
         confirmed = [decision for decision in decisions if decision.confirmed]
         rejected = tuple(
             decision.candidate_id for decision in decisions if not decision.confirmed
@@ -277,4 +313,39 @@ def _candidate_evidence(decision: CandidateDecision, revision: str) -> Candidate
         confidence=decision.confidence,
         observed_at_s=decision.observed_at_s or None,
         reason_code=decision.reason_code,
+        matched_attributes=decision.matched_attributes,
+        unmatched_attributes=decision.unmatched_attributes,
+    )
+
+
+def _string_tuple(values) -> Tuple[str, ...]:
+    if isinstance(values, str):
+        values = (values,)
+    if values is None:
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _enforce_request_match(
+    object_request: str,
+    decision: CandidateDecision,
+) -> CandidateDecision:
+    if not decision.confirmed:
+        return decision
+    if confirmation_matches_request(
+        object_request,
+        decision.matched_attributes,
+        decision.unmatched_attributes,
+    ):
+        return decision
+    missing = missing_request_match_terms(
+        object_request,
+        decision.matched_attributes,
+    )
+    unmatched = tuple(dict.fromkeys(decision.unmatched_attributes + missing))
+    return replace(
+        decision,
+        confirmed=False,
+        reason_code="requested_attributes_unconfirmed",
+        unmatched_attributes=unmatched,
     )

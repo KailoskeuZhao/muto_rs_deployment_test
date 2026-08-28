@@ -13,10 +13,17 @@ import threading
 import time
 from dataclasses import asdict, is_dataclass
 from enum import Enum
+from math import isfinite
 from typing import Callable, Mapping, Optional, Sequence
 
 from .commander import PlannerFailure
-from .contracts import MissionBoard, SCHEMA_VERSION
+from .contracts import (
+    MissionBoard,
+    SCHEMA_VERSION,
+    confirmation_matches_request,
+    missing_request_match_terms,
+    request_match_terms,
+)
 from .backend_adapters import CandidateDecision, RegistryCandidate
 
 
@@ -64,6 +71,8 @@ def build_planner_prompt(board: MissionBoard, *, visual_available: bool) -> str:
         "When no completion gate is satisfied, set completion_proposal to null "
         "and select another tool allowed by the active skill. Search may use "
         "query_registry, inspect_candidates, observe, or rotate_to_heading; "
+        "registry tools must omit object_request or repeat the board's complete "
+        "object_request unchanged; never drop an adjective such as blue. "
         "approach may use rotate_to_heading or go_to_point only. Search never "
         "chooses a raw navigation coordinate: observe delegates viewpoint "
         "selection to the deterministic POI-grid authority. For "
@@ -182,7 +191,8 @@ def build_candidate_inspection_schema() -> str:
                     "type": "object",
                     "additionalProperties": False,
                     "required": [
-                        "candidate_id", "confirmed", "confidence", "reason_code"
+                        "candidate_id", "confirmed", "confidence", "reason_code",
+                        "matched_attributes", "unmatched_attributes",
                     ],
                     "properties": {
                         "candidate_id": {"type": "string"},
@@ -191,6 +201,12 @@ def build_candidate_inspection_schema() -> str:
                             "type": "number", "minimum": 0.0, "maximum": 1.0
                         },
                         "reason_code": {"type": "string"},
+                        "matched_attributes": {
+                            "type": "array", "items": {"type": "string"}
+                        },
+                        "unmatched_attributes": {
+                            "type": "array", "items": {"type": "string"}
+                        },
                     },
                 },
             },
@@ -369,11 +385,18 @@ class VlmCandidateInspector:
                 }
                 for candidate in candidates
             ],
+            "required_match_terms": list(request_match_terms(object_request)),
             "instruction": (
-                "Compare each stored candidate image with the requested object. "
-                "Choose at most one exact match. Return every candidate ID in "
-                "candidate_decisions, with confirmed true for the one exact match "
-                "and false for all others."
+                "Treat object_request as a conjunction, not a class-only hint. "
+                "Compare each stored candidate image with the complete requested "
+                "object, including every noun and stated attribute such as color, "
+                "material, or size. Choose at most one exact match. Return every "
+                "candidate ID in candidate_decisions. Set confirmed true only when "
+                "every required_match_term is visibly matched; unknown, occluded, "
+                "or contradictory attributes are false. List the supporting terms "
+                "in matched_attributes and any missing or contradictory terms in "
+                "unmatched_attributes. Use an empty unmatched_attributes list only "
+                "when the complete request is satisfied."
             ),
         }
         text = self._vlm_content()
@@ -426,30 +449,92 @@ class VlmCandidateInspector:
             raise RuntimeError(result.error_message or "candidate inspection failed")
         try:
             payload = json.loads(result.response_text)
+            if not isinstance(payload, Mapping):
+                raise ValueError("candidate inspection payload must be an object")
             if payload.get("schema_version") != SCHEMA_VERSION:
                 raise ValueError("unsupported schema version")
             decisions = payload["candidate_decisions"]
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise RuntimeError("candidate inspection returned invalid JSON") from exc
         allowed = {candidate.candidate_id for candidate in candidates}
+        if not isinstance(decisions, list):
+            raise RuntimeError("candidate inspection decisions must be an array")
+        if any(not isinstance(item, Mapping) for item in decisions):
+            raise RuntimeError("candidate inspection decisions must be objects")
         if {item.get("candidate_id") for item in decisions} != allowed:
             raise RuntimeError("candidate inspection did not decide every candidate")
-        return tuple(
-            CandidateDecision(
-                candidate_id=item["candidate_id"],
-                confirmed=bool(item["confirmed"]),
-                confidence=float(item["confidence"]),
-                reason_code=str(item.get("reason_code", "")),
-                source="vlm_candidate_inspection",
-                evidence_id=next(
-                    (candidate.evidence_id for candidate in candidates
-                     if candidate.candidate_id == item["candidate_id"]),
-                    "",
-                ),
-                observed_at_s=time.time(),
+        parsed = []
+        for item in decisions:
+            try:
+                confirmed = item["confirmed"]
+                confidence = item["confidence"]
+                reason_code = item["reason_code"]
+                matched_raw = item["matched_attributes"]
+                unmatched_raw = item["unmatched_attributes"]
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError(
+                    "candidate inspection decision is missing a required field"
+                ) from exc
+            if not isinstance(confirmed, bool):
+                raise RuntimeError(
+                    "candidate inspection confirmed must be a boolean"
+                )
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not isfinite(float(confidence))
+                or not 0.0 <= float(confidence) <= 1.0
+            ):
+                raise RuntimeError(
+                    "candidate inspection confidence must be a finite number in [0, 1]"
+                )
+            if not isinstance(reason_code, str):
+                raise RuntimeError("candidate inspection reason_code must be a string")
+            if (
+                not isinstance(matched_raw, list)
+                or not isinstance(unmatched_raw, list)
+                or any(not isinstance(value, str) for value in matched_raw)
+                or any(not isinstance(value, str) for value in unmatched_raw)
+            ):
+                raise RuntimeError(
+                    "candidate inspection attribute lists must contain strings"
+                )
+            matched = _string_tuple(matched_raw)
+            unmatched = _string_tuple(unmatched_raw)
+            if confirmed and not confirmation_matches_request(
+                object_request, matched, unmatched
+            ):
+                confirmed = False
+                reason_code = "requested_attributes_unconfirmed"
+                unmatched = tuple(dict.fromkeys(
+                    unmatched + missing_request_match_terms(object_request, matched)
+                ))
+            parsed.append(
+                CandidateDecision(
+                    candidate_id=item["candidate_id"],
+                    confirmed=confirmed,
+                    confidence=float(confidence),
+                    reason_code=reason_code,
+                    source="vlm_candidate_inspection",
+                    evidence_id=next(
+                        (candidate.evidence_id for candidate in candidates
+                         if candidate.candidate_id == item["candidate_id"]),
+                        "",
+                    ),
+                    observed_at_s=time.time(),
+                    matched_attributes=matched,
+                    unmatched_attributes=unmatched,
+                )
             )
-            for item in decisions
-        )
+        return tuple(parsed)
+
+
+def _string_tuple(values):
+    if isinstance(values, str):
+        values = (values,)
+    if values is None:
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
 
 
 def _wait_future(future, timeout_s: float, operation: str):

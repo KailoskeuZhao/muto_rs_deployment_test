@@ -82,8 +82,22 @@ contract.
 
 Registry name/metadata matching creates only a shortlist. Every candidate
 inspection is tied to the exact registry revision and stored-JPEG evidence.
-At most one candidate may be confirmed. A target is approach-eligible only
-when its confirmation revision equals the board's current registry revision.
+The complete `object_request` is a conjunction of requirements: the object
+class and every stated attribute (for example, `blue` **and** `chair`) must
+match the candidate evidence. A class-only registry label is never sufficient.
+The candidate inspector must return explicit matched and unmatched attributes;
+`confirmed=true` is valid only when every requested term is matched and no
+term is unknown or contradictory. At most one candidate may be confirmed. A
+target is approach-eligible only when its confirmation revision equals the
+board's current registry revision and its attribute evidence satisfies the
+same request.
+
+The executive and backend both enforce this rule. A malformed, incomplete, or
+attribute-mismatching inspection is an ordinary nonfatal rejection, not a
+confirmed target. The board and high-level recorder retain the matched and
+unmatched attribute lists so an operator can audit why a candidate was (or
+was not) promoted.
+
 Repeated unchanged lookups preserve the existing evidence; they do not reset
 the search or interrupt an active POI observation.
 An approach `go_to_point` call must carry that exact confirmed candidate ID.
@@ -120,3 +134,5 @@ Before relying on this note:
 3. Run the v2 unit/transport tests and the Humble launch-description smoke.
 4. For hardware, inspect the live graph and the mission MCAP rather than
    inferring readiness from source or simulation alone.
+5. Include an attribute-mismatch trace (for example, a red `chair` returned
+   for `blue chair`) and verify that no `confirmed_target_id` is committed.

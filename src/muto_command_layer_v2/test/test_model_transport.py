@@ -29,6 +29,7 @@ def test_prompt_is_compact_board_json_and_explicitly_marks_visual_input():
     assert "search_progress counts POI-grid goals that actually succeeded" in prompt
     assert "poi_goal_succeeded means only that one POI goal made progress" in prompt
     assert "Only last_reason_code=poi_exhausted" in prompt
+    assert "never drop an adjective such as blue" in prompt
 
 
 def test_decision_schema_is_strict_and_matches_parser_enums():
@@ -56,3 +57,6 @@ def test_candidate_inspection_schema_is_provider_compatible():
         "type": "string", "enum": [SCHEMA_VERSION]
     }
     assert "const" not in json.dumps(schema)
+    item = schema["properties"]["candidate_decisions"]["items"]
+    assert "matched_attributes" in item["required"]
+    assert "unmatched_attributes" in item["required"]

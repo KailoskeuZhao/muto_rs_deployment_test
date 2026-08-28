@@ -17,7 +17,10 @@ class SearchBackend:
             candidate_ids=("chair-1",),
             confirmed_target_id="chair-1",
             registry_revision="r1",
-            evidence=(CandidateEvidence("chair-1", "r1", evidence_id="img-chair-1", source="test", confidence=1.0),),
+            evidence=(CandidateEvidence(
+                "chair-1", "r1", evidence_id="img-chair-1", source="test", confidence=1.0,
+                matched_attributes=("purple", "chair"),
+            ),),
         )
 
     def observe(self, call, board):
@@ -82,6 +85,60 @@ def test_runtime_confirms_only_after_registry_then_inspection():
         "candidate_confirmed",
         "mission_succeeded",
     ]
+
+
+def test_runtime_preserves_visual_evidence_when_executive_rejects_claim():
+    class OptimisticBackend(SearchBackend):
+        def inspect_candidates(self, call, board):
+            return ToolResult(
+                True,
+                candidate_ids=call.candidate_ids,
+                confirmed_target_id=call.candidate_ids[0],
+                registry_revision=board.registry_revision,
+                evidence=(CandidateEvidence(
+                    call.candidate_ids[0],
+                    board.registry_revision,
+                    evidence_id="img-chair-1",
+                    source="test",
+                    confidence=1.0,
+                    matched_attributes=("chair",),
+                    unmatched_attributes=("blue",),
+                ),),
+            )
+
+    def planner(board):
+        if not board.shortlisted_candidate_ids:
+            return {
+                "schema_version": "muto_command_layer_v2",
+                "skill": "search_for_object",
+                "tool": {"name": "query_registry"},
+            }
+        return {
+            "schema_version": "muto_command_layer_v2",
+            "skill": "search_for_object",
+            "tool": {
+                "name": "inspect_candidates",
+                "candidate_ids": list(board.shortlisted_candidate_ids),
+                "registry_revision": board.registry_revision,
+            },
+        }
+
+    result = CommanderRuntime(
+        MissionExecutive(),
+        CommanderAgent(planner),
+        ToolDispatcher(OptimisticBackend()),
+        consecutive_failure_limit=1,
+    ).run(
+        MissionAction(
+            request_id="req-attribute-rejection",
+            objective="find a blue chair",
+            object_request="blue chair",
+            completion_policy=CompletionPolicy.REPORT_CONFIRMED,
+        )
+    )
+    assert result.board.lifecycle_state.value == "failed"
+    assert result.board.confirmed_target_id == ""
+    assert result.board.candidate_evidence[0].unmatched_attributes == ("blue",)
 
 
 def test_runtime_stops_repeated_invalid_planner_output_without_mission_budget():

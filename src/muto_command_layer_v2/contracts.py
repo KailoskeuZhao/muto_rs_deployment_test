@@ -8,6 +8,7 @@ used to make executive state transitions deterministic and easy to test.
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from math import isfinite
+import re
 from typing import Mapping, Optional, Tuple
 
 
@@ -117,6 +118,77 @@ def _nonnegative_finite(value: Optional[float], field_name: str) -> None:
         raise ContractError("{} must be finite and non-negative".format(field_name))
 
 
+# Confirmation is intentionally conservative and dependency-free.  These are
+# only grammatical words that the natural-language boundary does not treat as
+# object requirements; nouns and adjectives (including colours such as
+# ``blue``) remain mandatory visual terms.
+_REQUEST_MATCH_STOP_WORDS = frozenset({
+    "a", "an", "approach", "confirmed", "find", "for", "go",
+    "identify", "look", "locate", "object", "please", "search",
+    "target", "the", "to",
+})
+
+
+def request_match_terms(object_request: str) -> Tuple[str, ...]:
+    """Return normalized terms that a visual confirmation must satisfy."""
+
+    if not isinstance(object_request, str):
+        return ()
+    return tuple(dict.fromkeys(
+        token
+        for token in re.findall(r"[a-z0-9]+", object_request.lower())
+        if token not in _REQUEST_MATCH_STOP_WORDS
+    ))
+
+
+def _string_tuple(values) -> Tuple[str, ...]:
+    if isinstance(values, str):
+        values = (values,)
+    if values is None:
+        return ()
+    return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _attribute_terms(attributes) -> Tuple[str, ...]:
+    attributes = _string_tuple(attributes)
+    return tuple(dict.fromkeys(
+        token
+        for value in attributes
+        for token in re.findall(r"[a-z0-9]+", str(value).lower())
+    ))
+
+
+def missing_request_match_terms(
+    object_request: str,
+    matched_attributes,
+) -> Tuple[str, ...]:
+    """Return request terms not explicitly represented by matched attributes."""
+
+    matched = set(_attribute_terms(matched_attributes))
+    return tuple(term for term in request_match_terms(object_request) if term not in matched)
+
+
+def confirmation_matches_request(
+    object_request: str,
+    matched_attributes,
+    unmatched_attributes,
+) -> bool:
+    """Check the fail-closed, full-request confirmation predicate.
+
+    A model may only promote a candidate when all normalized request terms are
+    represented by its matched attributes and it reports no unknown or
+    contradictory attributes.  The executive and registry adapter both use
+    this predicate so a direct backend cannot bypass the semantic gate.
+    """
+
+    required = set(request_match_terms(object_request))
+    matched = set(_attribute_terms(matched_attributes))
+    unmatched = set(_attribute_terms(unmatched_attributes))
+    # An empty request is not an exact visual target.  Reject it rather than
+    # allowing the set inclusion below to make confirmation vacuously true.
+    return bool(required) and not unmatched and required.issubset(matched)
+
+
 @dataclass(frozen=True)
 class MissionAction:
     """Normalized user request accepted by the executive."""
@@ -146,8 +218,8 @@ class CandidateEvidence:
     """Evidence attached to one registry candidate confirmation decision.
 
     A candidate id by itself is not confirmation.  The evidence record keeps
-    the provenance needed to audit which revision, image/observation and
-    model decision promoted (or rejected) a candidate.
+    the provenance needed to audit which revision, image/observation, model
+    decision, and requested attributes promoted (or rejected) a candidate.
     """
 
     candidate_id: str
@@ -157,6 +229,8 @@ class CandidateEvidence:
     confidence: Optional[float] = None
     observed_at_s: Optional[float] = None
     reason_code: str = ""
+    matched_attributes: Tuple[str, ...] = field(default_factory=tuple)
+    unmatched_attributes: Tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.candidate_id.strip():
@@ -169,6 +243,16 @@ class CandidateEvidence:
         ):
             raise ContractError("candidate evidence confidence must be in [0, 1]")
         _nonnegative_finite(self.observed_at_s, "observed_at_s")
+        object.__setattr__(
+            self,
+            "matched_attributes",
+            _string_tuple(self.matched_attributes),
+        )
+        object.__setattr__(
+            self,
+            "unmatched_attributes",
+            _string_tuple(self.unmatched_attributes),
+        )
 
 
 @dataclass(frozen=True)
@@ -307,6 +391,8 @@ class MissionEvent:
     evidence_source: str = ""
     evidence_confidence: Optional[float] = None
     evidence_timestamp_s: Optional[float] = None
+    evidence_matched_attributes: Tuple[str, ...] = field(default_factory=tuple)
+    evidence_unmatched_attributes: Tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -327,3 +413,13 @@ class MissionEvent:
         ):
             raise ContractError("event evidence_confidence must be in [0, 1]")
         _nonnegative_finite(self.evidence_timestamp_s, "evidence_timestamp_s")
+        object.__setattr__(
+            self,
+            "evidence_matched_attributes",
+            _string_tuple(self.evidence_matched_attributes),
+        )
+        object.__setattr__(
+            self,
+            "evidence_unmatched_attributes",
+            _string_tuple(self.evidence_unmatched_attributes),
+        )

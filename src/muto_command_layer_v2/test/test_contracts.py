@@ -13,6 +13,9 @@ from muto_command_layer_v2.contracts import (
     ReachabilityState,
     SkillName,
     ToolName,
+    confirmation_matches_request,
+    missing_request_match_terms,
+    request_match_terms,
 )
 from muto_command_layer_v2.executive import (
     DuplicateMissionError,
@@ -67,6 +70,15 @@ def test_reachability_report_is_one_typed_result():
         ReachabilityReport(path_length_m=-1.0)
 
 
+def test_confirmation_predicate_requires_the_complete_object_request():
+    assert request_match_terms("please find a blue chair") == ("blue", "chair")
+    assert missing_request_match_terms("blue chair", ("chair",)) == ("blue",)
+    assert not confirmation_matches_request("blue chair", ("chair",), ())
+    assert not confirmation_matches_request("blue chair", ("blue", "chair"), ("blue",))
+    assert confirmation_matches_request("blue chair", ("blue", "chair"), ())
+    assert not confirmation_matches_request("", ("chair",), ())
+
+
 def test_executive_accepts_one_active_mission_and_emits_ordered_events():
     executive = MissionExecutive()
     board = executive.accept(make_action())
@@ -118,11 +130,38 @@ def test_tool_scope_is_enforced_without_a_second_command_layer():
         candidate_ids=("candidate-1",),
         confirmed_target_id="candidate-1",
         registry_revision="r1",
-        evidence=(CandidateEvidence("candidate-1", "r1", evidence_id="img-1", source="test", confidence=1.0),),
+        evidence=(CandidateEvidence(
+            "candidate-1", "r1", evidence_id="img-1", source="test", confidence=1.0,
+            matched_attributes=("purple", "chair"),
+        ),),
     )
     executive.select_skill(SkillName.APPROACH_CONFIRMED_OBJECT)
     with pytest.raises(ContractError):
         executive.record_tool_result(ToolName.QUERY_REGISTRY, success=True)
+
+
+def test_executive_rejects_class_only_confirmation_for_attribute_request():
+    executive = started_executive()
+    executive.select_skill(SkillName.SEARCH_FOR_OBJECT)
+    executive.record_tool_result(
+        ToolName.QUERY_REGISTRY,
+        success=True,
+        candidate_ids=("candidate-1",),
+        registry_revision="r1",
+    )
+    with pytest.raises(ContractError, match="complete object_request"):
+        executive.record_tool_result(
+            ToolName.INSPECT_CANDIDATES,
+            success=True,
+            candidate_ids=("candidate-1",),
+            confirmed_target_id="candidate-1",
+            registry_revision="r1",
+            evidence=(CandidateEvidence(
+                "candidate-1", "r1", evidence_id="img-1", source="test", confidence=1.0,
+                matched_attributes=("chair",),
+            ),),
+        )
+    assert executive.board.confirmed_target_id == ""
 
 
 def test_child_failure_is_nonfatal_and_confirmation_is_explicit():
@@ -158,7 +197,10 @@ def test_child_failure_is_nonfatal_and_confirmation_is_explicit():
         confirmed_target_id="candidate-2",
         candidate_ids=("candidate-2",),
         registry_revision="r8",
-        evidence=(CandidateEvidence("candidate-2", "r8", evidence_id="img-2", source="test", confidence=1.0),),
+        evidence=(CandidateEvidence(
+            "candidate-2", "r8", evidence_id="img-2", source="test", confidence=1.0,
+            matched_attributes=("purple", "chair"),
+        ),),
     )
     assert executive.board.confirmed_target_id == "candidate-2"
 
@@ -184,7 +226,10 @@ def test_completion_policy_rejects_premature_finish_and_accepts_confirmation():
         confirmed_target_id="candidate-1",
         candidate_ids=("candidate-1",),
         registry_revision="r3",
-        evidence=(CandidateEvidence("candidate-1", "r3", evidence_id="img-1", source="test", confidence=1.0),),
+        evidence=(CandidateEvidence(
+            "candidate-1", "r3", evidence_id="img-1", source="test", confidence=1.0,
+            matched_attributes=("purple", "chair"),
+        ),),
     )
     board = executive.complete()
     assert board.lifecycle_state is LifecycleState.SUCCEEDED

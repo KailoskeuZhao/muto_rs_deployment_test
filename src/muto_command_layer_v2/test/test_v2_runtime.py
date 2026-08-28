@@ -61,7 +61,10 @@ def _running(skill=SkillName.SEARCH_FOR_OBJECT):
             candidate_ids=("c1",),
             confirmed_target_id="c1",
             registry_revision="r1",
-            evidence=(CandidateEvidence("c1", "r1", evidence_id="img-c1", source="test", confidence=1.0),),
+            evidence=(CandidateEvidence(
+                "c1", "r1", evidence_id="img-c1", source="test", confidence=1.0,
+                matched_attributes=("chair",),
+            ),),
         )
         ex.select_skill(skill)
     return ex
@@ -177,7 +180,10 @@ def test_commander_allows_only_confirmed_search_to_approach_handoff():
         candidate_ids=("c1",),
         confirmed_target_id="c1",
         registry_revision="r1",
-        evidence=(CandidateEvidence("c1", "r1", evidence_id="img-c1", source="test", confidence=1.0),),
+        evidence=(CandidateEvidence(
+            "c1", "r1", evidence_id="img-c1", source="test", confidence=1.0,
+            matched_attributes=("chair",),
+        ),),
     )
     with pytest.raises(PlannerFailure):
         parse_decision(
@@ -253,7 +259,10 @@ def test_registry_revision_replaces_shortlist_and_old_confirmation():
         candidate_ids=("old",),
         confirmed_target_id="old",
         registry_revision="r1",
-        evidence=(CandidateEvidence("old", "r1", evidence_id="img-old", source="test", confidence=1.0),),
+        evidence=(CandidateEvidence(
+            "old", "r1", evidence_id="img-old", source="test", confidence=1.0,
+            matched_attributes=("chair",),
+        ),),
     )
     assert ex.board.confirmed_target_id == "old"
     ex.record_tool_result(

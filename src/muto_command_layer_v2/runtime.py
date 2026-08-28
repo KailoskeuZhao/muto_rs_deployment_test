@@ -102,6 +102,7 @@ class CommanderRuntime:
                 if self._limit_reached():
                     break
                 continue
+            result = None
             try:
                 self.executive.record_tool_request(decision.tool.tool)
                 self._notify()
@@ -129,8 +130,16 @@ class CommanderRuntime:
                     reason_code="tool_exception",
                     detail=str(exc),
                     candidate_id=decision.tool.candidate_id,
-                    registry_revision=decision.tool.registry_revision,
+                    candidate_ids=getattr(result, "candidate_ids", ()),
+                    rejected_candidate_ids=getattr(
+                        result, "rejected_candidate_ids", ()
+                    ),
+                    registry_revision=(
+                        getattr(result, "registry_revision", "")
+                        or decision.tool.registry_revision
+                    ),
                     expected_registry_revision=decision.tool.registry_revision,
+                    evidence=getattr(result, "evidence", ()),
                 )
                 self._notify()
                 if self._limit_reached():

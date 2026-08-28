@@ -21,6 +21,7 @@ from .contracts import (
     SkillName,
     ToolName,
     _SKILL_TOOLS,
+    confirmation_matches_request,
 )
 
 
@@ -300,12 +301,27 @@ class MissionExecutive:
                 and registry_revision != self._board.registry_revision
             ):
                 raise ContractError("confirmation belongs to a different registry revision")
-            current_target_id = confirmed_target_id
-            current_confirmed_revision = registry_revision or self._board.registry_revision
-            if not current_confirmed_revision:
+            if not registry_revision:
                 raise ContractError("confirmation requires a registry revision")
-            if not any(item.candidate_id == confirmed_target_id for item in evidence):
-                raise ContractError("confirmation requires candidate evidence")
+            current_target_id = confirmed_target_id
+            current_confirmed_revision = registry_revision
+            matching_evidence = next(
+                (
+                    item for item in evidence
+                    if item.candidate_id == confirmed_target_id
+                    and item.registry_revision == registry_revision
+                    and confirmation_matches_request(
+                        self._board.object_request,
+                        item.matched_attributes,
+                        item.unmatched_attributes,
+                    )
+                ),
+                None,
+            )
+            if matching_evidence is None:
+                raise ContractError(
+                    "confirmation requires evidence matching the complete object_request"
+                )
             if confirmed_target_id in rejected:
                 rejected.remove(confirmed_target_id)
         self._board = self._board.evolve(
@@ -360,18 +376,51 @@ class MissionExecutive:
                 next((item.observed_at_s for item in evidence if item.candidate_id == confirmed_target_id), None)
                 if confirmed_target_id else None
             ),
+            evidence_matched_attributes=(
+                next((item.matched_attributes for item in evidence if item.candidate_id == confirmed_target_id), ())
+                if confirmed_target_id else ()
+            ),
+            evidence_unmatched_attributes=(
+                next((item.unmatched_attributes for item in evidence if item.candidate_id == confirmed_target_id), ())
+                if confirmed_target_id else ()
+            ),
         )
         for rejected_candidate_id in rejected_candidate_ids:
             if not rejected_candidate_id:
                 continue
+            rejected_evidence = next(
+                (
+                    item for item in evidence
+                    if item.candidate_id == rejected_candidate_id
+                ),
+                None,
+            )
             self._emit(
                 EventType.CANDIDATE_REJECTED,
                 skill=self._board.active_skill,
                 tool=tool,
                 outcome="rejected",
-                reason_code=reason_code or "candidate_rejected",
+                reason_code=(
+                    rejected_evidence.reason_code
+                    if rejected_evidence and rejected_evidence.reason_code
+                    else reason_code or "candidate_rejected"
+                ),
                 candidate_id=rejected_candidate_id,
                 registry_revision=registry_revision or self._board.registry_revision,
+                evidence_id=rejected_evidence.evidence_id if rejected_evidence else "",
+                evidence_source=rejected_evidence.source if rejected_evidence else "",
+                evidence_confidence=(
+                    rejected_evidence.confidence if rejected_evidence else None
+                ),
+                evidence_timestamp_s=(
+                    rejected_evidence.observed_at_s if rejected_evidence else None
+                ),
+                evidence_matched_attributes=(
+                    rejected_evidence.matched_attributes if rejected_evidence else ()
+                ),
+                evidence_unmatched_attributes=(
+                    rejected_evidence.unmatched_attributes if rejected_evidence else ()
+                ),
             )
         if confirmed_target_id:
             self._emit(
@@ -381,6 +430,8 @@ class MissionExecutive:
                 outcome="confirmed",
                 candidate_id=confirmed_target_id,
                 registry_revision=current_confirmed_revision,
+                evidence_matched_attributes=matching_evidence.matched_attributes,
+                evidence_unmatched_attributes=matching_evidence.unmatched_attributes,
             )
         return self._board
 
@@ -653,6 +704,8 @@ class MissionExecutive:
         evidence_source: str = "",
         evidence_confidence: Optional[float] = None,
         evidence_timestamp_s: Optional[float] = None,
+        evidence_matched_attributes=(),
+        evidence_unmatched_attributes=(),
     ) -> None:
         self._events.append(
             MissionEvent(
@@ -673,5 +726,7 @@ class MissionExecutive:
                 evidence_source=evidence_source,
                 evidence_confidence=evidence_confidence,
                 evidence_timestamp_s=evidence_timestamp_s,
+                evidence_matched_attributes=tuple(evidence_matched_attributes),
+                evidence_unmatched_attributes=tuple(evidence_unmatched_attributes),
             )
         )

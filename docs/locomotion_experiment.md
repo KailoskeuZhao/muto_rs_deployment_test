@@ -68,7 +68,10 @@ Artifacts on the robot:
 * `/opt/muto_rs_ws/bags/muto_locomotion_experiment_20260828_072415_859035`
 * `/opt/muto_rs_ws/bags/muto_nav2_20260828_072431_f8723294`
 
-The composition was stopped cleanly after the probes.  This run does not
-clear the hardware-locomotion blocker; object-search or commander validation
-should wait until the physical gait cadence, turn direction, and in-place
-translation are corrected and re-tested in an open area.
+The launch was stopped after the probes and both recorders finalized their
+bags.  The base driver did return exit code 1 while handling SIGINT because
+`rcl_shutdown` had already run; no experiment processes remained afterward.
+This run does not clear the hardware-locomotion blocker; object-search or
+commander validation should wait until the physical gait cadence, turn
+direction, and in-place translation are corrected and re-tested in an open
+area.

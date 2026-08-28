@@ -219,68 +219,13 @@ def test_navfn_paths_use_humble_savitzky_golay_smoothing():
         assert 'smoother_id="simple_smoother"' not in text
 
 
-def test_frontier_goal_stays_stable_while_nav2_is_driving():
-    config = _load_yaml(
-        PACKAGE_ROOT / 'config' / 'frontier_exploration_params.yaml'
-    )
-    parameters = config['frontier_explorer']['ros__parameters']
-
-    # Frontier timing estimates must use the same request-side linear cap as
-    # Nav2; these values do not command the base themselves.
-    assert parameters['max_linear_speed_vmax'] == 0.25
-
-    # Do not cancel and redispatch an accepted goal merely because a SLAM map
-    # refresh changes its estimated visibility gain. Genuine blocked goals and
-    # near-arrival completion remain independent safeguards.
-    assert parameters['goal_preemption_enabled'] is False
-    assert parameters['goal_skip_on_blocked_goal'] is True
-    assert parameters['goal_preemption_complete_if_within_m'] == 0.25
-    assert parameters['frontier_suppression_enabled'] is True
-    assert parameters['frontier_suppression_attempt_threshold'] == 1
-    assert parameters['frontier_suppression_no_progress_timeout_s'] == 15.0
-    assert parameters['frontier_suppression_startup_grace_period_s'] == 5.0
-    assert parameters['post_goal_settle_enabled'] is False
-    assert parameters['frontier_suppression_base_size_m'] == 0.60
-    assert parameters['frontier_suppression_timeout_s'] == 90.0
-
-
-def test_frontier_navigation_uses_the_known_free_goal_adapter():
-    config = _load_yaml(
-        PACKAGE_ROOT / 'config' / 'frontier_exploration_params.yaml'
-    )
-    explorer = config['frontier_explorer']['ros__parameters']
-    adapter = config['frontier_goal_adapter']['ros__parameters']
-
-    assert explorer['navigate_to_pose_action_name'] == (
-        '/frontier/navigate_to_pose')
-    assert adapter['input_action'] == '/frontier/navigate_to_pose'
-    assert adapter['nav2_action'] == '/navigate_to_pose'
-    assert adapter['map_topic'] == '/map'
-    assert adapter['effective_robot_radius'] == 0.27
-    assert adapter['maximum_projection_distance'] == 0.0
-    assert adapter['robot_base_frame'] == 'base_frame'
-    assert adapter['robot_pose_timeout'] > 0.0
-    assert adapter['robot_seed_search_distance'] >= 0.27
-    assert adapter['minimum_staged_advance_distance'] == 0.20
-    assert adapter['free_space_max_occupancy'] == 0
-    assert explorer['frontier_suppression_persist_across_sessions'] is True
-    assert explorer['frontier_candidate_partition_size_m'] > 0.0
-    assert explorer['weight_gain_ws'] == 0.0
-    assert explorer['completion_event_enabled'] is False
-    assert explorer['frontier_goal_result_topic'] == '/explore/frontier_goal_result'
-
-    standalone_launch = (
-        PACKAGE_ROOT / 'launch' / 'frontier_exploration_launch.py'
-    ).read_text(encoding='utf-8')
-    assert "executable='frontier_goal_adapter'" in standalone_launch
-
+def test_nav2_bag_tracks_the_v2_poi_authority_without_frontier_topics():
     for profile_name in ('nav2_bag.yaml', 'nav2_bag_full.yaml'):
         profile = _load_yaml(NAV2_BAG_ROOT / 'config' / profile_name)
         topics = profile['nav2_bag_recorder']['ros__parameters']['topics']
-        assert '/frontier_goal_adapter/original_goal' in topics
-        assert '/frontier_goal_adapter/projected_goal' in topics
-        assert '/frontier_goal_adapter/status' in topics
-        assert '/frontier/navigate_to_pose/_action/status' in topics
+        assert '/muto/poi_grid/selected_pose' in topics
+        assert '/muto/poi_grid/result' in topics
+        assert not any('frontier' in topic.lower() for topic in topics)
 
 
 def test_velocity_smoother_is_the_final_cmd_vel_limiter():

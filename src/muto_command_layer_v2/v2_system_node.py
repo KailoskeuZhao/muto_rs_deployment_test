@@ -22,11 +22,13 @@ def main(args=None) -> None:
     parameter_node.declare_parameter("vlm_model", "")
     parameter_node.declare_parameter("vlm_timeout_s", 30.0)
     parameter_node.declare_parameter("registry_query_service", "/sam2/get_stored_objects")
-    parameter_node.declare_parameter("frontier_control_service", "/control_exploration")
     parameter_node.declare_parameter(
-        "frontier_goal_result_topic", "/explore/frontier_goal_result"
+        "poi_grid_spacing_m", 1.0
     )
-    parameter_node.declare_parameter("frontier_safety_watchdog_s", 180.0)
+    parameter_node.declare_parameter("poi_grid_result_topic", "/muto/poi_grid/result")
+    parameter_node.declare_parameter(
+        "poi_grid_selected_pose_topic", "/muto/poi_grid/selected_pose"
+    )
     parameter_node.declare_parameter("navigate_action", "/navigate_to_pose")
     parameter_node.declare_parameter("spin_action", "/spin")
     parameter_node.declare_parameter("scenario_completion_policy", "report_confirmed")
@@ -41,8 +43,8 @@ def main(args=None) -> None:
         name: parameter_node.get_parameter(name).value
         for name in (
             "mission_action", "vlm_action", "vlm_model", "vlm_timeout_s",
-            "registry_query_service", "frontier_control_service",
-            "frontier_goal_result_topic", "frontier_safety_watchdog_s",
+            "registry_query_service", "poi_grid_spacing_m",
+            "poi_grid_result_topic", "poi_grid_selected_pose_topic",
             "navigate_action", "spin_action",
             "scenario_completion_policy", "camera_topic", "map_stale_after_s",
             "tf_stale_after_s",
@@ -60,9 +62,9 @@ def main(args=None) -> None:
         vlm_model=values["vlm_model"],
         vlm_timeout_s=float(values["vlm_timeout_s"]),
         registry_query_service=values["registry_query_service"],
-        frontier_control_service=values["frontier_control_service"],
-        frontier_goal_result_topic=values["frontier_goal_result_topic"],
-        frontier_safety_watchdog_s=float(values["frontier_safety_watchdog_s"]),
+        poi_grid_spacing_m=float(values["poi_grid_spacing_m"]),
+        poi_grid_result_topic=values["poi_grid_result_topic"],
+        poi_grid_selected_pose_topic=values["poi_grid_selected_pose_topic"],
         nav_action=values["navigate_action"],
         spin_action=values["spin_action"],
         use_sim_time=bool(values["use_sim_time"]),

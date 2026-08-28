@@ -49,15 +49,10 @@ inline std::vector<std::string> default_nav2_topics()
     "/cmd_vel_nav",
     "/cmd_vel",
 
-    // Selected exploration/object targets and their terminal state. Candidate
-    // marker arrays and child-bag bookkeeping belong in the scoped mission bag.
-    "/explore/selected_frontier",
-    "/explore/frontier_goal_result",
-    "/explore/visibility_target_pose",
-    "/frontier_goal_adapter/original_goal",
-    "/frontier_goal_adapter/projected_goal",
-    "/frontier_goal_adapter/status",
-    "/frontier/navigate_to_pose/_action/status",
+    // Selected POI/object targets and their terminal state. Candidate marker
+    // arrays and child-bag bookkeeping belong in the scoped mission bag.
+    "/muto/poi_grid/selected_pose",
+    "/muto/poi_grid/result",
     "/muto/mission_board",
     "/muto/mission_event",
     "/muto/mission_rejection",

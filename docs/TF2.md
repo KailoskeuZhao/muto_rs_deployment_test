@@ -390,8 +390,8 @@ ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 
 That launch consumes the existing camera optical frames and, for registry and
 navigation functions, the existing `map -> odom -> base_frame` chain. It does
-not create a second TF tree. Frontier exploration is also a separate Nav2
-client and only consumes `map <- base_frame`.
+not create a second TF tree. POI-grid selection is an in-process v2 authority
+and consumes the same `map <- base_frame` snapshot used by motion preflight.
 
 ## Basic Verification
 

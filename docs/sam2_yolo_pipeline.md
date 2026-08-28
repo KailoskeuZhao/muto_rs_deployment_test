@@ -125,7 +125,7 @@ registry observation path.
 ## Start
 
 The v2 field composition starts the annotator, registry, VLM socket, mission
-executive, independent frontier authority, Nav2, and high-level recorder:
+executive, deterministic POI-grid authority, Nav2, and high-level recorder:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -591,7 +591,7 @@ ros2 action send_goal /muto/mission \
 ```
 
 The commander may query the registry, inspect each shortlisted stored JPEG,
-observe or rotate through the independent frontier authority, and approach only
+observe or rotate through the deterministic POI-grid authority, and approach only
 one target confirmed for the current registry revision. The deterministic
 motion authority selects a footprint-safe stance and delegates the actual path
 and obstacle avoidance to Nav2. Tool failures and stale evidence are recorded
@@ -608,8 +608,8 @@ on the mission board for replanning; they do not silently promote a candidate.
 | `/muto/mission_board` | `muto_command_layer_v2/msg/MissionBoard` | Current board projection. |
 | `/muto/mission_event` | `muto_command_layer_v2/msg/MissionEvent` | Decision, tool, evidence, and lifecycle trail. |
 
-The high-level recorder subscribes to these projections and the frontier
-adapter's compact diagnostics, writing one unique mission-scoped MCAP without
+The high-level recorder subscribes to these projections and the POI-grid
+result's compact diagnostics, writing one unique mission-scoped MCAP without
 raw camera, LiDAR, IMU, or point-cloud streams.
 
 ## YAML Persistence

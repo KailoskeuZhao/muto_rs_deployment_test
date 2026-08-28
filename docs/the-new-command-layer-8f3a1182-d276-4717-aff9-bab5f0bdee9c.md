@@ -11,10 +11,10 @@ The retired v1 `muto_command_layer` package and its v1-only
 `muto_command_bag`/`muto_exploration_bag` recorders have been removed from the
 workspace. The v2 package is the only command-layer implementation and no v2
 runtime imports the deleted actions, launch files, or state machine. The
-standalone `frontier_exploration_ros2` backend remains intentionally mounted:
-it is the v2 `observe` authority, kept cold-idle until the commander selects
-the search skill. Removing that backend would be a separate v2 behavior change,
-not legacy cleanup.
+the deterministic POI-grid planner is the v2 `observe` authority: it selects
+reachable known-free map cells and hands one pose at a time to Nav2. The old
+frontier explorer, adapter, launch, configuration, and package dependency are
+removed rather than kept as a parallel authority.
 
 The target remains ROS 2 Humble on the Muto robot. The new stack should be
 agentic, but the agent must not become the mission lifecycle owner.
@@ -29,14 +29,14 @@ Natural-language adapter + MissionExecutive
                   |
             CommanderAgent
                   |
-       independent registry/frontier/Nav2 backends
+       registry + POI-grid + Nav2 backends
                   |
           high-level event recorder
 ```
 
 This is the target shape, not a request to add one process per box. The
 natural-language adapter and executive may live in one node; the commander
-may be a separate node or component; registry, frontier, and Nav2 are
+may be a separate node or component; registry, POI-grid, and Nav2 are
 independent deterministic authorities; and the recorder is an observing
 subscriber, not a commander capability. Any backend currently embedded in the
 old command layer must be extracted or reimplemented before cutover.
@@ -57,7 +57,7 @@ Natural language
       -> MissionExecutive
       -> CommanderAgent
       -> Skill + typed tool call
-      -> independent registry/frontier/Nav2 backends
+      -> independent registry/POI-grid/Nav2 backends
       -> MissionBoard + MissionEvent
       -> action feedback, status, and high-level bag
 ```
@@ -68,7 +68,7 @@ Natural language
 - `CommanderAgent` chooses the next skill and, while that skill is active, a
   bounded typed tool call. It cannot publish raw ROS commands or mutate board
   state.
-- Registry, frontier, motion, and Nav2 are independent deterministic
+- Registry, POI-grid, motion, and Nav2 are independent deterministic
   authorities. No v2 runtime dependency may come from the old command-layer
   package, actions, launch graph, or state machine. Code currently trapped in
   that package must be extracted or reimplemented before cutover.
@@ -81,7 +81,7 @@ Natural language
 The v2 commander has exactly two high-level skills:
 
 - `search_for_object`: registry lookup, candidate confirmation, observation,
-  rotation, and deterministic exploration as needed;
+  rotation, and deterministic POI-grid search as needed;
 - `approach_confirmed_object`: approach one explicitly confirmed candidate.
 
 Not-found is an executive completion proposal, not a skill. The initial
@@ -93,9 +93,14 @@ commander-visible tools are exactly:
 - `rotate_to_heading`; and
 - `go_to_point`.
 
-Frontier selection, viewpoint generation, checkpointing, and recorder writes
-are deterministic internals. A static typed dispatch table is sufficient; no
+POI selection, viewpoint generation, checkpointing, and recorder writes are
+deterministic internals. A static typed dispatch table is sufficient; no
 dynamic capability/plugin registry is part of v2.
+
+The five tools are not granted to every skill: search uses registry lookup,
+candidate inspection, POI observation, and rotation; approach uses rotation and
+the confirmed-candidate `go_to_point`. This scoped table preserves agent choice
+without allowing raw coordinates to bypass POI selection.
 
 The commander may hand off from `search_for_object` to
 `approach_confirmed_object` only after the executive has recorded an explicit
@@ -145,7 +150,7 @@ runtime:
 - one commander agent chooses the next skill, then uses only that skill's
   scoped tools from the `MissionBoard` and current visual inputs;
 - deterministic skill runtimes and tool backends own low-level behavior such as
-  rotation, observation timing, Nav2 calls, frontier selection, registry
+  rotation, observation timing, Nav2 calls, POI selection, registry
   checking, checkpointing, and retry timing;
 - normal command failures are nonfatal evidence for the next agent decision;
   terminal failure is reserved for cancellation, safety/lifecycle corruption,
@@ -176,21 +181,21 @@ its natural completion, interruption, or failure boundary.
 
 The initial skill toolbox is intentionally small:
 
-- `search_for_object`: expand the searchable space using deterministic
-  frontier and viewpoint policy;
+- `search_for_object`: expand the searchable space using the deterministic
+  POI-grid and viewpoint policy;
 - `approach_confirmed_object`: use the confirmed object ID and deterministic
   approach/navigation policy to reach it.
 
 The search skill includes registry lookup, candidate imagery, visual
-confirmation, observation, rotation, and exploration as needed. A valid
+confirmation, observation, rotation, and POI-grid search as needed. A valid
 not-found result is an executive completion proposal, not a third skill.
 
 The skill runtime uses deterministic internals such as viewpoint selection,
-frontier selection, Nav2, and checkpoint writing. Only the five typed tools are
+POI selection, Nav2, and checkpoint writing. Only the five typed tools are
 commander-facing. The executive still validates safety, local limits,
 cancellation, confirmation invariants, and terminal outcomes, but it does not
 prescribe a universal sequence such as
-`check_registry -> inspect_candidates -> explore -> approach`.
+`check_registry -> inspect_candidates -> POI search -> approach`.
 
 ### ADR-003: Object Confirmation Has One Valid Chain
 
@@ -207,11 +212,11 @@ registry name/metadata lookup
 A registry shortlist is not a final object. Live camera evidence may motivate
 a registry check, but it does not directly create a final confirmed object.
 
-### ADR-004: Exploration Is Intent From The Agent, Policy In Code
+### ADR-004: Search Is Intent From The Agent, Policy In Code
 
-The commander may choose search tools, but it does not pick raw cells,
-viewpoints, or frontier goals directly. Deterministic exploration code chooses
-reachable cells, viewpoints, frontier goals, scan strategy, and fallback
+The commander may choose search tools, but it does not pick raw cells or
+viewpoints directly. The deterministic POI-grid planner chooses reachable
+known-free cells, viewpoints, scan strategy, and fallback
 behavior. The board reports what was attempted, why, and what progress or
 failure resulted.
 
@@ -254,30 +259,32 @@ This file is the living v2 design note. `commander_stack_reference.md`
 describes the current stack as-is for future AI agents. If v2 changes current
 behavior, update both the implementation and the relevant documentation.
 
-### ADR-009: Exploration Is Not Interrupted By Candidate Discovery
+### ADR-009: POI Search Is Not Interrupted By Candidate Discovery
 
 `search_for_object` runs as a deterministic search skill. Each `observe` tool
-call requests one explorer-owned frontier goal and returns a typed semantic
-result to Commander. New registry identities and newly shortlisted target
-candidates are recorded as evidence during the command, but they do not stop
-that frontier step early. The executive returns the evidence to the board
-when the step ends and Commander chooses what happens next.
+call requests one POI-grid goal and returns a typed semantic result to
+Commander. New registry identities and newly shortlisted target candidates are
+recorded as evidence during the command, but they do not stop that POI step
+early. The executive returns the evidence to the board when the step ends and
+Commander chooses what happens next.
 
-Allowed early-stop reasons for `search_for_object`:
+The intermediate `poi_goal_selected` event is not a return condition: the
+authority publishes it for observability and then waits for the matching Nav2
+result. Terminal results returned to Commander are:
 
-- `frontier_no_reachable_goal`;
-- `frontier_goals_blocked`;
-- `frontier_goal_succeeded`;
-- `frontier_exhausted`;
-- `frontier_no_progress`;
-- `frontier_goal_failed`;
-- `frontier_goal_canceled`;
-- `frontier_safety_watchdog_elapsed` (emergency only).
+- `poi_grid_unavailable`;
+- `poi_grid_stale`;
+- `poi_no_reachable_goal`;
+- `poi_goal_succeeded`;
+- `poi_exhausted`;
+- `poi_goal_failed`;
+- `poi_goal_canceled`.
 
-The explorer owns single-step goal shutdown, so Commander does not race a
-second stop request against Nav2 result delivery. Candidate confirmation
+The POI-grid authority owns single-step goal shutdown, so Commander does not
+race a second stop request against Nav2 result delivery. Candidate confirmation
 happens after the executive regains control and updates the board. There is no
-mission-wide time budget; the watchdog is only a local safety deadman.
+mission-wide time budget; Nav2's bounded action timeout and the executive's
+local failure/no-progress limits are the only local safety bounds.
 
 ### ADR-010: Skills Use One Generic Invocation Contract
 
@@ -349,13 +356,23 @@ that update the board.
 
 For example, `approach_confirmed_object` may request `go_to_point` as part of
 its approach strategy, while `search_for_object` may request observation or a
-heading change. The commander may choose the next tool based on the board, but
-it cannot publish raw ROS messages, bypass validation, or invent unbounded
-low-level control loops.
+heading change. The static scope does not expose `observe` to approach or raw
+`go_to_point` to search: POI selection remains the deterministic search
+authority. An approach call must carry the exact confirmed candidate ID;
+the normal form omits the point so the backend resolves the candidate's map
+position from the same registry revision and applies deterministic preflight
+projection. If a point is supplied, it must match that resolved position.
+The commander may choose the next tool based on the board, but it cannot
+publish raw ROS messages, bypass validation, or invent unbounded low-level
+control loops.
 
-`go_to_point` accepts a validated map-frame point or a board-provided viewpoint
-ID. `rotate_to_heading` accepts a map-frame heading; the deterministic motion
-backend handles angle wrapping, shortest-turn policy, and the 180-degree case.
+`go_to_point` accepts a validated map-frame point for ordinary motion or, for
+an approach skill, the confirmed candidate ID with an omitted point. In the
+latter form the backend resolves the candidate's map-frame registry position
+from the confirmed revision before Nav2 preflight; a supplied point must match
+that position. `rotate_to_heading` accepts a map-frame heading; the
+deterministic motion backend handles angle wrapping, shortest-turn policy, and
+the 180-degree case.
 
 ### ADR-019: One Canonical State Has Multiple Projections
 
@@ -400,7 +417,7 @@ silently substitutes another skill.
 
 Safety and lifecycle faults halt immediately. Explicit cancellation and local
 tool/skill limit expiry stop cooperatively at the current tool boundary.
-Candidate discovery never interrupts exploration. Ordinary tool/backend
+Candidate discovery never interrupts POI search. Ordinary tool/backend
 failures are committed and replanned rather than automatically becoming
 mission failure.
 
@@ -418,7 +435,7 @@ interfaces before cutover.
 
 Before v2 can replace the current stack, it must pass trace-asserting scenarios
 for multiple candidate rejection, 90-degree off-axis targets, occlusion,
-180-degree turns, discovery during exploration, fresh registry revisions,
+180-degree turns, discovery during POI search, fresh registry revisions,
 Nav2 recovery, cancellation during motion, and valid not-found exhaustion.
 
 ### ADR-027: The Design Note Starts With An AI Handoff
@@ -432,7 +449,7 @@ treated as the v2 design.
 ### ADR-028: The Initial Tool Set Is Small And Typed
 
 The first v2 tool set is `go_to_point`, `rotate_to_heading`, `observe`,
-`query_registry`, and `inspect_candidates`. Frontier selection, viewpoint
+`query_registry`, and `inspect_candidates`. POI selection, viewpoint
 generation, checkpointing, and recording are deterministic internals. Raw
 velocity commands, arbitrary ROS topic publishing, and direct unmediated Nav2
 access are not commander tools.
@@ -510,14 +527,14 @@ reachability from the latest navigation data using this sequence:
    the snapshot and execution. Nav2 acceptance/execution is the final runtime
    confirmation.
 
-For frontier goals, the unknown frontier cell is a discovery boundary, not a
-safe navigation endpoint. The frontier adapter projects it to the nearest
-reachable footprint-safe known-free cell and may choose a further staged cell
-when the nearest projection would produce no meaningful advance. For object
-approach, the helper selects a preflight-admissible stance outside the minimum
-standoff radius and orients the robot toward the object. Nav2 still owns the
-actual path, controller, obstacle avoidance, recovery, and success or abort
-decision.
+The POI grid never selects unknown cells: a candidate is a known-free,
+footprint-safe cell in the current connected component. The planner reports
+the selected pose and deterministic path estimate, then hands that pose to
+Nav2. For object approach, the adapter resolves the confirmed candidate's
+current map-frame registry position and lets the same preflight/projection
+policy choose a safe Nav2 endpoint. A heading change remains an explicit
+`rotate_to_heading` tool; Nav2 still owns the actual path, controller, obstacle
+avoidance, recovery, and success or abort decision.
 
 The runtime keeps a full internal reachability result for diagnostics and
 trace assertions. The commander receives only a compact projection rather than
@@ -536,8 +553,8 @@ operator/test data. A stale or unavailable costmap is `unknown`, not reachable.
 ### ADR-038: Nav2 Is The Navigation And Obstacle-Avoidance Authority
 
 The v2 command layer does not replace or override Nav2. Its costmap checks,
-footprint masks, connected-component tests, stance selection, and frontier
-projection are conservative preflight helpers for choosing or rejecting goals.
+footprint masks, connected-component tests, stance selection, and POI selection
+are conservative preflight helpers for choosing or rejecting goals.
 Nav2 remains authoritative for global planning, local planning, controller
 execution, dynamic obstacle avoidance, recovery behavior, and final navigation
 success or failure. A preflight `reachable` result is therefore an estimate,
@@ -576,7 +593,7 @@ authoritative.
 
 ### ADR-043: Projection Requires Explicit Permission
 
-Deterministic search internals may project frontier or viewpoint goals.
+Deterministic approach internals may project viewpoint goals.
 Ordinary `go_to_point` rejects an unsafe requested point unless its explicit
 `projection_policy` allows adjustment.
 
@@ -601,7 +618,7 @@ blockage, Nav2 rejection, and successful Nav2 execution.
 ### ADR-047: There Is No Mission-Wide Budget
 
 V2 does not impose a global wall-clock, distance, energy, or tool-call quota.
-Exploration may continue until the starting scenario's completion policy,
+POI search may continue until the starting scenario's completion policy,
 explicit cancellation, safety/lifecycle failure, or infrastructure failure
 ends it. Local limits still exist for individual tool timeouts, bounded retries,
 skill no-progress/failure thresholds, and storage/resource safety.
@@ -615,7 +632,7 @@ mid- and high-level data only, including:
 - mission, skill, tool, board, decision, and terminal events;
 - registry revisions, candidate IDs, confirmation/rejection evidence, and
   object summaries;
-- frontier/viewpoint selections, projected goals, Nav2 goal/status/result,
+- POI/viewpoint selections, projected goals, Nav2 goal/status/result,
   controller/recovery status, and compact motion progress;
 - compact robot pose, map/search coverage, scenario configuration, recorder
   status, and operator annotations;
@@ -860,7 +877,7 @@ version, v2 tool-table/configuration revision, and build revision.
 
 ### ADR-086: Review Before Implementation
 
-The v2 design frontier is complete enough for a dedicated review pass. No
+The v2 design is complete enough for a dedicated review pass. No
 production implementation should begin until the ADRs, domain model, public
 interfaces, authority boundaries, scenario policies, and trace obligations are
 reviewed together. Review may revise these decisions; implementation follows
@@ -885,7 +902,7 @@ behavior. The v2 baseline is:
 - scenario identity supplied by simulation/test configuration, not ordinary
   user requests; and
 - a lifecycle-managed high-level recorder subscribed to the explicit mission
-  board/event/rejection and frontier-adapter diagnostic allowlist plus its own
+  board/event/rejection and POI-grid diagnostic allowlist plus its own
   manifest/status topics, not a commander capability. It opens one
   mission-scoped bag on acceptance, closes it on a terminal outcome, and never
   records raw sensor streams.
@@ -969,7 +986,7 @@ unsupported user input.
 
 `HighLevelBagProfile`: the explicit rosbag2/MCAP allowlist for canonical
 mission board/event/rejection projections, recorder manifest/status, selected
-frontier poses, and frontier-adapter original/projected/status diagnostics.
+POI poses, and typed POI-grid result diagnostics.
 Those bounded projections carry the compact registry, reachability,
 navigation-result, and progress fields needed for diagnostics; the profile
 excludes raw sensor streams.
@@ -1012,9 +1029,10 @@ Implementation status (2026-08-22):
   registry/Nav2 authority adapters, an independent ROS composition/launch,
   and a `muto_vlm_socket` action planner transport with a strict decision
   schema.
-- The package builds and its eleven Humble CTest targets pass in the
-  `ros:humble-ros-base` container. The host Jazzy build is not the deployment
-  authority.
+- The package builds and its focused Humble Python/ROS transport targets pass
+  in the `ros:humble-ros-base` container. The host Jazzy build is not the
+  deployment authority; the full workspace still requires the installed
+  Humble/aarch64 dependency set for a deployment claim.
 - A full v2 ROS graph test now drives a natural-language mission through the
   real v2 composition, VLM action transport, registry name/label shortlist,
   stored-candidate confirmation, and terminal board/event result using
@@ -1029,33 +1047,33 @@ Implementation status (2026-08-22):
   timestamps; freshness still uses the latest message time. Registry
   revisions likewise ignore detector ``last_seen``/observation-count churn
   and millimetre-scale pose jitter, so a stable shortlist does not repeatedly
-  invalidate confirmation or interrupt bounded exploration. A same-revision
+  invalidate confirmation or interrupt bounded POI search. A same-revision
   lookup preserves prior rejection/confirmation evidence; only a genuinely
   new shortlist revision resets it.
-- The v2 composition now adapts one explorer-owned frontier step through the
-  independent `frontier_exploration_ros2` control service and typed
-  `/explore/frontier_goal_result` event, and the high-level rosbag2 writer opens per-mission output, writes a typed
+- The v2 composition now selects one known-free reachable POI-grid goal per
+  `observe`, publishes a typed `/muto/poi_grid/result` event and selected pose,
+  and waits for the Nav2 action result before returning control to Commander.
+  The high-level rosbag2 writer opens per-mission output, writes a typed
   manifest/status record, and records only the bounded board/event/rejection/
-  frontier-adapter allowlist. The writer defaults to unique persistent MCAP
-  output under `/opt/muto_rs_ws/bags` and accepts explicit URI/run-id
-  overrides. No old command-layer package or action is imported by v2.
+  POI-grid allowlist. The writer defaults to unique persistent MCAP output
+  under `/opt/muto_rs_ws/bags` and accepts explicit URI/run-id overrides. No
+  old command-layer package is imported by v2.
 - A v2-only `v2_nav2_sim_launch.py` now supplies a reactive 2-D map/odometry/
   LiDAR plant and starts the existing independent Nav2 pipeline with hardware,
   localization, mapping, and Nav2-bag recording disabled. Humble startup
   smoke reached the Nav2 readiness gate and launched the controller, planner,
   smoother, behavior, BT navigator, and lifecycle manager without legacy
   command-layer processes. This validates transport and authority startup,
-  not a completed object mission: real VLM, registry, frontier, and mission
+  not a completed object mission: real VLM, registry, POI-grid, and mission
   scenario fixtures remain the final cutover gate.
 - With the same launch, a real `/navigate_to_pose` goal to `(0.8, 0.0)` was
   accepted and finished `SUCCEEDED` in the reactive plant; this verifies the
   Nav2 controller/plant feedback loop, not merely action-server discovery.
-- The traced v2 mission then completed the full simulated path with a
-  deterministic external VLM/registry authority: `query_registry` →
-  `inspect_candidates` → confirmed-target handoff to
-  `approach_confirmed_object` → real `go_to_point`/Nav2 → `MISSION_SUCCEEDED`
-  for `chair-1`. The test also caught and fixed the previously unreachable
-  skill-handoff rule; an unconfirmed handoff is still rejected.
+- The full-graph trace completes the deterministic external VLM/registry path:
+  `query_registry` → `inspect_candidates` → revision-scoped confirmation →
+  `report_confirmed`. The adapter tests also verify the approach handoff and
+  confirmed-candidate map-position resolution; a real approach/Nav2 scenario
+  remains a separate simulated cutover gate.
 - The v2 launch exposes `scenario_id`, `scenario_completion_policy`, raw
   camera input, map/TF freshness limits, and recorder output explicitly. The
   camera adapter degrades to `visual_unavailable` when optional host image
@@ -1063,21 +1081,41 @@ Implementation status (2026-08-22):
   Humble deployment still needs a valid camera/registry/VLM path for visual
   confirmation.
 - A v2-only `v2_hardware_smoke_launch.py` now composes the existing production
-  hardware/localization/SLAM/Nav2 pipeline with the independent frontier
-  explorer, direct SAM2 annotator, object registry, VLM socket, v2 executive,
+  hardware/localization/SLAM/Nav2 pipeline with the deterministic POI-grid
+  authority, direct SAM2 annotator, object registry, VLM socket, v2 executive,
   and high-level MCAP recorder. An optional odometry input bag can be enabled
   separately (`record_odometry_bag:=true`); it keeps motor-angle polling
-  disabled by default. The launch keeps frontier idle until the executive
-  starts a bounded observation session and is ready for a supervised Humble
-  robot smoke; the connected hardware/perception/network result remains an
+  disabled by default. The executive starts one bounded POI observation at a
+  time and is ready for a supervised Humble robot smoke; the connected
+  hardware/perception/network result remains an
   operational gate rather than a source-level claim. Raw Nav2/odometry bag
   profiles remain explicit opt-ins.
 
-Cutover verification (2026-08-24):
+Cutover verification (2026-08-26):
 
 - `colcon list` in the Humble container reports `muto_command_layer_v2` and no
   deleted v1 command or recorder packages.
-- The v2 and Nav2 contract suites pass on the host (`44 passed, 5 skipped`);
+- The v2 and Nav2 contract suites pass on the host (`51 passed, 5 skipped`);
   Python syntax compilation passes for the v2 and affected launch modules.
-- The standalone frontier backend remains in the graph because v2 imports its
-  typed control service. It is not an old v1 command-layer process.
+- No frontier backend, action, launch, or package dependency remains in the
+  graph. POI-grid selection is implemented in the v2 authority and Nav2 owns
+  navigation and obstacle avoidance.
+
+Constitutional alignment review (2026-08-26):
+
+- Search is now restricted to registry lookup, candidate inspection, POI
+  observation, and explicit rotation. It cannot select a raw navigation point;
+  approach cannot invoke POI search. This keeps skill intent agentic while
+  keeping viewpoint selection deterministic and owned by the POI authority.
+- Confirmed approach movement remains bound to the exact candidate ID,
+  current registry revision, map frame, and candidate position. Registry
+  response ordering cannot create a semantic revision change, and failed
+  invalid calls are recorded as nonfatal board evidence.
+- Source-tree v2 tests pass (`51 passed, 5 skipped`); the rebuilt Humble
+  installed-interface run passes (`60 passed`, with only pytest cache-write
+  warnings). This is a source/install gate, not a claim of connected
+  Humble/aarch64 hardware readiness.
+- Humble CMake/CTest configuration and build pass; all 13 v2 CTest targets
+  pass in the isolated container, with the optional full-graph case skipped
+  there when external VLM/registry interfaces are absent and executed in the
+  overlay-backed 60-test run.

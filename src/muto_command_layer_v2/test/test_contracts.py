@@ -201,7 +201,7 @@ def test_search_exhaustion_completion_requires_authority_evidence():
         ToolName.OBSERVE,
         success=True,
         progress_delta=1.0,
-        reason_code="frontier_goal_succeeded",
+        reason_code="poi_goal_succeeded",
     )
     with pytest.raises(ContractError, match="explicit exhaustion evidence"):
         executive.complete(search_exhausted=True)
@@ -210,7 +210,7 @@ def test_search_exhaustion_completion_requires_authority_evidence():
         ToolName.OBSERVE,
         success=True,
         progress_delta=1.0,
-        reason_code="frontier_exhausted",
+        reason_code="poi_exhausted",
     )
     assert executive.complete(search_exhausted=True).lifecycle_state is LifecycleState.SUCCEEDED
 

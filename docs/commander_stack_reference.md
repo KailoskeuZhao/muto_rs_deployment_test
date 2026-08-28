@@ -15,15 +15,14 @@ natural-language request
   -> MissionExecutive
   -> CommanderAgent
   -> scoped typed tool
-  -> independent registry/frontier/Nav2 authority
+  -> independent registry/POI-grid/Nav2 authority
   -> MissionBoard + MissionEvent + high-level MCAP
 ```
 
-The standalone `frontier_exploration_ros2` package remains an exploration
-authority because v2 adapts its control service directly; it is not a command
-layer and must remain cold-idle until the executive requests one
-explorer-owned frontier step. The explorer publishes a typed result on
-`/explore/frontier_goal_result` and returns cold-idle before Commander chooses
+The v2 composition owns a deterministic POI-grid search authority. It remains
+cold until the executive requests one observation step, selects only a
+known-free reachable map cell, publishes a typed result on
+`/muto/poi_grid/result`, and waits for Nav2 to finish before Commander chooses
 the next tool. Nav2 remains the final navigation and obstacle-avoidance
 authority.
 
@@ -42,8 +41,8 @@ ros2 launch muto_command_layer_v2 v2_command_layer_launch.py
 
 Neither launch starts the retired v1 action servers or imports their state
 machine. The v2 high-level recorder is sensor-free: it records mission board,
-events, typed rejection, registry evidence, frontier selection/projection, and
-recorder lifecycle into one unique MCAP per mission. Raw camera, LiDAR, IMU,
+events, typed rejection, registry evidence, POI selection/result, and recorder
+lifecycle into one unique MCAP per mission. Raw camera, LiDAR, IMU,
 and point-cloud recording is opt-in through the dedicated diagnostic bags.
 
 ## Commander contract
@@ -51,7 +50,7 @@ and point-cloud recording is opt-in through the dedicated diagnostic bags.
 The commander has exactly two skills:
 
 - `search_for_object`: use registry lookup, revision-scoped candidate
-  confirmation, one-goal observation/rotation steps, and exploration as needed;
+  confirmation, one-goal POI observation/rotation steps, and search as needed;
 - `approach_confirmed_object`: approach exactly one candidate confirmed for the
   current registry revision.
 
@@ -62,6 +61,11 @@ The commander-facing tool table is fixed and typed:
 - `observe`
 - `rotate_to_heading`
 - `go_to_point`
+
+The table is statically scoped by skill. Search may query/inspect the registry,
+observe through the deterministic POI grid, or rotate. Approach may rotate or
+send the exact confirmed-candidate `go_to_point`; it cannot invoke POI search
+or choose an arbitrary search coordinate.
 
 The model receives the objective, completion policy, registry revision and
 shortlist evidence, robot pose/readiness, current board/progress, recent tool
@@ -81,7 +85,12 @@ inspection is tied to the exact registry revision and stored-JPEG evidence.
 At most one candidate may be confirmed. A target is approach-eligible only
 when its confirmation revision equals the board's current registry revision.
 Repeated unchanged lookups preserve the existing evidence; they do not reset
-the search or interrupt an active bounded observation.
+the search or interrupt an active POI observation.
+An approach `go_to_point` call must carry that exact confirmed candidate ID.
+The normal form omits the raw point; the backend resolves the candidate's map
+position from the same revision and uses the deterministic projection policy.
+If a point is supplied, it must match that resolved position; the backend
+never performs a new lookup or substitutes another candidate.
 
 ## Reachability and navigation
 
@@ -97,10 +106,9 @@ recovery, dynamic obstacle avoidance, and final success/failure.
 Malformed planner output, rejected preconditions, stale evidence, and ordinary
 tool failures become board-visible nonfatal evidence for the next decision.
 Cancellation, safety/lifecycle corruption, infrastructure failure, and the
-scenario's terminal policy may end a mission. A legacy frontier
-start/completion event is not the v2 completion authority; inspect the typed
-frontier result, frontier adapter, `/navigate_to_pose`, motion state, and the
-mission bag.
+scenario's terminal policy may end a mission. POI exhaustion is authoritative
+only for `search_until_exhausted`; inspect the typed POI result,
+`/navigate_to_pose`, motion state, and the mission bag.
 
 ## Verification checklist
 

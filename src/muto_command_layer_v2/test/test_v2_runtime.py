@@ -137,9 +137,27 @@ def test_static_dispatcher_requires_confirmation_for_approach():
     with pytest.raises(ContractError):
         dispatcher.dispatch(ToolCall(ToolName.GO_TO_POINT, point=(1.0, 1.0)), ex.board)
 
-    ex._board = ex.board.evolve(confirmed_target_id="c1")  # test fixture only
+    ex._board = ex.board.evolve(
+        registry_revision="r1",
+        confirmed_target_id="c1",
+        confirmed_registry_revision="r1",
+    )  # test fixture only
     result = dispatcher.dispatch(
         ToolCall(ToolName.GO_TO_POINT, point=(1.0, 1.0), candidate_id="c1"),
+        ex.board,
+    )
+    assert result.success
+
+    with pytest.raises(ContractError):
+        dispatcher.dispatch(
+            ToolCall(ToolName.GO_TO_POINT, point=(1.0, 1.0)),
+            ex.board,
+        )
+
+    # A confirmed candidate ID is sufficient for the backend to resolve the
+    # authoritative registry position; the model need not invent coordinates.
+    result = dispatcher.dispatch(
+        ToolCall(ToolName.GO_TO_POINT, candidate_id="c1"),
         ex.board,
     )
     assert result.success
@@ -161,11 +179,20 @@ def test_commander_allows_only_confirmed_search_to_approach_handoff():
         registry_revision="r1",
         evidence=(CandidateEvidence("c1", "r1", evidence_id="img-c1", source="test", confidence=1.0),),
     )
+    with pytest.raises(PlannerFailure):
+        parse_decision(
+            {
+                "schema_version": "muto_command_layer_v2",
+                "skill": "approach_confirmed_object",
+                "tool": {"name": "observe"},
+            },
+            ex.board,
+        )
     decision = parse_decision(
         {
             "schema_version": "muto_command_layer_v2",
             "skill": "approach_confirmed_object",
-            "tool": {"name": "observe"},
+            "tool": {"name": "go_to_point", "candidate_id": "c1"},
         },
         ex.board,
     )
@@ -180,6 +207,36 @@ def test_commander_allows_only_confirmed_search_to_approach_handoff():
             },
             ex_unconfirmed.board,
         )
+
+
+def test_search_cannot_bypass_poi_grid_with_raw_navigation():
+    board = _running().board
+    with pytest.raises(PlannerFailure):
+        parse_decision(
+            {
+                "schema_version": "muto_command_layer_v2",
+                "skill": "search_for_object",
+                "tool": {"name": "go_to_point", "point": [1.0, 0.0]},
+            },
+            board,
+        )
+
+
+def test_failed_invalid_approach_result_is_nonfatal_board_evidence():
+    ex = _running(SkillName.APPROACH_CONFIRMED_OBJECT)
+    ex._board = ex.board.evolve(
+        registry_revision="r1",
+        confirmed_target_id="c1",
+        confirmed_registry_revision="r1",
+    )
+    ex.record_tool_result(
+        ToolName.GO_TO_POINT,
+        success=False,
+        reason_code="confirmed_target_mismatch",
+        candidate_id="wrong-candidate",
+    )
+    assert ex.board.lifecycle_state.value == "running"
+    assert ex.board.last_reason_code == "confirmed_target_mismatch"
 
 
 def test_registry_revision_replaces_shortlist_and_old_confirmation():

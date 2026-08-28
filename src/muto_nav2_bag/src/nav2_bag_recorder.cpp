@@ -196,8 +196,6 @@ public:
       "stop_service", kDefaultStopService);
     nav2_params_file_ =
       declare_parameter<std::string>("nav2_params_file", "");
-    frontier_params_file_ =
-      declare_parameter<std::string>("frontier_params_file", "");
     slam_params_file_ =
       declare_parameter<std::string>("slam_params_file", "");
     nav_to_pose_bt_file_ =
@@ -388,9 +386,6 @@ private:
     snapshots_.clear();
     snapshot_config(
       "nav2", nav2_params_file_, "nav2_params.snapshot.yaml");
-    snapshot_config(
-      "frontier", frontier_params_file_,
-      "frontier_exploration_params.snapshot.yaml");
     snapshot_config(
       "slam", slam_params_file_, "slam_params.snapshot.yaml");
     snapshot_config(
@@ -752,7 +747,6 @@ private:
   std::string path_topic_;
   std::string stop_service_name_;
   std::string nav2_params_file_;
-  std::string frontier_params_file_;
   std::string slam_params_file_;
   std::string nav_to_pose_bt_file_;
   std::string nav_through_poses_bt_file_;

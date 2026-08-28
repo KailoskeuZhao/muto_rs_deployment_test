@@ -217,9 +217,9 @@ The global costmap combines the SLAM map with current sensor observations.
 
 The static layer consumes `/map`. The obstacle layer adds current LiDAR and
 camera observations. The inflation layer expands lethal costs for planning.
-It does not inflate around unknown cells: frontier exploration and NavFn are
-configured to enter unknown space, so treating each unknown cell as an
-inflation source would turn the exploration boundary into a virtual wall.
+It does not inflate around unknown cells. The v2 POI-grid planner still treats
+unknown cells as unavailable endpoints, so unknown-space handling cannot create
+a false reachable POI.
 
 ## Footprint Assumption
 

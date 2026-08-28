@@ -166,7 +166,7 @@ local_costmap:
         cost_scaling_factor: 6.0
         inflation_radius: 0.42
         inflate_unknown: false
-        # Frontier navigation intentionally plans into NO_INFORMATION cells.
+        # POI-grid navigation selects only known-free cells before dispatch.
         # Humble treats every unknown cell as an inflation source when this is
         # true, which can turn nearly the complete rolling/global map lethal.
         inflate_around_unknown: false

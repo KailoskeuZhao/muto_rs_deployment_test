@@ -76,10 +76,20 @@ class EventType(str, Enum):
 
 
 _SKILL_TOOLS = {
-    SkillName.SEARCH_FOR_OBJECT: frozenset(ToolName),
+    # Search movement is deliberately mediated by ``observe``.  The POI-grid
+    # authority chooses the reachable viewpoint; exposing a raw
+    # ``go_to_point`` here would let the model bypass that authority and turn
+    # search into an unbounded coordinate-control loop.
+    SkillName.SEARCH_FOR_OBJECT: frozenset(
+        {
+            ToolName.QUERY_REGISTRY,
+            ToolName.INSPECT_CANDIDATES,
+            ToolName.OBSERVE,
+            ToolName.ROTATE_TO_HEADING,
+        }
+    ),
     SkillName.APPROACH_CONFIRMED_OBJECT: frozenset(
         {
-            ToolName.OBSERVE,
             ToolName.ROTATE_TO_HEADING,
             ToolName.GO_TO_POINT,
         }

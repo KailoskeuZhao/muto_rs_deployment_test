@@ -39,7 +39,7 @@ def test_registry_revision_is_deterministic_and_content_scoped():
 
     # Detector freshness updates are not a new shortlist.  They must not
     # invalidate a same-revision visual rejection/confirmation or interrupt a
-    # bounded frontier search.
+    # bounded POI-grid search.
     refreshed = _Object()
     refreshed.last_seen = type("_LaterStamp", (), {"sec": 99, "nanosec": 7})()
     refreshed.observation_count = 99
@@ -49,6 +49,17 @@ def test_registry_revision_is_deterministic_and_content_scoped():
     moved = _Object()
     moved.position = type("_MovedPoint", (), {"x": 1.31, "y": -0.25})()
     assert _snapshot_revision((moved,)) != first
+
+    second_object = type("_SecondObject", (), {
+        "name": "table_1",
+        "label": "table",
+        "class_id": 3,
+        "position": type("_SecondPoint", (), {"x": 0.1, "y": 0.2})(),
+        "image_path": "/tmp/table.jpg",
+    })()
+    assert _snapshot_revision((_Object(), second_object)) == _snapshot_revision(
+        (second_object, _Object())
+    )
 
 
 def test_heading_wrap_chooses_positive_pi_for_exact_half_turn():

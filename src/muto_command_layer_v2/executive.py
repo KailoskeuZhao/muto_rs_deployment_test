@@ -28,7 +28,7 @@ from .contracts import (
 # bounded cycle ending cooperatively is useful progress, but it is not proof
 # that the scenario's search space has been exhausted.
 _SEARCH_EXHAUSTION_REASON_CODES = frozenset((
-    "frontier_exhausted",
+    "poi_exhausted",
     "search_exhausted",
 ))
 
@@ -164,6 +164,13 @@ class MissionExecutive:
             raise ContractError("unsupported tool") from exc
         if tool not in _SKILL_TOOLS[self._board.active_skill]:
             raise ContractError("tool is not allowed by the active skill")
+        if (
+            tool is ToolName.GO_TO_POINT
+            and self._board.active_skill is SkillName.APPROACH_CONFIRMED_OBJECT
+            and success
+        ):
+            if candidate_id != self._board.confirmed_target_id:
+                raise ContractError("approach result is not for the confirmed target")
         if progress_delta < 0.0:
             raise ContractError("progress_delta must be non-negative")
         evidence = tuple(

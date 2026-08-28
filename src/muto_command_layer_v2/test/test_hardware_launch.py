@@ -19,7 +19,6 @@ def test_hardware_smoke_uses_direct_v2_authorities_and_not_retired_composition()
     assert 'package="muto_command_layer_v2"' in text
     for package, launch_name in (
         ("muto_slam_mapping", "muto_nav2_pipeline_launch.py"),
-        ("muto_slam_mapping", "frontier_exploration_launch.py"),
         ("sam2_image_annotator", "sam2_image_annotator_launch.py"),
         ("sam2_object_registry", "object_registry_launch.py"),
         ("muto_vlm_socket", "vlm_socket_launch.py"),
@@ -38,10 +37,9 @@ def test_hardware_smoke_uses_direct_v2_authorities_and_not_retired_composition()
     assert 'scoped=False,' in text
     assert '"launch_nav2_bag", default_value="false"' in text
     assert '"record_odometry_bag", default_value="false"' in text
-    assert '"autostart": "false"' in text
-    assert '"frontier_goal_result_topic",' in text
-    assert '"frontier_safety_watchdog_s",' in text
-    assert "/explore/frontier_goal_result" in text
+    assert '"poi_grid_result_topic",' in text
+    assert '"poi_grid_selected_pose_topic",' in text
+    assert "/muto/poi_grid/result" in text
     assert '"bag_storage_id", default_value="mcap"' in text
     assert '"commander_model": LaunchConfiguration("vlm_model")' in text
 
@@ -63,9 +61,11 @@ def test_recorder_defaults_are_unique_persistent_and_overrideable():
     )
 
 
-def test_frontier_result_default_matches_production_explorer_topic():
+def test_poi_grid_result_is_the_search_authority_topic():
     for path in (COMPOSITION, SYSTEM_NODE, AUTHORITIES, COMMAND_LAUNCH):
-        assert "/explore/frontier_goal_result" in path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        assert "/muto/poi_grid/result" in text
+        assert "frontier_exploration_ros2" not in text
 
 
 def test_nodes_do_not_redeclare_ros_owned_use_sim_time_parameter():

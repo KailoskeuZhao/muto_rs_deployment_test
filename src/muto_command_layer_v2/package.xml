@@ -14,7 +14,6 @@
   <depend>action_msgs</depend>
   <depend>builtin_interfaces</depend>
   <depend>cv_bridge</depend>
-  <depend>frontier_exploration_ros2</depend>
   <depend>geometry_msgs</depend>
   <depend>lifecycle_msgs</depend>
   <depend>launch</depend>

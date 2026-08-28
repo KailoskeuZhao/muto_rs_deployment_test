@@ -7,6 +7,7 @@ injected by the ROS integration layer; this module remains ROS-free.
 """
 
 from dataclasses import dataclass
+from math import isfinite
 from threading import RLock
 from typing import Optional, Protocol, Sequence, Tuple
 
@@ -48,10 +49,16 @@ class ToolCall:
         if self.point is not None:
             if len(self.point) != 2:
                 raise ContractError("point must contain x and y")
-            if not all(isinstance(value, (int, float)) for value in self.point):
-                raise ContractError("point coordinates must be numeric")
-        if self.heading is not None and not isinstance(self.heading, (int, float)):
-            raise ContractError("heading must be numeric")
+            if not all(
+                isinstance(value, (int, float)) and isfinite(float(value))
+                for value in self.point
+            ):
+                raise ContractError("point coordinates must be finite numbers")
+        if self.heading is not None and (
+            not isinstance(self.heading, (int, float))
+            or not isfinite(float(self.heading))
+        ):
+            raise ContractError("heading must be a finite number")
         if self.frame_id != "map":
             raise ContractError("motion tools require the map frame")
         if self.projection_policy not in {"reject", "allow"}:
@@ -135,21 +142,36 @@ class ToolDispatcher:
                 "{} is not allowed by {}".format(call.tool.value, board.active_skill.value)
             )
         if call.tool == ToolName.GO_TO_POINT:
-            if call.point is None:
-                raise ContractError("go_to_point requires a map-frame point")
             if board.active_skill == SkillName.APPROACH_CONFIRMED_OBJECT:
                 if not board.confirmed_target_id:
                     raise ContractError("approach requires a confirmed target")
-                if call.candidate_id and call.candidate_id != board.confirmed_target_id:
+                if (
+                    not board.confirmed_registry_revision
+                    or board.confirmed_registry_revision != board.registry_revision
+                ):
+                    raise ContractError(
+                        "approach requires confirmation for the current registry revision"
+                    )
+                if call.candidate_id != board.confirmed_target_id:
                     raise ContractError("go_to_point target is not the confirmed target")
+            elif call.point is None:
+                raise ContractError("go_to_point requires a map-frame point")
         if call.tool == ToolName.ROTATE_TO_HEADING and call.heading is None:
             raise ContractError("rotate_to_heading requires a heading")
         method_name = TOOL_DISPATCH[call.tool]
         method = getattr(self._backend, method_name)
-        is_motion = call.tool in {ToolName.ROTATE_TO_HEADING, ToolName.GO_TO_POINT}
-        if is_motion and self._motion_active:
-            raise ToolExecutionError("a motion tool is already active")
+        # ``observe`` is a motion tool in the production composition: the POI
+        # authority selects a goal and waits for Nav2 before returning.  Keep
+        # it in the same serialized lane as explicit rotation and navigation
+        # so a second planner decision cannot overlap an active POI goal.
+        is_motion = call.tool in {
+            ToolName.OBSERVE,
+            ToolName.ROTATE_TO_HEADING,
+            ToolName.GO_TO_POINT,
+        }
         with self._lock:
+            if is_motion and self._motion_active:
+                raise ToolExecutionError("a motion tool is already active")
             self._active_call = call
             if is_motion:
                 self._motion_active = True

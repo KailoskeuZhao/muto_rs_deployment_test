@@ -1,15 +1,15 @@
 """Independent authority contracts and the v2 tool adapter.
 
-The command layer owns neither object detection, exploration, nor navigation.
-Those authorities are injected through these small protocols.  ROS Humble
-implementations can wrap the existing registry/frontier/Nav2 nodes without
-importing the old command-layer package.
+The command layer owns neither object detection nor navigation.  Registry and
+POI-grid search are injected through these small protocols; Nav2 remains the
+navigation authority and is never replaced by the command layer.
 """
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Mapping, Protocol, Sequence, Tuple
 
-from .contracts import CandidateEvidence, MissionBoard, ReachabilityReport
+from .contracts import CandidateEvidence, MissionBoard, ReachabilityReport, SkillName
 from .tools import ToolBackend, ToolCall, ToolResult
 
 
@@ -161,11 +161,95 @@ class V2ToolBackend(ToolBackend):
         return _motion_tool_result(self._motion.rotate_to_heading(call.heading, board))
 
     def go_to_point(self, call: ToolCall, board: MissionBoard) -> ToolResult:
-        if call.point is None:
-            return ToolResult(False, reason_code="invalid_point")
-        return _motion_tool_result(
-            self._motion.go_to_point(call.point, call.projection_policy, board)
+        point = call.point
+        projection_policy = call.projection_policy
+        detail_prefix = ""
+        candidate = None
+        if board.active_skill is SkillName.APPROACH_CONFIRMED_OBJECT:
+            # The dispatcher enforces these invariants for model output, but
+            # keep the backend fail-closed for direct callers and transport
+            # races.  An approach may never turn an arbitrary candidate or
+            # stale revision into a movement target.
+            if not board.confirmed_target_id:
+                return ToolResult(False, reason_code="confirmed_target_required")
+            if call.candidate_id != board.confirmed_target_id:
+                return ToolResult(False, reason_code="confirmed_target_mismatch")
+            if (
+                not self._snapshot.checked
+                or not self._snapshot.revision
+                or not board.confirmed_registry_revision
+            ):
+                return ToolResult(False, reason_code="registry_snapshot_unavailable")
+            if (
+                board.confirmed_registry_revision != board.registry_revision
+                or board.confirmed_registry_revision != self._snapshot.revision
+            ):
+                return ToolResult(False, reason_code="registry_revision_mismatch")
+            candidate = next(
+                (
+                    item for item in self._snapshot.candidates
+                    if item.candidate_id == call.candidate_id
+                ),
+                None,
+            )
+            if candidate is None:
+                return ToolResult(False, reason_code="candidate_not_in_snapshot")
+
+            if candidate.registry_revision != self._snapshot.revision:
+                return ToolResult(False, reason_code="candidate_revision_mismatch")
+            frame_id = str(candidate.metadata.get("frame_id", "map"))
+            if frame_id != "map":
+                return ToolResult(False, reason_code="candidate_position_frame_invalid")
+            try:
+                resolved_point = (
+                    float(candidate.metadata["x"]),
+                    float(candidate.metadata["y"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                return ToolResult(False, reason_code="candidate_position_unavailable")
+            if not all(isfinite(value) for value in resolved_point):
+                return ToolResult(False, reason_code="candidate_position_unavailable")
+
+            # A confirmed approach is bound to the registry position.  A
+            # caller may omit ``point`` (the normal model form), but may not
+            # smuggle an unrelated coordinate alongside the confirmed ID.
+            if point is not None:
+                if not all(isfinite(float(value)) for value in point):
+                    return ToolResult(False, reason_code="invalid_point")
+                if any(
+                    abs(float(value) - float(expected)) > 1e-3
+                    for value, expected in zip(point, resolved_point)
+                ):
+                    return ToolResult(False, reason_code="candidate_position_mismatch")
+            point = resolved_point
+            # A registry position is an object observation, not a guaranteed
+            # free Nav2 endpoint.  The deterministic approach path may use
+            # Nav2/preflight projection; ordinary point tools keep their
+            # explicit reject/allow policy.
+            projection_policy = "allow"
+            detail_prefix = "candidate_position_resolved:{}".format(call.candidate_id)
+        elif point is None:
+            return ToolResult(False, reason_code="point_required")
+        result = _motion_tool_result(
+            self._motion.go_to_point(point, projection_policy, board)
         )
+        if detail_prefix:
+            detail = detail_prefix
+            if result.detail:
+                detail += ";" + result.detail
+            result = ToolResult(
+                success=result.success,
+                reason_code=result.reason_code,
+                detail=detail,
+                candidate_ids=result.candidate_ids,
+                rejected_candidate_ids=result.rejected_candidate_ids,
+                confirmed_target_id=result.confirmed_target_id,
+                registry_revision=result.registry_revision,
+                progress_delta=result.progress_delta,
+                reachability=result.reachability,
+                evidence=result.evidence,
+            )
+        return result
 
     def cancel_active(self) -> None:
         for authority in (self._motion, self._registry):

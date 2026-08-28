@@ -1,11 +1,12 @@
 """Supervised v2 hardware smoke composition for the Humble Muto.
 
 This launch starts the production sensor/localization/mapping/Nav2 pipeline,
-the independent frontier explorer, the direct SAM2/registry/VLM authorities,
-and the v2 executive.  It intentionally does not include the retired command
-layer launch.  Hardware is enabled by default because this is a field smoke,
-not a simulated-world fixture; keep the robot lifted or in a safe test area
-until the readiness gates and first mission are confirmed.
+the direct SAM2/registry/VLM authorities, and the v2 executive with its
+deterministic POI-grid search authority.  It intentionally does not include
+the retired command layer or an external search process.  Hardware is
+enabled by default because this is a field smoke, not a simulated-world
+fixture; keep the robot lifted or in a safe test area until the readiness
+gates and first mission are confirmed.
 """
 
 from __future__ import annotations
@@ -55,11 +56,7 @@ def _default_odometry_bag_path() -> str:
 
 
 def generate_launch_description():
-    slam_share = get_package_share_directory("muto_slam_mapping")
     v2_share = get_package_share_directory("muto_command_layer_v2")
-    frontier_params = os.path.join(
-        slam_share, "config", "frontier_exploration_params.yaml"
-    )
     vlm_params = os.path.join(v2_share, "config", "v2_vlm_socket.yaml")
 
     args = [
@@ -101,9 +98,6 @@ def generate_launch_description():
         DeclareLaunchArgument("localization_readiness_timeout", default_value="120.0"),
         DeclareLaunchArgument("mapping_readiness_timeout", default_value="90.0"),
         DeclareLaunchArgument("nav2_readiness_timeout", default_value="120.0"),
-        DeclareLaunchArgument("frontier_params_file", default_value=frontier_params),
-        DeclareLaunchArgument("frontier_log_level", default_value="info"),
-        DeclareLaunchArgument("launch_frontier", default_value="true"),
         DeclareLaunchArgument("launch_object_pipeline", default_value="true"),
         DeclareLaunchArgument("image_topic", default_value="/camera/color/image_raw"),
         DeclareLaunchArgument("depth_topic", default_value="/camera/depth/image_raw"),
@@ -153,14 +147,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "registry_query_service", default_value="/sam2/get_stored_objects"
         ),
+        DeclareLaunchArgument("poi_grid_spacing_m", default_value="1.0"),
         DeclareLaunchArgument(
-            "frontier_control_service", default_value="/control_exploration"
+            "poi_grid_result_topic", default_value="/muto/poi_grid/result"
         ),
         DeclareLaunchArgument(
-            "frontier_goal_result_topic",
-            default_value="/explore/frontier_goal_result",
+            "poi_grid_selected_pose_topic",
+            default_value="/muto/poi_grid/selected_pose",
         ),
-        DeclareLaunchArgument("frontier_safety_watchdog_s", default_value="180.0"),
         DeclareLaunchArgument("navigate_action", default_value="/navigate_to_pose"),
         DeclareLaunchArgument("spin_action", default_value="/spin"),
         DeclareLaunchArgument(
@@ -232,19 +226,6 @@ def generate_launch_description():
             "nav2_readiness_timeout": LaunchConfiguration("nav2_readiness_timeout"),
         },
         scoped=False,
-    )
-    frontier = _scoped_include(
-        "muto_slam_mapping",
-        "frontier_exploration_launch.py",
-        {
-            "params_file": LaunchConfiguration("frontier_params_file"),
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-            # The v2 executive owns when exploration is started and stopped.
-            "autostart": "false",
-            "control_service_enabled": "true",
-            "log_level": LaunchConfiguration("frontier_log_level"),
-        },
-        condition=IfCondition(LaunchConfiguration("launch_frontier")),
     )
     annotator = _scoped_include(
         "sam2_image_annotator",
@@ -322,14 +303,10 @@ def generate_launch_description():
                 "vlm_model": LaunchConfiguration("vlm_model"),
                 "vlm_timeout_s": LaunchConfiguration("vlm_timeout_s"),
                 "registry_query_service": LaunchConfiguration("registry_query_service"),
-                "frontier_control_service": LaunchConfiguration(
-                    "frontier_control_service"
-                ),
-                "frontier_goal_result_topic": LaunchConfiguration(
-                    "frontier_goal_result_topic"
-                ),
-                "frontier_safety_watchdog_s": LaunchConfiguration(
-                    "frontier_safety_watchdog_s"
+                "poi_grid_spacing_m": LaunchConfiguration("poi_grid_spacing_m"),
+                "poi_grid_result_topic": LaunchConfiguration("poi_grid_result_topic"),
+                "poi_grid_selected_pose_topic": LaunchConfiguration(
+                    "poi_grid_selected_pose_topic"
                 ),
                 "navigate_action": LaunchConfiguration("navigate_action"),
                 "spin_action": LaunchConfiguration("spin_action"),
@@ -369,5 +346,5 @@ def generate_launch_description():
         ],
     )
     return LaunchDescription(
-        args + [nav2, frontier, annotator, registry, vlm, odometry_bag, v2, recorder]
+        args + [nav2, annotator, registry, vlm, odometry_bag, v2, recorder]
     )

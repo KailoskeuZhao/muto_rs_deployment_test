@@ -27,11 +27,8 @@ def test_recorder_allowlist_contains_only_bounded_high_level_topics():
         "muto/mission_recorder_manifest",
     }.issubset(topics)
     assert {
-        "/explore/selected_frontier",
-        "/frontier_goal_adapter/original_goal",
-        "/frontier_goal_adapter/projected_goal",
-        "/frontier_goal_adapter/status",
-        "/explore/frontier_goal_result",
+        "/muto/poi_grid/selected_pose",
+        "/muto/poi_grid/result",
     }.issubset(topics)
     assert all(
         sensor not in topic

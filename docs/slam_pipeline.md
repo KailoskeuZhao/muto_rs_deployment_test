@@ -104,8 +104,9 @@ ros2 launch muto_slam_mapping muto_nav2_pipeline_launch.py
 ```
 
 This entry point owns hardware, TF, localization, mapping, and Nav2 only. The
-GPU perception/object mission pipeline remains an independent v2 launch. By
-default that v2 launch owns a frontier explorer process in cold idle.
+GPU perception/object mission pipeline remains an independent v2 launch. The
+v2 launch owns the deterministic POI-grid search authority; it samples the
+known-free map only when the executive requests an observation step.
 
 The launch combines minimum delays with observable readiness checks. A delay
 does not declare a stage ready; it only determines when that stage begins
@@ -165,8 +166,8 @@ export HKU_API_KEY='your-key'
 ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py
 ```
 
-The v2 launch starts the SAM2/registry/VLM authorities, the independent
-frontier authority in cold idle, Nav2, the mission executive, and the
+The v2 launch starts the SAM2/registry/VLM authorities, the deterministic
+POI-grid authority, Nav2, the mission executive, and the
 mission-scoped high-level recorder. It exposes the single `/muto/mission`
 action; natural-language requests are normalized inside the v2 executive and
 the commander chooses the next bounded tool from the mission board.
@@ -212,17 +213,10 @@ navigator servers:
 ros2 launch muto_slam_mapping nav2_planner_controller_launch.py
 ```
 
-Optional frontier exploration after Nav2 is ready:
-
-```bash
-ros2 launch muto_slam_mapping frontier_exploration_launch.py
-```
-
-The Muto frontier profile keeps an accepted Nav2 goal stable while the robot is
-driving. Visibility-gain goal preemption is disabled because live SLAM refreshes
-were canceling and redispatching effectively identical goals. A frontier can
-still be skipped when it becomes blocked, and arrival within `0.25 m` still
-counts as complete when Nav2 has not yet reported success.
+The v2 POI-grid search is available only through the v2 command-layer launch.
+It selects known-free, footprint-safe cells in the current connected map
+component and waits for the Nav2 result; it does not run as an independent
+search client or expose a manual search service.
 
 `online_async_mapping_launch.py` owns only SLAM Toolbox. The top-level pipeline
 owns camera preprocessing independently when `launch_camera_obstacle_scan:=true`.
@@ -454,84 +448,31 @@ still allowing narrow routes in the cluttered deployment room. The smoother
 and RPP retain full-footprint collision checking; inflation is a planning
 preference, not permission to ignore a collision.
 
-`inflate_around_unknown` is disabled. This is required for frontier
-navigation: Humble otherwise uses every unknown map cell as an inflation
-source, contradicting NavFn's `allow_unknown: true`. The 2026-08-13 diagnostic
-bag showed the consequence of that mismatch: 58,256 unknown SLAM cells became
-51,696 lethal and 7,294 inscribed cells in the global costmap. Unknown space
-now remains unknown while mapped obstacle cells retain inflation and
-full-footprint collision checks.
+`inflate_around_unknown` is disabled. Unknown SLAM cells remain unknown while
+mapped obstacle cells retain inflation and full-footprint collision checks.
+The v2 POI-grid planner treats unknown cells as unavailable; it never uses an
+unknown cell as a navigation endpoint.
 
 Recovery is bounded and failure-specific. A planning failure clears only the
 global costmap, waits `2 s` for its 1 Hz static/sensor layers to repopulate, and
 retries once. Savitzky-Golay smoothing remains collision checked, but its
-failure is non-fatal: Nav2 preserves and follows the original NavFn path. This
-matters at a frontier because Humble's generic smoothing collision check treats
-unknown cost as blocked even though NavFn is intentionally configured with
-`allow_unknown: true`.
+failure is non-fatal: Nav2 preserves and follows the original NavFn path.
 
-Synthetic-map regression tests preserve the reason for that setting. With the
-optimized frontier decision map enabled, one-cell free-space dilation can place
-the selected endpoint in a cell that is still unknown in the raw SLAM map.
-Disabling unknown traversal therefore rejects some current frontier goals. Even
-with decision-map optimization disabled, the selected known-free endpoint is
-immediately adjacent to unknown space: at 0.04 m map resolution, the 0.26 m
-robot footprint still overlaps unknown cells and the smoother's full-footprint
-check rejects it. The behavior tree consequently treats smoothing as an
-optional quality improvement while retaining controller/local-costmap collision
-checking during execution.
+The v2 POI-grid planner shares the same conservative reachability predicate as
+motion preflight: it requires a fresh map and TF, starts from the robot's
+footprint-safe connected component, rejects unknown/occupied cells, prevents
+diagonal corner cutting, and reports a deterministic path estimate. It marks a
+failed POI as attempted so the commander cannot retry one bad cell forever.
+Nav2 remains responsible for planning, controller progress, recovery, dynamic
+obstacles, and final success or abort. A POI result is therefore evidence for
+the next commander decision, not an alternative navigation state machine.
 
-The explorer's reachability search is point-based rather than footprint-based.
-Its map BFS admits a cell when any cell in its 8-connected neighborhood is free,
-and its final blocked-goal check samples only the endpoint cost. Sparse diagonal
-free cells from a scan can therefore form a reachable-looking one-cell halo
-through unknown space even though no continuous robot-sized known-free corridor
-exists. Decision-map filtering and one-cell free dilation can widen that effect;
-turning optimization off does not remove the underlying point-versus-footprint
-distinction. The Muto endpoint adapter is the final full-footprint guard.
-
-Frontier navigation now has a Muto-owned endpoint adapter between the explorer
-and Nav2. The upstream explorer still selects and reasons about the actual
-frontier target, but sends its `NavigateToPose` request to
-`/frontier/navigate_to_pose`. `frontier_goal_adapter` checks the raw `/map` and
-uses `map <- base_frame` to find the robot's current connected known-free
-component. It selects the frontier-nearest cell in that component whose complete
-`0.27 m` effective circular footprint is known free, forwards that staged
-endpoint to Nav2, and faces the final pose toward the original frontier. The old
-arbitrary `0.80 m` projection cutoff is disabled by the default
-`maximum_projection_distance: 0.0`: a distant unsafe frontier can therefore
-produce a useful safe advance, allow the map to grow, and be reconsidered on
-the next frontier cycle. The adapter rejects only when it cannot find any
-footprint-safe cell connected to a safe seed near the robot, when the required
-TF/map is unavailable, or when an optional nonzero projection cap explicitly
-forbids every reachable candidate. It also rejects a displaced endpoint that
-would advance less than `0.20 m`; this prevents Nav2's goal tolerance from
-turning a local impasse into a false successful frontier visit.
-
-Frontier suppression is active immediately for commander-owned bounded steps.
-One confirmed planner/controller failure, adapter no-progress rejection, or
-eight seconds without meaningful navigation progress temporarily suppresses
-that robot-width frontier region for `90 s`. There is no post-failure settle
-delay: the explorer immediately filters the bad region, selects another
-frontier, and sends the replacement goal inside the same primitive. The former
-`15 s` suppression startup grace was longer than a normal `10-15 s` primitive
-and restarted with every primitive, so it effectively disabled this escape
-path. If no other footprint-safe frontier exists, the primitive reports that
-fact rather than inventing unsafe motion.
-
-This is intentionally scoped only to frontier exploration. Object approach and
-operator navigation continue to use `/navigate_to_pose` directly. The compact
-and full Nav2 bag profiles record the original goal, projected goal, adapter
-status, and adapter action status, so endpoint projection is visible during bag
-analysis.
 A controller/progress failure clears only the local costmap, waits `1 s` for
 fresh 5 Hz obstacle updates, and retries FollowPath once. If the complete
 navigation pipeline still fails, it performs one stationary `2 s` wait and
-returns failure to the frontier selector. It does not spin or back up merely
-because a path could not be planned; the frontier layer can suppress that goal
-and select another. Humble's Wait BT input is integer seconds, so these delays
-deliberately avoid sub-second literals. Footprint collision checking remains
-enabled throughout.
+returns failure to the v2 POI authority. Humble's Wait BT input is integer
+seconds, so these delays deliberately avoid sub-second literals. Footprint
+collision checking remains enabled throughout.
 
 ## Main Runtime Contract
 
@@ -749,8 +690,8 @@ and `camera_depth_to_laserscan_node`.
 | `src/muto_nav2_bag/config/nav2_bag_full.yaml` | Opt-in broad costmap/action-feedback diagnostic profile. |
 | `src/muto_slam_mapping/launch/online_async_mapping_launch.py` | SLAM Toolbox mapping only. |
 | `src/muto_slam_mapping/launch/nav2_planner_controller_launch.py` | Current Nav2 server set. |
-| `src/muto_slam_mapping/launch/frontier_exploration_launch.py` | Optional exploration client launch; not part of one-shot Nav2 startup. |
-| `src/muto_slam_mapping/config/frontier_exploration_params.yaml` | Muto frame, topic, QoS, and bounded-DP exploration profile. |
+| `src/muto_command_layer_v2/poi_grid.py` | Deterministic known-free POI selection used by the v2 observe authority. |
+| `src/muto_command_layer_v2/msg/PoiGridResult.msg` | Typed POI selection, Nav2 outcome, exhaustion, and freshness result. |
 | `src/muto_slam_mapping/config/mapper_params_online_async.yaml` | SLAM frames, topic, and map timing. |
 | `src/muto_slam_mapping/config/nav2_params.yaml` | Humble planner, path smoother, controller, velocity smoother, behavior, and costmap settings. |
 | `src/lidar_pointcloud_filter/launch/filter_lidar_odometry_launch.py` | LiDAR scan filtering, RF2O, and odometry guard. |

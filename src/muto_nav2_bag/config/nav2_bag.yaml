@@ -68,14 +68,9 @@ nav2_bag_recorder:
       - /backup/_action/status
       - /wait/_action/status
 
-      # Frontier/object-navigation targets and action state.
-      - /explore/selected_frontier
-      - /explore/frontier_goal_result
-      - /explore/visibility_target_pose
-      - /frontier_goal_adapter/original_goal
-      - /frontier_goal_adapter/projected_goal
-      - /frontier_goal_adapter/status
-      - /frontier/navigate_to_pose/_action/status
+      # POI-grid/object-navigation targets and action state.
+      - /muto/poi_grid/selected_pose
+      - /muto/poi_grid/result
       - /muto/mission_board
       - /muto/mission_event
       - /muto/mission_rejection

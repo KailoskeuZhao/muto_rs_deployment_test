@@ -12,7 +12,7 @@ relate.
 
 The default profile keeps TF, map state, fused pose and scan-odometry response,
 the two filtered obstacle scans, goals, paths, controller commands, compact
-action state, selected frontier/object targets, diagnostics, and lifecycle
+action state, selected POI/object targets, diagnostics, and lifecycle
 events. It deliberately omits full costmaps, raw sensors, high-rate action
 feedback, camera images, point clouds, SAM output, and `/bond`.
 
@@ -48,7 +48,7 @@ ros2 topic echo --once --qos-durability transient_local \
 ```
 
 When included by the pipeline, the bag also contains a manifest plus snapshots
-of the active Nav2, frontier, SLAM, and both behavior-tree files. The default
+of the active Nav2, POI-grid, SLAM, and both behavior-tree files. The default
 geometric locomotion mapping
 has no external profile; `/muto/motion_command_state` records its profile ID,
 selected amplitudes, and configured/observed phase rates. If the pipeline used

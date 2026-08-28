@@ -44,11 +44,6 @@ def generate_launch_description():
             description='Optional active Nav2 parameters copied into the bag.',
         ),
         DeclareLaunchArgument(
-            'frontier_params_file',
-            default_value='',
-            description='Optional frontier parameters copied into the bag.',
-        ),
-        DeclareLaunchArgument(
             'slam_params_file',
             default_value='',
             description='Optional SLAM parameters copied into the bag.',
@@ -104,10 +99,6 @@ def generate_launch_description():
                     ),
                     'nav2_params_file': ParameterValue(
                         LaunchConfiguration('nav2_params_file'),
-                        value_type=str,
-                    ),
-                    'frontier_params_file': ParameterValue(
-                        LaunchConfiguration('frontier_params_file'),
                         value_type=str,
                     ),
                     'slam_params_file': ParameterValue(

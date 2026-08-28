@@ -12,7 +12,7 @@
             <Sequence name="PlanAndSmoothPath">
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
               <!--
-                Smoothing is optional. NavFn may plan through unknown frontier
+                Smoothing is optional. POI goals are selected from known-free
                 cells, while Humble's generic footprint checker treats unknown
                 cost 255 as a collision. Preserve the original NavFn path in
                 {path}; overwrite it only when checked smoothing succeeds.
@@ -48,7 +48,7 @@
         <GoalUpdated/>
         <!--
           After the targeted refresh/retry, return planning failure to the
-          frontier selector so it can suppress this candidate and choose
+          POI authority so it can suppress this candidate and choose
           another. Never rotate or back up merely because planning failed.
         -->
         <Wait wait_duration="2"/>

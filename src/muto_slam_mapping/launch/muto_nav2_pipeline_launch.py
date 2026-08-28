@@ -125,11 +125,6 @@ def generate_launch_description():
         'config',
         'nav2_params.yaml',
     )
-    default_frontier_params_file = os.path.join(
-        get_package_share_directory('muto_slam_mapping'),
-        'config',
-        'frontier_exploration_params.yaml',
-    )
     default_nav_to_pose_bt_file = os.path.join(
         get_package_share_directory('muto_slam_mapping'),
         'behavior_trees',
@@ -287,9 +282,6 @@ def generate_launch_description():
                 'max_bag_directories'
             ),
             'nav2_params_file': LaunchConfiguration('nav2_params_file'),
-            'frontier_params_file': LaunchConfiguration(
-                'frontier_params_file'
-            ),
             'slam_params_file': LaunchConfiguration('slam_params_file'),
             'nav_to_pose_bt_file': LaunchConfiguration(
                 'nav_to_pose_bt_file'
@@ -673,11 +665,6 @@ def generate_launch_description():
             'nav2_params_file',
             default_value=default_nav2_params_file,
             description='Nav2 parameter file.',
-        ),
-        DeclareLaunchArgument(
-            'frontier_params_file',
-            default_value=default_frontier_params_file,
-            description='Frontier parameters snapshotted by the Nav2 bag.',
         ),
         DeclareLaunchArgument(
             'nav_to_pose_bt_file',

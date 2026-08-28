@@ -22,7 +22,8 @@ from .backend_adapters import (
     RegistryCandidate,
     RegistrySnapshot,
 )
-from .contracts import MissionBoard, ReachabilityReport
+from .contracts import MissionBoard, ReachabilityReport, SCHEMA_VERSION
+from .poi_grid import PoiGridPlanner
 
 
 def _wait_future(future, timeout_s: float, operation: str):
@@ -42,14 +43,14 @@ def _wait_future(future, timeout_s: float, operation: str):
         raise RuntimeError("{} failed: {}".format(operation, exc)) from exc
 
 
-def _snapshot_revision(objects) -> str:
+def _snapshot_revision(objects, frame_id: str = "map") -> str:
     """Fingerprint the semantic contents of one registry response.
 
     Registry observations also carry volatile fields such as ``last_seen`` and
     ``observation_count``.  Those fields describe freshness, not a new object
     identity or a changed shortlist.  Including them in the revision would
     invalidate a visual rejection/confirmation every time the detector
-    refreshed the same object and would recreate the frontier-cancellation
+    refreshed the same object and would recreate the search-cancellation
     race this boundary is meant to prevent.  Identity, class/label, evidence
     path, and a centimetre-quantized pose are the revision-bearing fields;
     freshness remains available on the registry response itself.
@@ -61,6 +62,7 @@ def _snapshot_revision(objects) -> str:
             "name": str(getattr(item, "name", "")),
             "label": str(getattr(item, "label", "")),
             "class_id": int(getattr(item, "class_id", 0)),
+            "frame_id": str(frame_id or "map"),
             # Millimetre-scale detector jitter must not manufacture a new
             # identity revision; a centimetre-scale move is meaningful for a
             # later approach and therefore remains revision-bearing.
@@ -68,7 +70,13 @@ def _snapshot_revision(objects) -> str:
             "y": round(float(getattr(getattr(item, "position", None), "y", 0.0)), 2),
             "image_path": str(getattr(item, "image_path", "")),
         })
-    encoded = json.dumps(sorted(rows, key=lambda row: row["name"]), sort_keys=True)
+    # Service response order is not semantic.  Sort by the complete semantic
+    # row so detector/container iteration order cannot manufacture a new
+    # registry revision and invalidate an otherwise current confirmation.
+    encoded = json.dumps(
+        sorted(rows, key=lambda row: json.dumps(row, sort_keys=True)),
+        sort_keys=True,
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
@@ -101,8 +109,14 @@ class RosRegistryAuthority:
         if not self._client.wait_for_service(timeout_sec=self._timeout_s):
             return RegistrySnapshot(revision="", checked=False)
         request_text = object_request.strip()
-        objects = self._name_and_label_shortlist(request_text)
-        revision = _snapshot_revision(objects)
+        objects, frame_id = self._name_and_label_shortlist(request_text)
+        # A mixed-frame token shortlist is represented by an empty frame ID.
+        # Do not publish a checked snapshot with no candidates: that would
+        # make an impossible registry result look like a valid not-found
+        # lookup and could incorrectly clear confirmation state.
+        if frame_id == "":
+            return RegistrySnapshot(revision="", checked=False)
+        revision = _snapshot_revision(objects, frame_id)
         candidates = tuple(
             RegistryCandidate(
                 candidate_id=str(item.name),
@@ -113,6 +127,7 @@ class RosRegistryAuthority:
                     "class_id": str(getattr(item, "class_id", 0)),
                     "x": str(getattr(getattr(item, "position", None), "x", 0.0)),
                     "y": str(getattr(getattr(item, "position", None), "y", 0.0)),
+                    "frame_id": frame_id,
                     "image_path": str(getattr(item, "image_path", "")),
                 },
             )
@@ -141,15 +156,15 @@ class RosRegistryAuthority:
 
         if not request_text:
             response = self._query_response()
-            return tuple(getattr(getattr(response, "result", None), "objects", ()))
+            return self._response_objects_and_frame(response)
 
         for response in (
             self._query_response(name=request_text),
             self._query_response(label=request_text),
         ):
-            objects = tuple(getattr(getattr(response, "result", None), "objects", ()))
+            objects, frame_id = self._response_objects_and_frame(response)
             if objects:
-                return objects
+                return objects, frame_id
 
         stop_words = {
             "a", "an", "approach", "confirmed", "find", "for", "go",
@@ -161,13 +176,28 @@ class RosRegistryAuthority:
             if token not in stop_words
         ]
         by_name = {}
+        frame_id = "map"
         for token in tokens:
             response = self._query_response(label=token)
-            for item in tuple(getattr(getattr(response, "result", None), "objects", ())):
+            objects, response_frame = self._response_objects_and_frame(response)
+            if objects and frame_id == "map":
+                frame_id = response_frame
+            if objects and response_frame != frame_id:
+                # A single shortlist must have one coordinate frame.  Fail
+                # closed instead of mixing positions from incompatible maps.
+                return (), ""
+            for item in objects:
                 name = str(getattr(item, "name", ""))
                 if name:
                     by_name[name] = item
-        return tuple(by_name.values())
+        return tuple(by_name.values()), frame_id
+
+    @staticmethod
+    def _response_objects_and_frame(response):
+        result = getattr(response, "result", None)
+        objects = tuple(getattr(result, "objects", ()))
+        frame_id = str(getattr(getattr(result, "header", None), "frame_id", "map") or "map")
+        return objects, frame_id
 
     def inspect(
         self,
@@ -263,6 +293,13 @@ class Nav2MotionAuthority:
         if self._observe_fn is None:
             return MotionResult(False, reason_code="observation_authority_unavailable")
         return self._observe_fn(board)
+
+    def set_observe_authority(self, observe_fn: Callable[[MissionBoard], MotionResult]) -> None:
+        """Attach the independent search authority after Nav2 construction."""
+
+        if not callable(observe_fn):
+            raise ValueError("observe_fn must be callable")
+        self._observe_fn = observe_fn
 
     def rotate_to_heading(self, heading: float, board: MissionBoard) -> MotionResult:
         if not math.isfinite(float(heading)):
@@ -445,168 +482,175 @@ class Nav2MotionAuthority:
         return False
 
 
-class RosFrontierAuthority:
-    """Adapt the independent frontier explorer control service to ``observe``.
+class RosPoiGridAuthority:
+    """Adapt the deterministic POI planner to the Nav2 motion authority.
 
-    The frontier explorer is intentionally not treated as a v2 lifecycle or
-    command-layer implementation. V2 starts an explorer-owned single-step
-    session and waits for its typed terminal result. The explorer returns to
-    cold idle before another frontier goal can be dispatched; Commander then
-    owns the next decision. A long safety watchdog is retained only as a
-    deadman for a broken transport or lifecycle.
+    The planner selects one known-free reachable viewpoint and then waits for
+    the Nav2 result.  There is no independent search process or wall
+    clock watchdog: a command ends on a POI result, exhaustion, no reachable
+    goal, Nav2 cancellation, or the Nav2 authority's own bounded action
+    timeout.  Commander regains control only after that terminal result.
     """
 
     def __init__(
         self,
         node,
         *,
-        control_service: str = "/control_exploration",
-        result_topic: str = "/explore/frontier_goal_result",
-        service_timeout_s: float = 5.0,
-        safety_watchdog_s: float = 180.0,
+        reachability: "RosMapReachability",
+        motion: Nav2MotionAuthority,
+        spacing_m: float = 1.0,
+        nominal_speed_mps: float = 0.25,
+        minimum_progress_m: float = 0.25,
+        result_topic: str = "/muto/poi_grid/result",
+        selected_pose_topic: str = "/muto/poi_grid/selected_pose",
     ) -> None:
-        if service_timeout_s <= 0.0 or safety_watchdog_s <= 0.0:
-            raise ValueError("frontier service timeout and safety watchdog must be positive")
         try:
-            from frontier_exploration_ros2.srv import ControlExploration
-            from frontier_exploration_ros2.msg import FrontierGoalResult
+            from geometry_msgs.msg import PoseStamped
+            from muto_command_layer_v2.msg import PoiGridResult
             from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         except ImportError as exc:  # pragma: no cover - non-ROS host
-            raise RuntimeError("frontier explorer ROS interfaces are unavailable") from exc
-
+            raise RuntimeError("POI-grid ROS interfaces are unavailable") from exc
         self._node = node
-        self._service_type = ControlExploration
-        self._result_type = FrontierGoalResult
-        self._service_timeout_s = float(service_timeout_s)
-        self._safety_watchdog_s = float(safety_watchdog_s)
-        self._client = node.create_client(ControlExploration, control_service)
-        self._result_condition = threading.Condition()
-        self._result_events = []
-        self._result_generation = 0
-        self._cancel_requested = threading.Event()
-        result_qos = QoSProfile(
-            depth=10,
+        self._reachability = reachability
+        self._motion = motion
+        self._planner = PoiGridPlanner(
+            spacing_m=spacing_m,
+            nominal_speed_mps=nominal_speed_mps,
+            minimum_progress_m=minimum_progress_m,
+        )
+        self._result_type = PoiGridResult
+        self._pose_type = PoseStamped
+        self._visited = set()
+        self._attempted = set()
+        self._mission_id = ""
+        self._sequence = 0
+        qos = QoSProfile(
+            depth=20,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self._result_subscription = node.create_subscription(
-            FrontierGoalResult, result_topic, self._result_callback, result_qos
-        )
+        self._result_pub = node.create_publisher(PoiGridResult, result_topic, qos)
+        self._selected_pub = node.create_publisher(PoseStamped, selected_pose_topic, qos)
 
-    def _result_callback(self, message) -> None:
-        with self._result_condition:
-            self._result_generation += 1
-            self._result_events.append((self._result_generation, message))
-            # Keep the queue bounded; session/sequence filtering makes older
-            # entries harmless while preventing a long-lived node from growing
-            # without limit when no mission is active.
-            del self._result_events[:-32]
-            self._result_condition.notify_all()
-
-    def _request(
-        self,
-        action: int,
-        *,
-        quit_after_stop: bool = False,
-        stop_after_frontier_goal: bool = False,
-    ):
-        if not self._client.wait_for_service(timeout_sec=self._service_timeout_s):
-            return None
-        request = self._service_type.Request()
-        request.action = action
-        request.delay_seconds = 0.0
-        request.quit_after_stop = bool(quit_after_stop)
-        request.stop_after_frontier_goal = bool(stop_after_frontier_goal)
-        return _wait_future(
-            self._client.call_async(request),
-            self._service_timeout_s,
-            "frontier control request",
-        )
-
-    def observe(self, _board: MissionBoard) -> MotionResult:
-        """Run one explorer-owned frontier goal and return its typed result."""
-
-        self._cancel_requested.clear()
-        with self._result_condition:
-            result_generation = self._result_generation
-
-        try:
-            start = self._request(
-                self._service_type.Request.ACTION_START,
-                stop_after_frontier_goal=True,
-            )
-        except RuntimeError as exc:
-            return MotionResult(False, reason_code="frontier_start_failed", detail=str(exc))
-        if start is None:
-            return MotionResult(False, reason_code="frontier_control_unavailable")
-        if not bool(getattr(start, "accepted", False)):
+    def observe(self, board: MissionBoard) -> MotionResult:
+        if board.mission_id != self._mission_id:
+            self._mission_id = board.mission_id
+            self._visited.clear()
+            self._attempted.clear()
+        grid, pose = self._reachability.snapshot(board)
+        decision = self._planner.select(grid, pose, self._attempted)
+        if decision.selection is None:
+            detail = self._summary(decision.reason_code, decision.grid_revision)
+            self._publish(board, decision, outcome=decision.reason_code, detail=detail)
+            # Exhaustion is a successful search-authority result.  It is not a
+            # confirmed object and the commander decides whether the scenario
+            # policy permits mission completion.
             return MotionResult(
-                False,
-                reason_code="frontier_start_rejected",
-                detail=str(getattr(start, "message", "")),
+                decision.reason_code == "poi_exhausted",
+                reason_code=decision.reason_code,
+                detail=detail,
+                progress_delta=0.0,
             )
 
-        session_id = int(getattr(start, "session_id", 0))
-        deadline = time.monotonic() + self._safety_watchdog_s
-        while time.monotonic() < deadline:
-            if self._cancel_requested.is_set():
-                try:
-                    self._request(self._service_type.Request.ACTION_STOP)
-                except RuntimeError:
-                    pass
-                return MotionResult(False, reason_code="motion_canceled")
-            with self._result_condition:
-                matching = [
-                    message
-                    for generation, message in self._result_events
-                    if generation > result_generation
-                    if (session_id == 0 or int(getattr(message, "session_id", 0)) == session_id)
-                ]
-                if matching:
-                    result = matching[0]
-                else:
-                    result = None
-                    self._result_condition.wait(
-                        timeout=min(0.1, max(0.0, deadline - time.monotonic()))
-                    )
-            if result is None:
-                continue
-
-            outcome = int(getattr(result, "outcome", 0))
-            reason_code = str(getattr(result, "reason_code", "frontier_goal_failed"))
-            detail = str(getattr(result, "detail", ""))
-            if outcome == self._result_type.OUTCOME_SUCCEEDED:
-                return MotionResult(
-                    True,
-                    reason_code=reason_code or "frontier_goal_succeeded",
-                    detail=detail,
-                    progress_delta=1.0,
-                )
-            if outcome == self._result_type.OUTCOME_EXHAUSTED:
-                return MotionResult(
-                    True,
-                    reason_code=reason_code or "frontier_exhausted",
-                    detail=detail,
-                    progress_delta=0.0,
-                )
-            if outcome == self._result_type.OUTCOME_CANCELED:
-                return MotionResult(False, reason_code="motion_canceled", detail=detail)
-            return MotionResult(False, reason_code=reason_code, detail=detail)
-
+        selection = decision.selection
+        self._publish(
+            board,
+            decision,
+            outcome="poi_goal_selected",
+            detail="",
+            selection=selection,
+        )
         try:
-            stop = self._request(self._service_type.Request.ACTION_STOP)
-        except RuntimeError as exc:
-            return MotionResult(False, reason_code="frontier_stop_failed", detail=str(exc))
-        if stop is None:
-            return MotionResult(False, reason_code="frontier_control_unavailable")
+            motion = self._motion.go_to_point(
+                (selection.pose[0], selection.pose[1]), "reject", board
+            )
+        except Exception as exc:
+            motion = MotionResult(False, reason_code="poi_goal_failed", detail=str(exc))
+        # A failed point is marked attempted so the commander cannot ask the
+        # deterministic planner to retry the same bad cell forever.  A
+        # cancellation is left available for a later mission retry.
+        if motion.reason_code == "motion_canceled":
+            outcome = "poi_goal_canceled"
+        elif motion.success:
+            self._visited.add(selection.poi_id)
+            self._attempted.add(selection.poi_id)
+            outcome = "poi_goal_succeeded"
+        else:
+            self._attempted.add(selection.poi_id)
+            outcome = "poi_goal_failed"
+        detail = self._summary(
+            outcome,
+            selection.grid_revision,
+            selection.poi_id,
+            len(self._visited),
+        )
+        if motion.detail:
+            detail = motion.detail + ";" + detail
+        self._publish(
+            board,
+            decision,
+            outcome=outcome,
+            detail=detail,
+            reason_code=(
+                "poi_goal_succeeded"
+                if motion.success
+                else motion.reason_code or outcome
+            ),
+            selection=selection,
+        )
         return MotionResult(
-            False,
-            reason_code="frontier_safety_watchdog_elapsed",
-            detail="Frontier explorer did not publish a terminal result before the safety watchdog",
+            bool(motion.success),
+            reason_code=("poi_goal_succeeded" if motion.success else motion.reason_code or outcome),
+            detail=detail,
+            progress_delta=selection.path_length_m if motion.success else 0.0,
+            reachability=motion.reachability,
         )
 
-    def cancel_active(self) -> None:
-        self._cancel_requested.set()
+    def _summary(self, reason, revision, poi_id="", visited=None) -> str:
+        return "poi_reason={};grid_revision={};poi_id={};visited={}".format(
+            reason,
+            int(revision),
+            poi_id,
+            len(self._visited) if visited is None else int(visited),
+        )
+
+    def _publish(
+        self,
+        board: MissionBoard,
+        decision,
+        *,
+        outcome: str,
+        detail: str,
+        reason_code: Optional[str] = None,
+        selection=None,
+    ) -> None:
+        self._sequence += 1
+        message = self._result_type()
+        message.header.stamp = self._node.get_clock().now().to_msg()
+        message.schema_version = SCHEMA_VERSION
+        message.mission_id = board.mission_id
+        message.sequence = self._sequence
+        message.grid_revision = int(decision.grid_revision)
+        message.poi_id = selection.poi_id if selection is not None else ""
+        message.outcome = outcome
+        message.reason_code = reason_code or outcome
+        message.detail = detail
+        if selection is not None:
+            pose = self._pose_type()
+            pose.header.stamp = message.header.stamp
+            pose.header.frame_id = "map"
+            pose.pose.position.x = float(selection.pose[0])
+            pose.pose.position.y = float(selection.pose[1])
+            pose.pose.orientation.z = math.sin(float(selection.pose[2]) / 2.0)
+            pose.pose.orientation.w = math.cos(float(selection.pose[2]) / 2.0)
+            message.selected_pose = pose
+            message.path_length_m = float(selection.path_length_m)
+            message.estimated_time_s = float(selection.estimated_time_s)
+            message.visited_count = len(self._visited)
+            self._selected_pub.publish(pose)
+        else:
+            message.visited_count = len(self._visited)
+        self._result_pub.publish(message)
 
 
 def _shortest_angle(angle: float) -> float:
@@ -807,30 +851,53 @@ class RosMapReachability:
     def revision(self) -> int:
         return int(self._revision)
 
+    def snapshot(self, board: Optional[MissionBoard] = None):
+        """Return the current map snapshot and map-frame robot pose.
+
+        The POI planner consumes the same semantic grid and freshness rules as
+        motion preflight.  Returning a copied stale grid lets it emit a typed
+        ``poi_grid_stale`` result instead of silently treating missing data as
+        search exhaustion.
+        """
+
+        if self._grid is None:
+            return None, None
+        message, grid = self._grid
+        try:
+            now = self._node.get_clock().now().nanoseconds / 1e9
+            stamp = getattr(message.header, "stamp", None)
+            map_time = float(stamp.sec) + float(stamp.nanosec) / 1e9
+            freshness = (
+                "stale"
+                if now >= map_time and now - map_time > self._stale_after_s
+                else "fresh"
+            )
+        except (AttributeError, TypeError, ValueError):
+            freshness = grid.freshness
+        if freshness != grid.freshness:
+            grid = type(grid)(
+                width=grid.width,
+                height=grid.height,
+                resolution=grid.resolution,
+                origin_x=grid.origin_x,
+                origin_y=grid.origin_y,
+                data=grid.data,
+                revision=grid.revision,
+                freshness=freshness,
+            )
+        return grid, self.current_pose(board)
+
     def evaluate_point(
         self,
         point: Tuple[float, float],
         board: MissionBoard,
         projection_policy: str = "reject",
     ) -> ReachabilityReport:
-        if self._grid is None:
+        grid, pose = self.snapshot(board)
+        if grid is None:
             return ReachabilityReport(reason_code="costmap_unavailable")
-        pose = self.current_pose(board)
         if pose is None:
             return ReachabilityReport(reason_code="map_pose_unavailable")
-        message, grid = self._grid
-        stamp = getattr(message.header, "stamp", None)
-        try:
-            now = self._node.get_clock().now().nanoseconds / 1e9
-            map_time = float(stamp.sec) + float(stamp.nanosec) / 1e9
-            if now >= map_time and now - map_time > self._stale_after_s:
-                grid = type(grid)(
-                    width=grid.width, height=grid.height, resolution=grid.resolution,
-                    origin_x=grid.origin_x, origin_y=grid.origin_y, data=grid.data,
-                    revision=grid.revision, freshness="stale",
-                )
-        except (AttributeError, TypeError, ValueError):
-            pass
         report = self._planner.evaluate(
             grid,
             (pose[0], pose[1]),

@@ -26,7 +26,8 @@ The package currently contains:
   writes a manifest and recorder status, and closes on terminal outcome; and
 - an event-driven commander/executive runtime loop;
 - a strict `muto_vlm_socket` planner transport with schema-checked output;
-- ROS authority adapters for registry snapshots, one-goal frontier observation,
+- ROS authority adapters for registry snapshots, deterministic POI-grid
+  observation,
   and Nav2 motion results;
 - an independent ROS composition and validation launch;
 - ROS projections and a single v2 mission action transport node.
@@ -35,25 +36,26 @@ For a v2-only Nav2 integration smoke in Humble, use
 `ros2 launch muto_command_layer_v2 v2_nav2_sim_launch.py`. It starts the
 reactive `v2_sim_plant_node.py` fixture and the independent
 `muto_slam_mapping` Nav2 pipeline with hardware/localization/mapping disabled;
-it never starts the legacy command layer. The VLM, registry, and frontier
-authority endpoints remain explicit launch parameters, so this smoke does not
+it never starts the legacy command layer. The VLM and registry authority
+endpoints remain explicit launch parameters, while the POI-grid authority is
+owned by v2, so this smoke does not
 pretend that a missing backend is a successful mission.
 
 For a supervised physical Humble smoke, use
 `ros2 launch muto_command_layer_v2 v2_hardware_smoke_launch.py`. This is the
 v2-only field composition: it enables the existing hardware/localization/SLAM
-and Nav2 pipeline, starts the independent frontier explorer idle behind its
-control service, launches the direct SAM2 annotator and object registry, and
-starts the VLM socket plus v2 executive. It does not include the retired
-command-layer launch. Keep the robot lifted or in a clear test area until the
+and Nav2 pipeline, launches the direct SAM2 annotator and object registry, and
+starts the VLM socket plus v2 executive with its map-backed POI-grid planner.
+It does not include the retired command-layer launch or an external search
+process. Keep the robot lifted or in a clear test area until the
 readiness gates pass and the first mission is intentionally sent.
 
 The launch starts the v2 mission recorder by default and exposes the existing
 odometry input recorder as an opt-in:
 
-- the v2 high-level recorder writes only bounded mission/frontier diagnostics
-  (board, events, rejection, selected/projected goals, typed frontier results,
-  adapter status, recorder status, and manifest) to a unique MCAP directory under
+- the v2 high-level recorder writes only bounded mission/POI diagnostics
+  (board, events, rejection, selected POI pose, typed POI results, recorder
+  status, and manifest) to a unique MCAP directory under
   `/opt/muto_rs_ws/bags/muto_command_v2_<run>_<mission>`; and
 - `muto_odometry_bag` is available as an opt-in lower-level diagnostic
   (`record_odometry_bag:=true`) and does not poll motor angles by default
@@ -111,13 +113,14 @@ empty when they provide their own readiness fixture.
 The ROS action/message interfaces, authority transport, and high-level
 rosbag2 recorder are verified in a ROS 2 Humble container. The recorder uses
 an explicit bounded allowlist: the mission board/events/manifest/status,
-typed mission rejection, selected frontier, frontier adapter original and
-projected goals, and adapter status. It does not subscribe to raw camera,
+typed mission rejection, selected POI pose, and typed POI result. It does not
+subscribe to raw camera,
 LiDAR, IMU, scan, or point-cloud streams, and recorder failures are non-fatal
-to a mission. The frontier adapter starts and stops the independent frontier
-explorer through its control service; it does not import the old command
-layer. A full scenario launch that connects a real VLM, registry, frontier
-explorer, and Nav2 remains a cutover gate. The standalone transport node fails closed with
+to a mission. The POI-grid planner only selects known-free reachable map
+cells and hands the selected pose to Nav2; it does not replace Nav2's planner,
+controller, recovery, or obstacle avoidance. A full scenario launch that
+connects a real VLM, registry, POI grid, and Nav2 remains a cutover gate. The
+standalone transport node fails closed with
 `commander_unavailable` until independent commander and backend instances are
 injected by deployment composition.
 
@@ -138,11 +141,21 @@ reachability revision changes when grid contents change, while repeated
 unchanged map timestamps only refresh freshness; this keeps the final
 preflight-to-Nav2 revision check useful on live costmaps.
 
+Tool permissions are skill-scoped: search may query/inspect, observe through
+the POI grid, or rotate; approach may rotate or send the exact confirmed
+candidate to `go_to_point`. Search cannot select a raw coordinate, and approach
+cannot start another POI search.
+
+For an approach tool call, the confirmed candidate ID is mandatory. If the
+model omits a raw point, the adapter resolves that candidate's map position
+from the same registry revision and permits only the deterministic preflight
+projection policy; it does not perform a new lookup or choose another object.
+
 Registry revisions use the same stability rule: identity, label/class,
 evidence path, and centimetre-scale pose are semantic revision inputs;
 detector ``last_seen`` timestamps, observation counters, and millimetre-scale
 pose jitter are freshness/noise and do not invalidate a same-object visual
-decision or interrupt bounded exploration. A repeated lookup with the same
+decision or interrupt a POI-grid step. A repeated lookup with the same
 revision preserves prior rejection/confirmation evidence; only a genuinely
 new shortlist revision resets it.
 

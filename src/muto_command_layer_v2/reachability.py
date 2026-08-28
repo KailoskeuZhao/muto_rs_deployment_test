@@ -124,6 +124,29 @@ class ReachabilityPlanner:
             projected=projected,
         )
 
+    def reachable_cells(
+        self,
+        grid: Optional[OccupancyGrid],
+        start_xy: Tuple[float, float],
+    ) -> Dict[Tuple[int, int], float]:
+        """Return known-free, footprint-safe cells connected to ``start_xy``.
+
+        This is the shared deterministic predicate used by the POI planner and
+        motion preflight.  It returns an empty mapping when the snapshot is
+        unavailable, stale, or has no safe start cell.
+        """
+
+        if grid is None or grid.freshness != "fresh":
+            return {}
+        start = self._world_to_cell(grid, start_xy)
+        if start is None:
+            return {}
+        safe = self._safe_cells(grid)
+        start = self._nearest_safe(start, safe, self.config.snap_radius_cells)
+        if start is None:
+            return {}
+        return self._flood_fill(grid, start, safe)
+
     def _failure(self, grid: OccupancyGrid, reason: str) -> ReachabilityReport:
         return ReachabilityReport(
             state=ReachabilityState.UNREACHABLE,

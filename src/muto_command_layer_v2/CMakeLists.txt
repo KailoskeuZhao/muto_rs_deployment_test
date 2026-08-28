@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RecorderStatus.msg"
   "msg/MissionRejection.msg"
   "msg/MissionRecorderManifest.msg"
+  "msg/PoiGridResult.msg"
   "action/Mission.action"
   DEPENDENCIES action_msgs builtin_interfaces geometry_msgs std_msgs
 )
@@ -43,6 +44,7 @@ install(FILES
   commander.py
   tools.py
   reachability.py
+  poi_grid.py
   recorder.py
   runtime.py
   backend_adapters.py
@@ -126,6 +128,11 @@ if(BUILD_TESTING)
   )
   ament_add_pytest_test(test_v2_ros_authorities_transport
     test/test_ros_authorities_transport.py
+    ENV "PYTHONPATH=${V2_TEST_PYTHONPATH}"
+    TIMEOUT 30
+  )
+  ament_add_pytest_test(test_v2_poi_grid
+    test/test_poi_grid.py
     ENV "PYTHONPATH=${V2_TEST_PYTHONPATH}"
     TIMEOUT 45
   )

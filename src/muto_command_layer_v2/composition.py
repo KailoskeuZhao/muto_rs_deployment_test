@@ -10,8 +10,8 @@ from .mission_executive_node import MissionExecutiveNode
 from .model_transport import VlmCandidateInspector, VlmCommanderPlanner
 from .ros_authorities import (
     Nav2MotionAuthority,
-    RosFrontierAuthority,
     RosMapReachability,
+    RosPoiGridAuthority,
     RosRegistryAuthority,
     RosVisualInput,
 )
@@ -25,9 +25,9 @@ def create_v2_node(
     vlm_model: str = "",
     vlm_timeout_s: float = 30.0,
     registry_query_service: str = "/sam2/get_stored_objects",
-    frontier_control_service: str = "/control_exploration",
-    frontier_goal_result_topic: str = "/explore/frontier_goal_result",
-    frontier_safety_watchdog_s: float = 180.0,
+    poi_grid_spacing_m: float = 1.0,
+    poi_grid_result_topic: str = "/muto/poi_grid/result",
+    poi_grid_selected_pose_topic: str = "/muto/poi_grid/selected_pose",
     nav_action: str = "/navigate_to_pose",
     spin_action: str = "/spin",
     use_sim_time: bool = False,
@@ -43,10 +43,9 @@ def create_v2_node(
 ) -> MissionExecutiveNode:
     """Construct the production-shaped v2 graph without legacy imports.
 
-    The frontier explorer is adapted through its independent control service;
-    it is not imported from or wrapped by the legacy command layer. Each
-    observation requests one explorer-owned frontier step and receives a
-    typed terminal result before Commander regains control.
+    The deterministic POI-grid authority selects one reachable known-free
+    viewpoint per observation and hands it to Nav2. Each observation waits for
+    a typed POI result before Commander regains control.
     """
 
     node = MissionExecutiveNode(
@@ -86,13 +85,6 @@ def create_v2_node(
         timeout_s=vlm_timeout_s,
         visual_selector=inspector,
     )
-    frontier = RosFrontierAuthority(
-        node,
-        control_service=frontier_control_service,
-        result_topic=frontier_goal_result_topic,
-        service_timeout_s=min(vlm_timeout_s, 5.0),
-        safety_watchdog_s=frontier_safety_watchdog_s,
-    )
     reachability = RosMapReachability(
         node,
         stale_after_s=map_stale_after_s,
@@ -106,13 +98,23 @@ def create_v2_node(
         spin_action=spin_action,
         timeout_s=5.0,
         motion_timeout_s=120.0,
-        observe_fn=observe_fn or frontier.observe,
+        observe_fn=observe_fn,
         reachability_fn=reachability.evaluate_point,
         pose_fn=reachability.current_pose,
         reachability_revision_fn=reachability.revision,
         lifecycle_state_service=nav2_lifecycle_state_service,
         lifecycle_timeout_s=nav2_lifecycle_timeout_s,
     )
+    poi_grid = RosPoiGridAuthority(
+        node,
+        reachability=reachability,
+        motion=motion,
+        spacing_m=poi_grid_spacing_m,
+        result_topic=poi_grid_result_topic,
+        selected_pose_topic=poi_grid_selected_pose_topic,
+    )
+    if observe_fn is None:
+        motion.set_observe_authority(poi_grid.observe)
     node.configure_dependencies(
         planner,
         ToolDispatcher(V2ToolBackend(registry, motion)),

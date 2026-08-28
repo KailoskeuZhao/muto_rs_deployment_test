@@ -1,0 +1,13 @@
+std_msgs/Header header
+string schema_version
+string mission_id
+uint64 sequence
+uint64 grid_revision
+string poi_id
+string outcome
+string reason_code
+string detail
+geometry_msgs/PoseStamped selected_pose
+float32 path_length_m
+float32 estimated_time_s
+uint32 visited_count

@@ -20,10 +20,9 @@ from muto_command_layer_v2.msg import (
     MissionEvent,
     MissionRecorderManifest,
     MissionRejection,
+    PoiGridResult,
     RecorderStatus,
 )
-from frontier_exploration_ros2.msg import FrontierGoalResult
-from std_msgs.msg import String
 
 
 HIGH_LEVEL_TOPICS = (
@@ -45,29 +44,14 @@ HIGH_LEVEL_TOPICS = (
         MissionRejection,
     ),
     (
-        "/explore/selected_frontier",
+        "/muto/poi_grid/selected_pose",
         "geometry_msgs/msg/PoseStamped",
         PoseStamped,
     ),
     (
-        "/frontier_goal_adapter/original_goal",
-        "geometry_msgs/msg/PoseStamped",
-        PoseStamped,
-    ),
-    (
-        "/frontier_goal_adapter/projected_goal",
-        "geometry_msgs/msg/PoseStamped",
-        PoseStamped,
-    ),
-    (
-        "/frontier_goal_adapter/status",
-        "std_msgs/msg/String",
-        String,
-    ),
-    (
-        "/explore/frontier_goal_result",
-        "frontier_exploration_ros2/msg/FrontierGoalResult",
-        FrontierGoalResult,
+        "/muto/poi_grid/result",
+        "muto_command_layer_v2/msg/PoiGridResult",
+        PoiGridResult,
     ),
 )
 
@@ -198,7 +182,7 @@ class HighLevelRecorderNode(Node):
             self._write("muto/mission_event", message)
 
     def _external_callback(self, topic, message):
-        """Record bounded, typed navigation/frontier diagnostics in-flight.
+        """Record bounded, typed navigation/POI diagnostics in-flight.
 
         These topics carry no mission id.  The executive permits only one
         mission at a time, so the active writer is the ownership boundary;

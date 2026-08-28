@@ -17,14 +17,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "registry_query_service", default_value="/sam2/get_stored_objects"
         ),
+        DeclareLaunchArgument("poi_grid_spacing_m", default_value="1.0"),
         DeclareLaunchArgument(
-            "frontier_control_service", default_value="/control_exploration"
+            "poi_grid_result_topic", default_value="/muto/poi_grid/result"
         ),
         DeclareLaunchArgument(
-            "frontier_goal_result_topic",
-            default_value="/explore/frontier_goal_result",
+            "poi_grid_selected_pose_topic",
+            default_value="/muto/poi_grid/selected_pose",
         ),
-        DeclareLaunchArgument("frontier_safety_watchdog_s", default_value="180.0"),
         DeclareLaunchArgument("navigate_action", default_value="/navigate_to_pose"),
         DeclareLaunchArgument("spin_action", default_value="/spin"),
         DeclareLaunchArgument("scenario_completion_policy", default_value="report_confirmed"),
@@ -56,9 +56,11 @@ def generate_launch_description():
             "vlm_model": LaunchConfiguration("vlm_model"),
             "vlm_timeout_s": LaunchConfiguration("vlm_timeout_s"),
             "registry_query_service": LaunchConfiguration("registry_query_service"),
-            "frontier_control_service": LaunchConfiguration("frontier_control_service"),
-            "frontier_goal_result_topic": LaunchConfiguration("frontier_goal_result_topic"),
-            "frontier_safety_watchdog_s": LaunchConfiguration("frontier_safety_watchdog_s"),
+            "poi_grid_spacing_m": LaunchConfiguration("poi_grid_spacing_m"),
+            "poi_grid_result_topic": LaunchConfiguration("poi_grid_result_topic"),
+            "poi_grid_selected_pose_topic": LaunchConfiguration(
+                "poi_grid_selected_pose_topic"
+            ),
             "navigate_action": LaunchConfiguration("navigate_action"),
             "spin_action": LaunchConfiguration("spin_action"),
             "scenario_completion_policy": LaunchConfiguration("scenario_completion_policy"),

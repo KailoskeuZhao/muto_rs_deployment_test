@@ -37,7 +37,7 @@ behavior:
 
 - append-only v2 decisions, mission status, and typed tool outcomes;
 - registry revisions, candidate IDs, confirmation evidence, and object summaries;
-- frontier selection/projection, Nav2 action state, goals, paths, and command topics;
+- POI selection, reachability result, Nav2 action state, goals, paths, and command topics;
 - map state, TF, LiDAR and derived camera obstacle scans, fused/scan odometry, and
   relevant diagnostics;
 - lifecycle events, recorder manifests, Git/build provenance, and manual

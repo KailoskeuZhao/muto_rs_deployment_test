@@ -149,7 +149,7 @@ def test_runtime_accepts_valid_not_found_exhaustion_as_success():
 
     class ExhaustedBackend(SearchBackend):
         def observe(self, call, board):
-            return ToolResult(True, progress_delta=1.0, reason_code="frontier_exhausted")
+            return ToolResult(True, progress_delta=1.0, reason_code="poi_exhausted")
 
     result = CommanderRuntime(
         MissionExecutive(),
@@ -179,7 +179,7 @@ def test_runtime_replans_after_one_backend_failure():
             return ToolResult(
                 True,
                 progress_delta=1.0,
-                reason_code="frontier_exhausted",
+                reason_code="poi_exhausted",
             )
 
     def planner(board):

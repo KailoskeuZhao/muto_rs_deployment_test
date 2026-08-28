@@ -1,6 +1,3 @@
 [submodule "src/rf2o_laser_odometry"]
 	path = src/rf2o_laser_odometry
 	url = https://github.com/MAPIRlab/rf2o_laser_odometry.git
-[submodule "src/frontier_exploration"]
-	path = src/frontier_exploration
-	url = https://github.com/mertgulerx/frontier_exploration_ros2.git
